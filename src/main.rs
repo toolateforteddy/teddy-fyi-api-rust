@@ -2,8 +2,10 @@ use axum::{routing::get, Router};
 
 #[tokio::main]
 async fn main() {
-    // Build our application with a single route
-    let app = Router::new().route("/hello", get(|| async { "world" }));
+    // Build our application with multiple routes
+    let app = Router::new()
+        .route("/hello", get(|| async { "world" }))
+        .route("/healthcheck", get(|| async { "OK" }));
 
     // Read the port from the environment, falling back to 3000
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());

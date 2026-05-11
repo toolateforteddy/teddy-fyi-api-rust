@@ -23,7 +23,7 @@ clean:
 
 # Docker commands
 docker-build:
-	docker build -t teddy-fyi-api-rust .
+	docker build -t teddy-fyi-api-rust:latest .
 
 docker-run: docker-clean
 	docker run -d \

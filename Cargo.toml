@@ -7,3 +7,5 @@ edition = "2021"
 # axum is our web framework, tokio is our async runtime
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }

@@ -2,6 +2,9 @@ use axum::{routing::get, Router};
 
 #[tokio::main]
 async fn main() {
+    // Initialize structured JSON logging
+    tracing_subscriber::fmt().json().init();
+
     // Build our application with multiple routes
     let app = Router::new()
         .route("/hello", get(|| async { "world" }))
@@ -13,7 +16,7 @@ async fn main() {
 
     // Bind to 0.0.0.0 so it is accessible outside the Docker container
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    println!("Listening on {}", listener.local_addr().unwrap());
+    tracing::info!("Listening on {}", listener.local_addr().unwrap());
     
     // Start serving the Axum application
     axum::serve(listener, app)
@@ -24,5 +27,5 @@ async fn main() {
 
 async fn shutdown_signal() {
     tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
-    println!("Shutting down gracefully...");
+    tracing::info!("Shutting down gracefully...");
 }

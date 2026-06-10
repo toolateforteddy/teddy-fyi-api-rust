@@ -2,7 +2,7 @@ use axum::{
     extract::{Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 struct AppState {
+    client_id: String,
     google_client: Arc<google_oauth::AsyncClient>,
 }
 
@@ -20,6 +21,7 @@ async fn main() {
 
     let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
     let app_state = AppState {
+        client_id: client_id.clone(),
         google_client: Arc::new(google_oauth::AsyncClient::new(&client_id)),
     };
 
@@ -62,16 +64,27 @@ async fn require_google_auth(
         .and_then(|value| value.to_str().ok())
         .filter(|s| s.starts_with("Bearer "));
 
+    // Helper to generate the redirect response
+    let get_redirect = || {
+        // Note: Make sure you URL-encode this and register it exactly in GCP under "Authorized redirect URIs"
+        let redirect_uri = "https%3A%2F%2Fteddy.fyi%2Flogin";
+        let auth_url = format!(
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=id_token&scope=openid%20email%20profile&nonce=default_nonce",
+            state.client_id, redirect_uri
+        );
+        Ok(Redirect::temporary(&auth_url).into_response())
+    };
+
     let _token = match auth_header {
         Some(header) => &header["Bearer ".len()..],
-        None => return Err(StatusCode::UNAUTHORIZED),
+        None => return get_redirect(),
     };
 
     match state.google_client.validate_id_token(_token).await {
         Ok(_verified_token) => {}
         Err(err) => {
             tracing::warn!("Token verification failed: {:?}", err);
-            return Err(StatusCode::UNAUTHORIZED);
+            return get_redirect();
         }
     }
 

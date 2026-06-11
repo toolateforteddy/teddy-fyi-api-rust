@@ -2,7 +2,8 @@ use axum::{extract::{State, Json}, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use crate::state::AppState;
 use crate::auth::tokens::{create_access_token, hash_refresh_token, verify_refresh_token};
-use rand::{distributions::Alphanumeric, Rng};
+use rand::RngExt;
+use rand::distr::Alphanumeric;
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -36,8 +37,8 @@ pub async fn login_handler(
     let access_token = create_access_token(&payload.user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let refresh_token: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
+    let refresh_token: String = rand::rng()
+        .sample_iter(Alphanumeric)
         .take(64)
         .map(char::from)
         .collect();
@@ -79,7 +80,7 @@ pub async fn refresh_handler(
     })?.ok_or(StatusCode::UNAUTHORIZED)?;
 
     // 2. Verify token
-    if !verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token) || session.expires_at < chrono::Utc::now().into() {
+    if !verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token) || session.expires_at < chrono::Utc::now() {
         // Breach mitigation: Delete all sessions
         tracing::warn!("Breach mitigation: invalidating all sessions for user {}", payload.user_id);
         sqlx::query!("DELETE FROM sessions WHERE user_id = $1", payload.user_id).execute(&state.db_pool).await.ok();
@@ -90,8 +91,8 @@ pub async fn refresh_handler(
     let access_token = create_access_token(&payload.user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let new_refresh_token: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
+    let new_refresh_token: String = rand::rng()
+        .sample_iter(Alphanumeric)
         .take(64)
         .map(char::from)
         .collect();

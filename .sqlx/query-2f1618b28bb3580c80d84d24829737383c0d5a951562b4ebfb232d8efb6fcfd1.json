@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET refresh_token_hash = $1, expires_at = $2 WHERE user_id = $3 AND client_uuid = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2f1618b28bb3580c80d84d24829737383c0d5a951562b4ebfb232d8efb6fcfd1"
+}

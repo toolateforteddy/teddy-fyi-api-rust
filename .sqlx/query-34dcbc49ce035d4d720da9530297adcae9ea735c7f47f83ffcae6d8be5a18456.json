@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_uuid",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "refresh_token_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "34dcbc49ce035d4d720da9530297adcae9ea735c7f47f83ffcae6d8be5a18456"
+}

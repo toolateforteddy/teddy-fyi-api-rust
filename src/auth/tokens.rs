@@ -1,4 +1,4 @@
-use jsonwebtoken::{encode, decode, Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use jsonwebtoken::{encode, Header, EncodingKey};
 use serde::{Deserialize, Serialize};
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHasher, PasswordVerifier, SaltString},

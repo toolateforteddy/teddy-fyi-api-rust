@@ -3,10 +3,10 @@ pub mod state;
 pub mod auth;
 
 use axum::{
-    extract::{Request, State},
-    http::{header, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Redirect, Response},
+    extract::State,
+    http::StatusCode,
+    middleware,
+    response::IntoResponse,
     routing::get,
     Router,
 };

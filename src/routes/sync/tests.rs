@@ -1,0 +1,781 @@
+use super::*;
+use sqlx::PgPool;
+use crate::state::AppState;
+use std::sync::Arc;
+use axum::{extract::State, Json};
+use chrono::Utc;
+
+fn setup_state(pool: PgPool) -> AppState {
+    AppState {
+        client_id: "test-client".to_string(),
+        google_client: Arc::new(google_oauth::AsyncClient::new("test-client")),
+        db_pool: pool,
+    }
+}
+
+#[sqlx::test]
+async fn test_sync_handler_insert_todo_list(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![
+            TodoListChangeDelta {
+                id: "list-1".to_string(),
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: None,
+            }
+        ],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), Json(req)).await.expect("Handler should succeed").0;
+    assert_eq!(res.success_ids, vec!["list-1"]);
+}
+
+#[sqlx::test]
+async fn test_sync_handler_insert_todo(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![
+            TodoChangeDelta {
+                id: "todo-1".to_string(),
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: None,
+            }
+        ],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), Json(req)).await.expect("Handler should succeed").0;
+    assert_eq!(res.success_ids, vec!["todo-1"]);
+}
+
+#[sqlx::test]
+async fn test_sync_handler_update_todo(pool: PgPool) {
+    sqlx::query!(
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "todo-2", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 1_i32, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let state = setup_state(pool.clone());
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-2".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![
+            TodoChangeDelta {
+                id: "todo-2".to_string(),
+                operation_type: OperationType::Update,
+                version: 2,
+                data: None,
+            }
+        ],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), Json(req)).await.expect("Handler should succeed").0;
+    assert_eq!(res.success_ids, vec!["todo-2"]);
+
+    let updated = sqlx::query!("SELECT version, updated_by_client FROM todo_items WHERE id = $1", "todo-2")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(updated.version, 2);
+    assert_eq!(updated.updated_by_client, Some("client-2".to_string()));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_delete_todo(pool: PgPool) {
+    sqlx::query!(
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "todo-3", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 1_i32, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let state = setup_state(pool.clone());
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-2".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![
+            TodoChangeDelta {
+                id: "todo-3".to_string(),
+                operation_type: OperationType::Delete,
+                version: 2,
+                data: None,
+            }
+        ],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), Json(req)).await.expect("Handler should succeed").0;
+    assert_eq!(res.success_ids, vec!["todo-3"]);
+
+    let updated = sqlx::query!("SELECT is_deleted, updated_by_client FROM todo_items WHERE id = $1", "todo-3")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert!(updated.is_deleted);
+    assert_eq!(updated.updated_by_client, Some("client-2".to_string()));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_remote_mutations(pool: PgPool) {
+    // Insert an old record (not fetched)
+    sqlx::query!(
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW() - INTERVAL '1 hour')",
+        "todo-old", "Old", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 1_i32, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Insert a new record (should be fetched)
+    sqlx::query!(
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())",
+        "todo-new", "New", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 2_i32, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let state = setup_state(pool.clone());
+    let last_synced = Utc::now() - chrono::Duration::minutes(30);
+
+    let req = SyncRequest {
+        last_synced_at: Some(last_synced),
+        client_id: "client-2".to_string(), // different client id, so it gets the changes
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), Json(req)).await.expect("Handler should succeed").0;
+
+    // Should only fetch the "todo-new" since "todo-old" is older than 30 mins
+    assert_eq!(res.remote_todo_changes.len(), 1);
+    assert_eq!(res.remote_todo_changes[0].id, "todo-new");
+    assert_eq!(res.remote_todo_changes[0].version, 2);
+}
+
+#[sqlx::test]
+async fn test_sync_handler_grocery_lists(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // 1. Test Insert
+    let list_data = GroceryListData {
+        id: "glist-1".to_string(),
+        name: "My Grocery List".to_string(),
+        owner_id: Some("owner-1".to_string()),
+        created_at: 123456789,
+        version: 1,
+    };
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![
+            GroceryListChangeDelta {
+                id: "glist-1".to_string(),
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: Some(serde_json::to_value(&list_data).unwrap()),
+            }
+        ],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), Json(req)).await.expect("Handler should succeed").0;
+    assert_eq!(res.success_ids, vec!["glist-1"]);
+
+    // 2. Test Update (Base Client Version = 2. DB has 1. std::cmp::max(1, 2) + 1 = 3)
+    let updated_list_data = GroceryListData {
+        id: "glist-1".to_string(),
+        name: "Updated Grocery List".to_string(),
+        owner_id: Some("owner-1".to_string()),
+        created_at: 123456789,
+        version: 2,
+    };
+    let req_update = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![
+            GroceryListChangeDelta {
+                id: "glist-1".to_string(),
+                operation_type: OperationType::Update,
+                version: 2,
+                data: Some(serde_json::to_value(&updated_list_data).unwrap()),
+            }
+        ],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res_update = sync_handler(State(state.clone()), Json(req_update)).await.expect("Handler should succeed").0;
+    assert_eq!(res_update.success_ids, vec!["glist-1"]);
+
+    let db_row = sqlx::query!("SELECT name, version FROM grocery_lists WHERE id = $1", "glist-1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_row.name, "Updated Grocery List");
+    assert_eq!(db_row.version, 3);
+
+    // 3. Test Delete
+    let req_delete = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![
+            GroceryListChangeDelta {
+                id: "glist-1".to_string(),
+                operation_type: OperationType::Delete,
+                version: 3,
+                data: None,
+            }
+        ],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res_delete = sync_handler(State(state.clone()), Json(req_delete)).await.expect("Handler should succeed").0;
+    assert_eq!(res_delete.success_ids, vec!["glist-1"]);
+
+    let count = sqlx::query_scalar!("SELECT COUNT(*) FROM grocery_lists WHERE id = $1", "glist-1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, Some(0));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_grocery_list_members(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // Pre-insert grocery list so the member foreign key constraint is satisfied
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version) VALUES ($1, $2, $3, $4)",
+        "glist-2", "Test List", 0_i64, 1_i32
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 1. Test Insert
+    let member_data = GroceryListMemberData {
+        id: "member-1".to_string(),
+        list_id: "glist-2".to_string(),
+        user_id: "user-123".to_string(),
+        role: "ADMIN".to_string(),
+        joined_at: 123456,
+        version: 1,
+    };
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![
+            GroceryListMemberChangeDelta {
+                id: "member-1".to_string(),
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: Some(serde_json::to_value(&member_data).unwrap()),
+            }
+        ],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), Json(req)).await.expect("Handler should succeed").0;
+    assert_eq!(res.success_ids, vec!["member-1"]);
+
+    // 2. Test Update (Base Client Version = 2. DB has 1. std::cmp::max(1, 2) + 1 = 3)
+    let updated_member_data = GroceryListMemberData {
+        id: "member-1".to_string(),
+        list_id: "glist-2".to_string(),
+        user_id: "user-123".to_string(),
+        role: "MEMBER".to_string(),
+        joined_at: 123456,
+        version: 2,
+    };
+    let req_update = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![
+            GroceryListMemberChangeDelta {
+                id: "member-1".to_string(),
+                operation_type: OperationType::Update,
+                version: 2,
+                data: Some(serde_json::to_value(&updated_member_data).unwrap()),
+            }
+        ],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res_update = sync_handler(State(state.clone()), Json(req_update)).await.expect("Handler should succeed").0;
+    assert_eq!(res_update.success_ids, vec!["member-1"]);
+
+    let db_row = sqlx::query!("SELECT role, version FROM grocery_list_members WHERE id = $1", "member-1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_row.role, "MEMBER");
+    assert_eq!(db_row.version, 3);
+
+    // 3. Test Delete
+    let req_delete = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![
+            GroceryListMemberChangeDelta {
+                id: "member-1".to_string(),
+                operation_type: OperationType::Delete,
+                version: 3,
+                data: None,
+            }
+        ],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res_delete = sync_handler(State(state.clone()), Json(req_delete)).await.expect("Handler should succeed").0;
+    assert_eq!(res_delete.success_ids, vec!["member-1"]);
+
+    let count = sqlx::query_scalar!("SELECT COUNT(*) FROM grocery_list_members WHERE id = $1", "member-1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, Some(0));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_stores_and_categories(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // 1. Test Stores Insert
+    let store_data = StoreData {
+        id: 10,
+        name: "Supermarket".to_string(),
+        position: 1,
+        is_default_supported: true,
+        user_id: None,
+        version: 1,
+    };
+    // Test Categories Insert
+    let category_data = CategoryData {
+        id: 20,
+        name: "Produce".to_string(),
+        position: 2,
+        user_id: None,
+        version: 1,
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![
+            StoreChangeDelta {
+                id: 10,
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: Some(serde_json::to_value(&store_data).unwrap()),
+            }
+        ],
+        category_changes: vec![
+            CategoryChangeDelta {
+                id: 20,
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: Some(serde_json::to_value(&category_data).unwrap()),
+            }
+        ],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), Json(req)).await.expect("Handler should succeed").0;
+    assert!(res.success_ids.contains(&"10".to_string()));
+    assert!(res.success_ids.contains(&"20".to_string()));
+
+    // 2. Test Stores & Categories Update
+    let updated_store = StoreData {
+        id: 10,
+        name: "Updated Supermarket".to_string(),
+        position: 1,
+        is_default_supported: true,
+        user_id: None,
+        version: 2,
+    };
+    let updated_category = CategoryData {
+        id: 20,
+        name: "Updated Produce".to_string(),
+        position: 2,
+        user_id: None,
+        version: 2,
+    };
+    let req_update = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![
+            StoreChangeDelta {
+                id: 10,
+                operation_type: OperationType::Update,
+                version: 2,
+                data: Some(serde_json::to_value(&updated_store).unwrap()),
+            }
+        ],
+        category_changes: vec![
+            CategoryChangeDelta {
+                id: 20,
+                operation_type: OperationType::Update,
+                version: 2,
+                data: Some(serde_json::to_value(&updated_category).unwrap()),
+            }
+        ],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res_update = sync_handler(State(state.clone()), Json(req_update)).await.expect("Handler should succeed").0;
+    assert!(res_update.success_ids.contains(&"10".to_string()));
+    assert!(res_update.success_ids.contains(&"20".to_string()));
+
+    let db_store = sqlx::query!("SELECT name FROM stores WHERE id = $1", 10)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_store.name, "Updated Supermarket");
+
+    let db_cat = sqlx::query!("SELECT name FROM categories WHERE id = $1", 20)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_cat.name, "Updated Produce");
+
+    // 3. Test Delete
+    let req_delete = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![
+            StoreChangeDelta {
+                id: 10,
+                operation_type: OperationType::Delete,
+                version: 3,
+                data: None,
+            }
+        ],
+        category_changes: vec![
+            CategoryChangeDelta {
+                id: 20,
+                operation_type: OperationType::Delete,
+                version: 3,
+                data: None,
+            }
+        ],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res_delete = sync_handler(State(state.clone()), Json(req_delete)).await.expect("Handler should succeed").0;
+    assert!(res_delete.success_ids.contains(&"10".to_string()));
+    assert!(res_delete.success_ids.contains(&"20".to_string()));
+
+    let store_count = sqlx::query_scalar!("SELECT COUNT(*) FROM stores WHERE id = $1", 10)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(store_count, Some(0));
+
+    let cat_count = sqlx::query_scalar!("SELECT COUNT(*) FROM categories WHERE id = $1", 20)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cat_count, Some(0));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // Pre-create grocery list and store
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version) VALUES ($1, $2, $3, $4)",
+        "glist-3", "Test List", 0_i64, 1_i32
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", version) VALUES ($1, $2, $3, $4, $5)",
+        100, "Test Store", 1, true, 1_i32
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 1. Test Insert
+    let item_data = GroceryItemData {
+        id: 50,
+        name: "Apples".to_string(),
+        quantity: "5".to_string(),
+        is_bought: false,
+        created_at: 1000,
+        position: 1,
+        category_id: None,
+        times_bought: 0,
+        user_id: None,
+        is_active: true,
+        list_id: Some("glist-3".to_string()),
+        unit: None,
+        notes: None,
+        version: 1,
+        is_deleted: false,
+    };
+
+    let store_info = GroceryItemStoreInfoData {
+        grocery_item_id: 50,
+        store_id: 100,
+        price: Some(1.99),
+        is_available: true,
+        user_id: None,
+        version: 1,
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![
+            GroceryChangeDelta {
+                id: 50,
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: Some(serde_json::to_value(&item_data).unwrap()),
+            }
+        ],
+        grocery_item_store_info_changes: vec![
+            GroceryItemStoreInfoChangeDelta {
+                grocery_item_id: 50,
+                store_id: 100,
+                operation_type: OperationType::Insert,
+                version: 1,
+                data: Some(serde_json::to_value(&store_info).unwrap()),
+            }
+        ],
+    };
+
+    let res = sync_handler(State(state.clone()), Json(req)).await.expect("Handler should succeed").0;
+    assert!(res.success_ids.contains(&"50".to_string()));
+    assert!(res.success_ids.contains(&"50-100".to_string()));
+
+    // 2. Test Update
+    let updated_item = GroceryItemData {
+        id: 50,
+        name: "Green Apples".to_string(),
+        quantity: "10".to_string(),
+        is_bought: true,
+        created_at: 1000,
+        position: 1,
+        category_id: None,
+        times_bought: 1,
+        user_id: None,
+        is_active: true,
+        list_id: Some("glist-3".to_string()),
+        unit: None,
+        notes: None,
+        version: 2,
+        is_deleted: false,
+    };
+
+    let updated_store_info = GroceryItemStoreInfoData {
+        grocery_item_id: 50,
+        store_id: 100,
+        price: Some(2.49),
+        is_available: true,
+        user_id: None,
+        version: 2,
+    };
+
+    let req_update = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![
+            GroceryChangeDelta {
+                id: 50,
+                operation_type: OperationType::Update,
+                version: 2,
+                data: Some(serde_json::to_value(&updated_item).unwrap()),
+            }
+        ],
+        grocery_item_store_info_changes: vec![
+            GroceryItemStoreInfoChangeDelta {
+                grocery_item_id: 50,
+                store_id: 100,
+                operation_type: OperationType::Update,
+                version: 2,
+                data: Some(serde_json::to_value(&updated_store_info).unwrap()),
+            }
+        ],
+    };
+
+    let res_update = sync_handler(State(state.clone()), Json(req_update)).await.expect("Handler should succeed").0;
+    assert!(res_update.success_ids.contains(&"50".to_string()));
+    assert!(res_update.success_ids.contains(&"50-100".to_string()));
+
+    let db_item = sqlx::query!("SELECT name, quantity, \"isBought\" as is_bought FROM grocery_items WHERE id = $1", 50)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_item.name, "Green Apples");
+    assert_eq!(db_item.quantity, "10");
+    assert!(db_item.is_bought);
+
+    let db_info = sqlx::query!("SELECT price FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2", 50, 100)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_info.price, Some(2.49));
+
+    // 3. Test Delete
+    let req_delete = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![
+            GroceryChangeDelta {
+                id: 50,
+                operation_type: OperationType::Delete,
+                version: 3,
+                data: None,
+            }
+        ],
+        grocery_item_store_info_changes: vec![
+            GroceryItemStoreInfoChangeDelta {
+                grocery_item_id: 50,
+                store_id: 100,
+                operation_type: OperationType::Delete,
+                version: 3,
+                data: None,
+            }
+        ],
+    };
+
+    let res_delete = sync_handler(State(state.clone()), Json(req_delete)).await.expect("Handler should succeed").0;
+    assert!(res_delete.success_ids.contains(&"50".to_string()));
+    assert!(res_delete.success_ids.contains(&"50-100".to_string()));
+
+    // Grocery item is soft-deleted, so is_deleted should be true
+    let db_deleted_item = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", 50)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(db_deleted_item.is_deleted);
+
+    // Store info is hard-deleted, so count should be 0
+    let info_count = sqlx::query_scalar!("SELECT COUNT(*) FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2", 50, 100)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(info_count, Some(0));
+}

@@ -1,12 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, version FROM grocery_items WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT name, version FROM grocery_lists WHERE id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
-        "type_info": "Int4"
+        "name": "name",
+        "type_info": "Text"
       },
       {
         "ordinal": 1,
@@ -16,7 +16,6 @@
     ],
     "parameters": {
       "Left": [
-        "Timestamptz",
         "Text"
       ]
     },
@@ -25,5 +24,5 @@
       false
     ]
   },
-  "hash": "a5dadeba9b6478e10ced777bb3e7649d39c10bc8c3b71c22b36ba5bf0c5651ee"
+  "hash": "f6d946286c25454b83f68bec2956fcfc6c988808d804a9063590c6cb77bfcd1c"
 }

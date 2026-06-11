@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE grocery_item_store_info SET version = $1, updated_at = $2, updated_by_client = $3 WHERE \"groceryItemId\" = $4 AND \"storeId\" = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "340d4b32246f87f167c88149d625fd302474b6bfe69af11803644659951a15ad"
+}

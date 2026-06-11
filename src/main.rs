@@ -33,6 +33,17 @@ async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::erro
     Ok(pool)
 }
 
+async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // Ping the database
+    match sqlx::query("SELECT 1").execute(&state.db_pool).await {
+        Ok(_) => (StatusCode::OK, "OK").into_response(),
+        Err(err) => {
+            tracing::error!("Readiness probe database connection failed: {:?}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database connection unhealthy").into_response()
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize structured JSON logging
@@ -49,6 +60,7 @@ async fn main() {
     let api_routes = Router::new()
         .route("/sync", axum::routing::post(routes::sync::sync_handler))
         .route("/hc", get(|| async { "OK" }))
+        .route("/ready", get(readiness_handler)) // Deep/Readiness check
         .route_layer(middleware::from_fn_with_state(app_state.clone(), require_google_auth))
         .with_state(app_state);
 
@@ -56,7 +68,7 @@ async fn main() {
     let app = Router::new()
         .route("/hello", get(|| async { "world" }))
         .route("/hellov2", get(|| async { "world2" }))
-        .route("/healthcheck", get(|| async { "OK" }))
+        .route("/healthcheck", get(|| async { "OK" })) // Shallow/Liveness check
         .nest("/api", api_routes);
 
     // Read the port from the environment, falling back to 3000
@@ -114,6 +126,27 @@ async fn require_google_auth(
 }
 
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
     tracing::info!("Shutting down gracefully...");
 }

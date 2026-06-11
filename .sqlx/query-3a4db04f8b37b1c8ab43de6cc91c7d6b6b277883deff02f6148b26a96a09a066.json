@@ -1,0 +1,125 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date,\n                \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"userId\" as user_id, \"parentId\" as parent_id, \"isDaily\" as is_daily,\n                \"dueDate\" as due_date, description, \"listId\" as list_id, priority, sync_state, version, is_deleted\n               FROM todo_items\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_completed",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "position",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "scheduled_date",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "recurrence_rule",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "scheduled_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_daily",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "due_date",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "list_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "priority",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "sync_state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3a4db04f8b37b1c8ab43de6cc91c7d6b6b277883deff02f6148b26a96a09a066"
+}

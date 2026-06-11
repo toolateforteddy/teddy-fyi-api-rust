@@ -21,6 +21,9 @@ test:
 clean:
 	cargo clean
 
+prepare:
+	cargo sqlx prepare -- --tests
+
 # Docker commands
 docker-build:
 	docker build -t teddy-fyi-api-rust:latest .

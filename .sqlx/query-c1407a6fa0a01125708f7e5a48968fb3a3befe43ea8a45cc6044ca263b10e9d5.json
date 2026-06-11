@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE grocery_lists SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c1407a6fa0a01125708f7e5a48968fb3a3befe43ea8a45cc6044ca263b10e9d5"
+}

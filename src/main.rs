@@ -1,3 +1,6 @@
+pub mod routes;
+pub mod state;
+
 use axum::{
     extract::{Request, State},
     http::{header, StatusCode},
@@ -7,11 +10,27 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
+use sqlx::postgres::PgPoolOptions;
+use state::AppState;
 
-#[derive(Clone)]
-struct AppState {
-    client_id: String,
-    google_client: Arc<google_oauth::AsyncClient>,
+
+async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
+    let database_url = std::env::var("DATABASE_URL")?;
+
+    // 2. Spin up the centralized thread connection pool
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await?;
+
+    // 3. FORCE RUN OUTSTANDING MIGRATIONS ON STARTUP
+    // This looks at our local `/migrations` folder and updates Neon instantly
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await?;
+
+    println!("🚀 Database successfully synced and serverless migrations verified!");
+    Ok(pool)
 }
 
 #[tokio::main]
@@ -23,19 +42,22 @@ async fn main() {
     let app_state = AppState {
         client_id: client_id.clone(),
         google_client: Arc::new(google_oauth::AsyncClient::new(&client_id)),
+        db_pool: init_postgres().await.expect("Failed to initialize PostgreSQL"),
     };
 
-    // Authed routes group
-    let authed_routes = Router::new()
-        .route("/hello", get(|| async { "authed/world" }))
-        .route_layer(middleware::from_fn_with_state(app_state, require_google_auth));
+    // api routes group
+    let api_routes = Router::new()
+        .route("/sync", axum::routing::post(routes::sync::sync_handler))
+        .route("/hc", get(|| async { "OK" }))
+        .route_layer(middleware::from_fn_with_state(app_state.clone(), require_google_auth))
+        .with_state(app_state);
 
     // Build our application with multiple routes
     let app = Router::new()
         .route("/hello", get(|| async { "world" }))
         .route("/hellov2", get(|| async { "world2" }))
         .route("/healthcheck", get(|| async { "OK" }))
-        .nest("/authed", authed_routes);
+        .nest("/api", api_routes);
 
     // Read the port from the environment, falling back to 3000
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());

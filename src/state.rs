@@ -1,0 +1,8 @@
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub client_id: String,
+    pub google_client: Arc<google_oauth::AsyncClient>,
+    pub db_pool: sqlx::Pool<sqlx::Postgres>,
+}

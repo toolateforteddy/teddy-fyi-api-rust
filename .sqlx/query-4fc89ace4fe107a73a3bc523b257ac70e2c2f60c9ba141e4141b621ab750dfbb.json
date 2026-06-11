@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE todo_items SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4fc89ace4fe107a73a3bc523b257ac70e2c2f60c9ba141e4141b621ab750dfbb"
+}

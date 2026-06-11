@@ -1,6 +1,6 @@
+use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
-use crate::routes::sync::types::*;
 
 pub async fn process_todo_list_changes(
     tx: &mut Transaction<'_, Postgres>,
@@ -16,9 +16,12 @@ pub async fn process_todo_list_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoListData>(data.clone()) {
                         Ok(item) => {
-                            let record = sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
-                                .fetch_optional(&mut **tx)
-                                .await?;
+                            let record = sqlx::query!(
+                                "SELECT version FROM todo_lists WHERE id = $1",
+                                change.id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
                             let next_version = if let Some(row) = record {
                                 std::cmp::max(row.version, item.version) + 1
@@ -56,7 +59,11 @@ pub async fn process_todo_list_changes(
                             .await?;
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize TodoListData for todo list {}: {:?}", change.id, err);
+                            tracing::error!(
+                                "Failed to deserialize TodoListData for todo list {}: {:?}",
+                                change.id,
+                                err
+                            );
                         }
                     }
                 }
@@ -67,9 +74,12 @@ pub async fn process_todo_list_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoListData>(data.clone()) {
                         Ok(item) => {
-                            let record = sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
-                                .fetch_optional(&mut **tx)
-                                .await?;
+                            let record = sqlx::query!(
+                                "SELECT version FROM todo_lists WHERE id = $1",
+                                change.id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
                             let next_version = if let Some(row) = record {
                                 if change.version < row.version {
@@ -113,13 +123,18 @@ pub async fn process_todo_list_changes(
                             .await?;
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize TodoListData for todo list {}: {:?}", change.id, err);
+                            tracing::error!(
+                                "Failed to deserialize TodoListData for todo list {}: {:?}",
+                                change.id,
+                                err
+                            );
                         }
                     }
                 } else {
-                    let record = sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
-                        .fetch_optional(&mut **tx)
-                        .await?;
+                    let record =
+                        sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
                     if let Some(row) = record {
                         let next_version = row.version + 1;

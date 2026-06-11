@@ -1,6 +1,6 @@
+use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
-use crate::routes::sync::types::*;
 
 pub async fn process_category_changes(
     tx: &mut Transaction<'_, Postgres>,
@@ -17,9 +17,12 @@ pub async fn process_category_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<CategoryData>(data.clone()) {
                         Ok(item) => {
-                            let record = sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
-                                .fetch_optional(&mut **tx)
-                                .await?;
+                            let record = sqlx::query!(
+                                "SELECT version FROM categories WHERE id = $1",
+                                change.id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
                             let next_version = if let Some(row) = record {
                                 std::cmp::max(row.version, item.version) + 1
@@ -52,7 +55,11 @@ pub async fn process_category_changes(
                             .await?;
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize CategoryData for category {}: {:?}", change.id, err);
+                            tracing::error!(
+                                "Failed to deserialize CategoryData for category {}: {:?}",
+                                change.id,
+                                err
+                            );
                         }
                     }
                 }
@@ -63,9 +70,12 @@ pub async fn process_category_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<CategoryData>(data.clone()) {
                         Ok(item) => {
-                            let record = sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
-                                .fetch_optional(&mut **tx)
-                                .await?;
+                            let record = sqlx::query!(
+                                "SELECT version FROM categories WHERE id = $1",
+                                change.id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
                             let next_version = if let Some(row) = record {
                                 if change.version < row.version {
@@ -104,13 +114,18 @@ pub async fn process_category_changes(
                             .await?;
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize CategoryData for category {}: {:?}", change.id, err);
+                            tracing::error!(
+                                "Failed to deserialize CategoryData for category {}: {:?}",
+                                change.id,
+                                err
+                            );
                         }
                     }
                 } else {
-                    let record = sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
-                        .fetch_optional(&mut **tx)
-                        .await?;
+                    let record =
+                        sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
                     if let Some(row) = record {
                         let next_version = row.version + 1;
@@ -135,12 +150,9 @@ pub async fn process_category_changes(
                 success_ids.push(string_id);
             }
             OperationType::Delete => {
-                sqlx::query!(
-                    "DELETE FROM categories WHERE id = $1",
-                    change.id
-                )
-                .execute(&mut **tx)
-                .await?;
+                sqlx::query!("DELETE FROM categories WHERE id = $1", change.id)
+                    .execute(&mut **tx)
+                    .await?;
                 success_ids.push(string_id);
             }
         }

@@ -1,6 +1,6 @@
+use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
-use crate::routes::sync::types::*;
 
 pub async fn process_grocery_item_store_info_changes(
     tx: &mut Transaction<'_, Postgres>,
@@ -13,7 +13,11 @@ pub async fn process_grocery_item_store_info_changes(
         let string_id = format!("{}-{}", change.grocery_item_id, change.store_id);
         match change.operation_type {
             OperationType::Insert => {
-                tracing::info!("Inserting grocery item store info for grocery {}, store {}", change.grocery_item_id, change.store_id);
+                tracing::info!(
+                    "Inserting grocery item store info for grocery {}, store {}",
+                    change.grocery_item_id,
+                    change.store_id
+                );
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryItemStoreInfoData>(data.clone()) {
                         Ok(item) => {
@@ -56,14 +60,21 @@ pub async fn process_grocery_item_store_info_changes(
                             .await?;
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize GroceryItemStoreInfoData: {:?}", err);
+                            tracing::error!(
+                                "Failed to deserialize GroceryItemStoreInfoData: {:?}",
+                                err
+                            );
                         }
                     }
                 }
                 success_ids.push(string_id);
             }
             OperationType::Update => {
-                tracing::info!("Updating grocery item store info for grocery {}, store {}", change.grocery_item_id, change.store_id);
+                tracing::info!(
+                    "Updating grocery item store info for grocery {}, store {}",
+                    change.grocery_item_id,
+                    change.store_id
+                );
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryItemStoreInfoData>(data.clone()) {
                         Ok(item) => {
@@ -112,7 +123,10 @@ pub async fn process_grocery_item_store_info_changes(
                             .await?;
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize GroceryItemStoreInfoData: {:?}", err);
+                            tracing::error!(
+                                "Failed to deserialize GroceryItemStoreInfoData: {:?}",
+                                err
+                            );
                         }
                     }
                 } else {

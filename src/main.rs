@@ -9,10 +9,9 @@ use axum::{
     routing::get,
     Router,
 };
-use std::sync::Arc;
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
-
+use std::sync::Arc;
 
 async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")?;
@@ -25,9 +24,7 @@ async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::erro
 
     // 3. FORCE RUN OUTSTANDING MIGRATIONS ON STARTUP
     // This looks at our local `/migrations` folder and updates Neon instantly
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     println!("🚀 Database successfully synced and serverless migrations verified!");
     Ok(pool)
@@ -39,7 +36,11 @@ async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
         Ok(_) => (StatusCode::OK, "OK").into_response(),
         Err(err) => {
             tracing::error!("Readiness probe database connection failed: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Database connection unhealthy").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database connection unhealthy",
+            )
+                .into_response()
         }
     }
 }
@@ -53,7 +54,9 @@ async fn main() {
     let app_state = AppState {
         client_id: client_id.clone(),
         google_client: Arc::new(google_oauth::AsyncClient::new(&client_id)),
-        db_pool: init_postgres().await.expect("Failed to initialize PostgreSQL"),
+        db_pool: init_postgres()
+            .await
+            .expect("Failed to initialize PostgreSQL"),
     };
 
     // api routes group
@@ -61,7 +64,10 @@ async fn main() {
         .route("/sync", axum::routing::post(routes::sync::sync_handler))
         .route("/hc", get(|| async { "OK" }))
         .route("/ready", get(readiness_handler)) // Deep/Readiness check
-        .route_layer(middleware::from_fn_with_state(app_state.clone(), require_google_auth))
+        .route_layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            require_google_auth,
+        ))
         .with_state(app_state);
 
     // Build our application with multiple routes
@@ -78,7 +84,7 @@ async fn main() {
     // Bind to 0.0.0.0 so it is accessible outside the Docker container
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
-    
+
     // Start serving the Axum application
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

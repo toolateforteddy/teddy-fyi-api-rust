@@ -1,6 +1,6 @@
+use axum::{http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use axum::{http::StatusCode, response::IntoResponse};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -89,13 +89,21 @@ pub struct GroceryItemStoreInfoChangeDelta {
 pub struct SyncRequest {
     pub last_synced_at: Option<DateTime<Utc>>,
     pub client_id: String,
+    #[serde(default)]
     pub todo_list_changes: Vec<TodoListChangeDelta>,
+    #[serde(default)]
     pub todo_changes: Vec<TodoChangeDelta>,
+    #[serde(default)]
     pub grocery_list_changes: Vec<GroceryListChangeDelta>,
+    #[serde(default)]
     pub grocery_list_member_changes: Vec<GroceryListMemberChangeDelta>,
+    #[serde(default)]
     pub store_changes: Vec<StoreChangeDelta>,
+    #[serde(default)]
     pub category_changes: Vec<CategoryChangeDelta>,
+    #[serde(default)]
     pub grocery_changes: Vec<GroceryChangeDelta>,
+    #[serde(default)]
     pub grocery_item_store_info_changes: Vec<GroceryItemStoreInfoChangeDelta>,
 }
 
@@ -132,7 +140,11 @@ impl IntoResponse for AppError {
             }
         };
 
-        (status, axum::Json(serde_json::json!({ "error": error_message }))).into_response()
+        (
+            status,
+            axum::Json(serde_json::json!({ "error": error_message })),
+        )
+            .into_response()
     }
 }
 

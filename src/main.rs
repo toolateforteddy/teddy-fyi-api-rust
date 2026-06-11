@@ -1,5 +1,6 @@
 pub mod routes;
 pub mod state;
+pub mod auth;
 
 use axum::{
     extract::{Request, State},
@@ -51,12 +52,14 @@ async fn main() {
     tracing_subscriber::fmt().json().init();
 
     let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let app_state = AppState {
         client_id: client_id.clone(),
         google_client: Arc::new(google_oauth::AsyncClient::new(&client_id)),
         db_pool: init_postgres()
             .await
             .expect("Failed to initialize PostgreSQL"),
+        jwt_secret,
     };
 
     // api routes group
@@ -66,16 +69,23 @@ async fn main() {
         .route("/ready", get(readiness_handler)) // Deep/Readiness check
         .route_layer(middleware::from_fn_with_state(
             app_state.clone(),
-            require_google_auth,
+            auth::middleware::require_auth,
         ))
-        .with_state(app_state);
+        .with_state(app_state.clone());
+
+    // Public auth routes
+    let auth_routes = Router::new()
+        .route("/login", axum::routing::post(auth::handlers::login_handler))
+        .route("/refresh", axum::routing::post(auth::handlers::refresh_handler))
+        .with_state(app_state.clone());
 
     // Build our application with multiple routes
     let app = Router::new()
         .route("/hello", get(|| async { "world" }))
         .route("/hellov2", get(|| async { "world2" }))
         .route("/healthcheck", get(|| async { "OK" })) // Shallow/Liveness check
-        .nest("/api", api_routes);
+        .nest("/api", api_routes)
+        .nest("/auth", auth_routes);
 
     // Read the port from the environment, falling back to 3000
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
@@ -90,45 +100,6 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
-}
-
-/// Middleware to check for a valid Google Auth token
-async fn require_google_auth(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let auth_header = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .filter(|s| s.starts_with("Bearer "));
-
-    // Helper to generate the redirect response
-    let get_redirect = || {
-        // Note: Make sure you URL-encode this and register it exactly in GCP under "Authorized redirect URIs"
-        let redirect_uri = "https%3A%2F%2Fteddy.fyi%2Flogin";
-        let auth_url = format!(
-            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=id_token&scope=openid%20email%20profile&nonce=default_nonce",
-            state.client_id, redirect_uri
-        );
-        Ok(Redirect::temporary(&auth_url).into_response())
-    };
-
-    let _token = match auth_header {
-        Some(header) => &header["Bearer ".len()..],
-        None => return get_redirect(),
-    };
-
-    match state.google_client.validate_id_token(_token).await {
-        Ok(_verified_token) => {}
-        Err(err) => {
-            tracing::warn!("Token verification failed: {:?}", err);
-            return get_redirect();
-        }
-    }
-
-    Ok(next.run(req).await)
 }
 
 async fn shutdown_signal() {

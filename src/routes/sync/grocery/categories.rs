@@ -15,112 +15,92 @@ pub async fn process_category_changes(
             OperationType::Insert => {
                 tracing::info!("Inserting category {}", change.id);
                 if let Some(ref data) = change.data {
-                    match serde_json::from_value::<CategoryData>(data.clone()) {
-                        Ok(item) => {
-                            let record = sqlx::query!(
-                                "SELECT version FROM categories WHERE id = $1",
-                                change.id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                    let item = serde_json::from_value::<CategoryData>(data.clone())?;
+                    let record = sqlx::query!(
+                        "SELECT version FROM categories WHERE id = $1",
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
 
-                            let next_version = if let Some(row) = record {
-                                std::cmp::max(row.version, item.version) + 1
-                            } else {
-                                item.version
-                            };
+                    let next_version = if let Some(row) = record {
+                        std::cmp::max(row.version, item.version) + 1
+                    } else {
+                        item.version
+                    };
 
-                            sqlx::query(
-                                r#"
-                                INSERT INTO categories (
-                                    id, name, position, "userId", version, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                                ON CONFLICT (id) DO UPDATE SET
-                                    name = EXCLUDED.name,
-                                    position = EXCLUDED.position,
-                                    "userId" = EXCLUDED."userId",
-                                    version = EXCLUDED.version,
-                                    updated_at = EXCLUDED.updated_at,
-                                    updated_by_client = EXCLUDED.updated_by_client
-                                "#,
-                            )
-                            .bind(item.id)
-                            .bind(&item.name)
-                            .bind(item.position)
-                            .bind(&item.user_id)
-                            .bind(next_version)
-                            .bind(server_timestamp)
-                            .bind(client_id)
-                            .execute(&mut **tx)
-                            .await?;
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                "Failed to deserialize CategoryData for category {}: {:?}",
-                                change.id,
-                                err
-                            );
-                        }
-                    }
+                    sqlx::query(
+                        r#"
+                        INSERT INTO categories (
+                            id, name, position, "userId", version, updated_at, updated_by_client
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            position = EXCLUDED.position,
+                            "userId" = EXCLUDED."userId",
+                            version = EXCLUDED.version,
+                            updated_at = EXCLUDED.updated_at,
+                            updated_by_client = EXCLUDED.updated_by_client
+                        "#,
+                    )
+                    .bind(item.id)
+                    .bind(&item.name)
+                    .bind(item.position)
+                    .bind(&item.user_id)
+                    .bind(next_version)
+                    .bind(server_timestamp)
+                    .bind(client_id)
+                    .execute(&mut **tx)
+                    .await?;
                 }
                 success_ids.push(string_id);
             }
             OperationType::Update => {
                 tracing::info!("Updating category {}", change.id);
                 if let Some(ref data) = change.data {
-                    match serde_json::from_value::<CategoryData>(data.clone()) {
-                        Ok(item) => {
-                            let record = sqlx::query!(
-                                "SELECT version FROM categories WHERE id = $1",
-                                change.id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                    let item = serde_json::from_value::<CategoryData>(data.clone())?;
+                    let record = sqlx::query!(
+                        "SELECT version FROM categories WHERE id = $1",
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
 
-                            let next_version = if let Some(row) = record {
-                                if change.version < row.version {
-                                    tracing::warn!(
-                                        "MVCC Conflict for category {}. Client version: {}, Server version: {}. Resolving via LWW.",
-                                        change.id, change.version, row.version
-                                    );
-                                }
-                                std::cmp::max(row.version, change.version) + 1
-                            } else {
-                                change.version
-                            };
-
-                            sqlx::query(
-                                r#"
-                                INSERT INTO categories (
-                                    id, name, position, "userId", version, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                                ON CONFLICT (id) DO UPDATE SET
-                                    name = EXCLUDED.name,
-                                    position = EXCLUDED.position,
-                                    "userId" = EXCLUDED."userId",
-                                    version = EXCLUDED.version,
-                                    updated_at = EXCLUDED.updated_at,
-                                    updated_by_client = EXCLUDED.updated_by_client
-                                "#,
-                            )
-                            .bind(item.id)
-                            .bind(&item.name)
-                            .bind(item.position)
-                            .bind(&item.user_id)
-                            .bind(next_version)
-                            .bind(server_timestamp)
-                            .bind(client_id)
-                            .execute(&mut **tx)
-                            .await?;
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                "Failed to deserialize CategoryData for category {}: {:?}",
-                                change.id,
-                                err
+                    let next_version = if let Some(row) = record {
+                        if change.version < row.version {
+                            tracing::warn!(
+                                "MVCC Conflict for category {}. Client version: {}, Server version: {}. Resolving via LWW.",
+                                change.id, change.version, row.version
                             );
                         }
-                    }
+                        std::cmp::max(row.version, change.version) + 1
+                    } else {
+                        change.version
+                    };
+
+                    sqlx::query(
+                        r#"
+                        INSERT INTO categories (
+                            id, name, position, "userId", version, updated_at, updated_by_client
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            position = EXCLUDED.position,
+                            "userId" = EXCLUDED."userId",
+                            version = EXCLUDED.version,
+                            updated_at = EXCLUDED.updated_at,
+                            updated_by_client = EXCLUDED.updated_by_client
+                        "#,
+                    )
+                    .bind(item.id)
+                    .bind(&item.name)
+                    .bind(item.position)
+                    .bind(&item.user_id)
+                    .bind(next_version)
+                    .bind(server_timestamp)
+                    .bind(client_id)
+                    .execute(&mut **tx)
+                    .await?;
                 } else {
                     let record =
                         sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)

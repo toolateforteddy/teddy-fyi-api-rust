@@ -1,6 +1,48 @@
 use axum::{http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer};
+
+pub fn deserialize_i32_from_string_or_number<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(i32),
+    }
+
+    match StringOrNumber::deserialize(deserializer)? {
+        StringOrNumber::String(s) => s.parse::<i32>().map_err(serde::de::Error::custom),
+        StringOrNumber::Number(n) => Ok(n),
+    }
+}
+
+pub fn deserialize_option_i32_from_string_or_number<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(i32),
+        Null,
+    }
+
+    match Option::<StringOrNumber>::deserialize(deserializer)? {
+        Some(StringOrNumber::String(s)) => {
+            if s.is_empty() || s == "null" {
+                Ok(None)
+            } else {
+                s.parse::<i32>().map(Some).map_err(serde::de::Error::custom)
+            }
+        }
+        Some(StringOrNumber::Number(n)) => Ok(Some(n)),
+        Some(StringOrNumber::Null) | None => Ok(None),
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -48,6 +90,7 @@ pub struct GroceryListMemberChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StoreChangeDelta {
+    #[serde(deserialize_with = "deserialize_i32_from_string_or_number")]
     pub id: i32,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
@@ -57,6 +100,7 @@ pub struct StoreChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CategoryChangeDelta {
+    #[serde(deserialize_with = "deserialize_i32_from_string_or_number")]
     pub id: i32,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
@@ -66,6 +110,7 @@ pub struct CategoryChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryChangeDelta {
+    #[serde(deserialize_with = "deserialize_i32_from_string_or_number")]
     pub id: i32,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
@@ -75,9 +120,9 @@ pub struct GroceryChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemStoreInfoChangeDelta {
-    #[serde(rename = "groceryItemId")]
+    #[serde(rename = "groceryItemId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub grocery_item_id: i32,
-    #[serde(rename = "storeId")]
+    #[serde(rename = "storeId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub store_id: i32,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
@@ -233,28 +278,33 @@ pub struct GroceryListMemberData {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StoreData {
+    #[serde(deserialize_with = "deserialize_i32_from_string_or_number")]
     pub id: i32,
     pub name: String,
+    #[serde(default)]
     pub position: i32,
-    #[serde(rename = "isDefaultSupported")]
+    #[serde(default, rename = "isDefaultSupported")]
     pub is_default_supported: bool,
-    #[serde(rename = "userId")]
+    #[serde(default, rename = "userId")]
     pub user_id: Option<String>,
     pub version: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CategoryData {
+    #[serde(deserialize_with = "deserialize_i32_from_string_or_number")]
     pub id: i32,
     pub name: String,
+    #[serde(default)]
     pub position: i32,
-    #[serde(rename = "userId")]
+    #[serde(default, rename = "userId")]
     pub user_id: Option<String>,
     pub version: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemData {
+    #[serde(deserialize_with = "deserialize_i32_from_string_or_number")]
     pub id: i32,
     pub name: String,
     pub quantity: String,
@@ -263,7 +313,7 @@ pub struct GroceryItemData {
     #[serde(rename = "createdAt")]
     pub created_at: i64,
     pub position: i32,
-    #[serde(rename = "categoryId")]
+    #[serde(default, rename = "categoryId", deserialize_with = "deserialize_option_i32_from_string_or_number")]
     pub category_id: Option<i32>,
     #[serde(rename = "timesBought")]
     pub times_bought: i32,
@@ -281,9 +331,9 @@ pub struct GroceryItemData {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemStoreInfoData {
-    #[serde(rename = "groceryItemId")]
+    #[serde(rename = "groceryItemId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub grocery_item_id: i32,
-    #[serde(rename = "storeId")]
+    #[serde(rename = "storeId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub store_id: i32,
     pub price: Option<f64>,
     #[serde(rename = "isAvailable")]

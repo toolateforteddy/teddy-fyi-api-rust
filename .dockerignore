@@ -1,0 +1,16 @@
+# Ignore local build artifacts
+target/
+
+# Ignore local environment variables & secrets
+.env
+.env*
+
+# Ignore git folder
+.git/
+
+# Ignore IDE configuration files
+.idea/
+.vscode/
+
+# Ignore OS-specific files
+.DS_Store

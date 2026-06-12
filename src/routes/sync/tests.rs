@@ -72,9 +72,9 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
 #[sqlx::test]
 async fn test_sync_handler_update_todo(pool: PgPool) {
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        "todo-2", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 1_i32, "client-1"
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        "todo-2", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1"
     )
     .execute(&pool)
     .await
@@ -120,9 +120,9 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
 #[sqlx::test]
 async fn test_sync_handler_delete_todo(pool: PgPool) {
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        "todo-3", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 1_i32, "client-1"
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        "todo-3", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1"
     )
     .execute(&pool)
     .await
@@ -169,9 +169,9 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
 async fn test_sync_handler_remote_mutations(pool: PgPool) {
     // Insert an old record (not fetched)
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW() - INTERVAL '1 hour')",
-        "todo-old", "Old", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 1_i32, "client-1"
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW() - INTERVAL '1 hour')",
+        "todo-old", "Old", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1"
     )
     .execute(&pool)
     .await
@@ -179,9 +179,9 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
 
     // Insert a new record (should be fetched)
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, sync_state, version, updated_by_client, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())",
-        "todo-new", "New", false, 0_i64, 0_i32, 0_i64, false, 0_i32, "SYNCED", 2_i32, "client-1"
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())",
+        "todo-new", "New", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 2_i32, "client-1"
     )
     .execute(&pool)
     .await
@@ -842,8 +842,8 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
 
     // --- 2. todo_items ---
     sqlx::query(
-        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "isDaily", priority, sync_state, version, is_deleted, updated_at, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), $12)"#
+        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "isDaily", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13)"#
     )
     .bind("todoitem-remote-1")
     .bind("Remote Todo")
@@ -853,6 +853,7 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     .bind(0_i64)
     .bind(false)
     .bind(1_i32)
+    .bind(None::<String>)
     .bind("SYNCED")
     .bind(1_i32)
     .bind(false)
@@ -918,13 +919,14 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
 
     // --- 6. categories ---
     sqlx::query(
-        r#"INSERT INTO categories (id, name, position, "userId", version, updated_at, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, NOW(), $6)"#
+        r#"INSERT INTO categories (id, name, position, "userId", icon, version, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)"#
     )
     .bind(2001)
     .bind("Remote Category")
     .bind(1)
     .bind("user-1")
+    .bind(None::<String>)
     .bind(1_i32)
     .bind(other_client)
     .execute(&mut *tx)
@@ -1025,8 +1027,8 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
 
     // --- 2. todo_items ---
     sqlx::query(
-        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "isDaily", priority, sync_state, version, is_deleted, updated_at, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), $12)"#
+        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "isDaily", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13)"#
     )
     .bind("todoitem-echo-1")
     .bind("Echo Todo")
@@ -1036,6 +1038,7 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     .bind(0_i64)
     .bind(false)
     .bind(1_i32)
+    .bind(None::<String>)
     .bind("SYNCED")
     .bind(1_i32)
     .bind(false)
@@ -1101,13 +1104,14 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
 
     // --- 6. categories ---
     sqlx::query(
-        r#"INSERT INTO categories (id, name, position, "userId", version, updated_at, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, NOW(), $6)"#
+        r#"INSERT INTO categories (id, name, position, "userId", icon, version, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)"#
     )
     .bind(2002)
     .bind("Echo Category")
     .bind(1)
     .bind("user-1")
+    .bind(None::<String>)
     .bind(1_i32)
     .bind(client_id)
     .execute(&mut *tx)

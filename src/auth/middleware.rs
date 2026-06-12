@@ -36,5 +36,7 @@ pub async fn require_auth(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    let mut req = req;
+    req.extensions_mut().insert(token_data.claims);
     Ok(next.run(req).await)
 }

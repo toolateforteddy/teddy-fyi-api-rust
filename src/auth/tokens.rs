@@ -5,7 +5,7 @@ use argon2::{
     Argon2,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: String, // user_id
     pub client_uuid: String,

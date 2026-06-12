@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n                id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date,\n                \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"userId\" as user_id, \"parentId\" as parent_id, \"isDaily\" as is_daily,\n                \"dueDate\" as due_date, description, \"listId\" as list_id, priority, sync_state, version, is_deleted\n               FROM todo_items\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT\n                id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date,\n                \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"userId\" as user_id, \"parentId\" as parent_id, \"isDaily\" as is_daily,\n                \"dueDate\" as due_date, description, \"listId\" as list_id, priority, icon, sync_state, version, is_deleted\n               FROM todo_items\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -80,16 +80,21 @@
       },
       {
         "ordinal": 15,
-        "name": "sync_state",
+        "name": "icon",
         "type_info": "Text"
       },
       {
         "ordinal": 16,
+        "name": "sync_state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "is_deleted",
         "type_info": "Bool"
       }
@@ -116,10 +121,11 @@
       true,
       true,
       false,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "3a4db04f8b37b1c8ab43de6cc91c7d6b6b277883deff02f6148b26a96a09a066"
+  "hash": "6f110b313ed6d0c71bf3f98f7da7a6694f59725cf9cf92db78b662a63698fee1"
 }

@@ -8,6 +8,7 @@ pub async fn process_category_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[CategoryChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = change.id.to_string();
@@ -32,12 +33,13 @@ pub async fn process_category_changes(
                     sqlx::query(
                         r#"
                         INSERT INTO categories (
-                            id, name, position, "userId", version, updated_at, updated_by_client
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            id, name, position, "userId", icon, version, updated_at, updated_by_client
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name,
                             position = EXCLUDED.position,
                             "userId" = EXCLUDED."userId",
+                            icon = EXCLUDED.icon,
                             version = EXCLUDED.version,
                             updated_at = EXCLUDED.updated_at,
                             updated_by_client = EXCLUDED.updated_by_client
@@ -47,11 +49,18 @@ pub async fn process_category_changes(
                     .bind(&item.name)
                     .bind(item.position)
                     .bind(&item.user_id)
+                    .bind(&item.icon)
                     .bind(next_version)
                     .bind(server_timestamp)
                     .bind(client_id)
                     .execute(&mut **tx)
                     .await?;
+
+                    upload_status.push(SuccessResult {
+                        id: string_id.clone(),
+                        version: next_version,
+                        sync_state: "SYNCED".to_string(),
+                    });
                 }
                 success_ids.push(string_id);
             }
@@ -81,12 +90,13 @@ pub async fn process_category_changes(
                     sqlx::query(
                         r#"
                         INSERT INTO categories (
-                            id, name, position, "userId", version, updated_at, updated_by_client
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            id, name, position, "userId", icon, version, updated_at, updated_by_client
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                         ON CONFLICT (id) DO UPDATE SET
                             name = EXCLUDED.name,
                             position = EXCLUDED.position,
                             "userId" = EXCLUDED."userId",
+                            icon = EXCLUDED.icon,
                             version = EXCLUDED.version,
                             updated_at = EXCLUDED.updated_at,
                             updated_by_client = EXCLUDED.updated_by_client
@@ -96,11 +106,18 @@ pub async fn process_category_changes(
                     .bind(&item.name)
                     .bind(item.position)
                     .bind(&item.user_id)
+                    .bind(&item.icon)
                     .bind(next_version)
                     .bind(server_timestamp)
                     .bind(client_id)
                     .execute(&mut **tx)
                     .await?;
+
+                    upload_status.push(SuccessResult {
+                        id: string_id.clone(),
+                        version: next_version,
+                        sync_state: "SYNCED".to_string(),
+                    });
                 } else {
                     let record =
                         sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
@@ -125,6 +142,12 @@ pub async fn process_category_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(string_id);

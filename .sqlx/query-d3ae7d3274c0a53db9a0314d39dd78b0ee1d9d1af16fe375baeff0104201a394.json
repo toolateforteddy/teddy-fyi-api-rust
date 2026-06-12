@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, position, \"userId\" as user_id, version\n               FROM categories\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT id, name, position, \"userId\" as user_id, icon, version\n               FROM categories\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -25,6 +25,11 @@
       },
       {
         "ordinal": 4,
+        "name": "icon",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "version",
         "type_info": "Int4"
       }
@@ -40,8 +45,9 @@
       false,
       false,
       true,
+      true,
       false
     ]
   },
-  "hash": "6e86639af50d9dd000fd610d3f9fcb24f7a38df58dc54a6ee34a285069f73f3e"
+  "hash": "d3ae7d3274c0a53db9a0314d39dd78b0ee1d9d1af16fe375baeff0104201a394"
 }

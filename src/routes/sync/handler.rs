@@ -14,6 +14,7 @@ pub async fn sync_handler(
     let mut tx: Transaction<'_, Postgres> = state.db_pool.begin().await?;
     let server_timestamp = Utc::now();
     let mut success_ids = Vec::new();
+    let mut upload_status = Vec::new();
 
     // Process todo_list_changes first as todo_items reference todo_lists
     process_todo_list_changes(
@@ -22,6 +23,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.todo_list_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
     process_todo_changes(
@@ -30,6 +32,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.todo_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
 
@@ -40,6 +43,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.grocery_list_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
     process_grocery_list_member_changes(
@@ -48,6 +52,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.grocery_list_member_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
     process_store_changes(
@@ -56,6 +61,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.store_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
     process_category_changes(
@@ -64,6 +70,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.category_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
     process_grocery_changes(
@@ -72,6 +79,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.grocery_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
     process_grocery_item_store_info_changes(
@@ -80,6 +88,7 @@ pub async fn sync_handler(
         server_timestamp,
         &payload.grocery_item_store_info_changes,
         &mut success_ids,
+        &mut upload_status,
     )
     .await?;
 
@@ -100,6 +109,7 @@ pub async fn sync_handler(
 
     Ok(Json(SyncResponse {
         success_ids,
+        upload_status,
         remote_todo_list_changes,
         remote_todo_changes,
         remote_grocery_list_changes,

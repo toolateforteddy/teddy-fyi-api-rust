@@ -8,6 +8,7 @@ pub async fn process_grocery_list_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[GroceryListChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
@@ -51,6 +52,12 @@ pub async fn process_grocery_list_changes(
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -109,6 +116,12 @@ pub async fn process_grocery_list_changes(
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -142,6 +155,12 @@ pub async fn process_grocery_list_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: change.id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(change.id.clone());

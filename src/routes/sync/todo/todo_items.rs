@@ -8,6 +8,7 @@ pub async fn process_todo_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[TodoChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
@@ -34,9 +35,9 @@ pub async fn process_todo_changes(
                                 INSERT INTO todo_items (
                                     id, title, "isCompleted", "createdAt", position, "scheduledDate",
                                     "recurrenceRule", "scheduledAt", "userId", "parentId", "isDaily",
-                                    "dueDate", description, "listId", priority, sync_state, version,
+                                    "dueDate", description, "listId", priority, icon, sync_state, version,
                                     is_deleted, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                                 ON CONFLICT (id) DO UPDATE SET
                                     title = EXCLUDED.title,
                                     "isCompleted" = EXCLUDED."isCompleted",
@@ -51,6 +52,8 @@ pub async fn process_todo_changes(
                                     description = EXCLUDED.description,
                                     "listId" = EXCLUDED."listId",
                                     priority = EXCLUDED.priority,
+                                    icon = EXCLUDED.icon,
+                                    sync_state = EXCLUDED.sync_state,
                                     version = EXCLUDED.version,
                                     is_deleted = EXCLUDED.is_deleted,
                                     updated_at = EXCLUDED.updated_at,
@@ -72,13 +75,20 @@ pub async fn process_todo_changes(
                             .bind(&item.description)
                             .bind(&item.list_id)
                             .bind(item.priority)
-                            .bind(&item.sync_state)
+                            .bind(&item.icon)
+                            .bind("SYNCED")
                             .bind(next_version)
                             .bind(item.is_deleted)
                             .bind(server_timestamp)
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -120,9 +130,9 @@ pub async fn process_todo_changes(
                                 INSERT INTO todo_items (
                                     id, title, "isCompleted", "createdAt", position, "scheduledDate",
                                     "recurrenceRule", "scheduledAt", "userId", "parentId", "isDaily",
-                                    "dueDate", description, "listId", priority, sync_state, version,
+                                    "dueDate", description, "listId", priority, icon, sync_state, version,
                                     is_deleted, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                                 ON CONFLICT (id) DO UPDATE SET
                                     title = EXCLUDED.title,
                                     "isCompleted" = EXCLUDED."isCompleted",
@@ -137,6 +147,8 @@ pub async fn process_todo_changes(
                                     description = EXCLUDED.description,
                                     "listId" = EXCLUDED."listId",
                                     priority = EXCLUDED.priority,
+                                    icon = EXCLUDED.icon,
+                                    sync_state = EXCLUDED.sync_state,
                                     version = EXCLUDED.version,
                                     is_deleted = EXCLUDED.is_deleted,
                                     updated_at = EXCLUDED.updated_at,
@@ -158,13 +170,20 @@ pub async fn process_todo_changes(
                             .bind(&item.description)
                             .bind(&item.list_id)
                             .bind(item.priority)
-                            .bind(&item.sync_state)
+                            .bind(&item.icon)
+                            .bind("SYNCED")
                             .bind(next_version)
                             .bind(item.is_deleted)
                             .bind(server_timestamp)
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -190,7 +209,7 @@ pub async fn process_todo_changes(
                         }
 
                         sqlx::query!(
-                            "UPDATE todo_items SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+                            "UPDATE todo_items SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
                             next_version,
                             server_timestamp,
                             client_id,
@@ -198,19 +217,31 @@ pub async fn process_todo_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: change.id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(change.id.clone());
             }
             OperationType::Delete => {
-                sqlx::query!(
-                    "UPDATE todo_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3",
+                let row = sqlx::query!(
+                    "UPDATE todo_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,
                     client_id,
                     change.id
                 )
-                .execute(&mut **tx)
+                .fetch_one(&mut **tx)
                 .await?;
+
+                upload_status.push(SuccessResult {
+                    id: change.id.clone(),
+                    version: row.version,
+                    sync_state: "SYNCED".to_string(),
+                });
                 success_ids.push(change.id.clone());
             }
         }

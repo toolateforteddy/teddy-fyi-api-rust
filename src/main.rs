@@ -53,6 +53,7 @@ async fn main() {
 
     let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
     let app_state = AppState {
         client_id: client_id.clone(),
         google_client: Arc::new(google_oauth::AsyncClient::new(&client_id)),
@@ -60,11 +61,14 @@ async fn main() {
             .await
             .expect("Failed to initialize PostgreSQL"),
         jwt_secret,
+        gemini_api_key,
     };
 
     // api routes group
     let api_routes = Router::new()
         .route("/sync", axum::routing::post(routes::sync::sync_handler))
+        .route("/categorize", axum::routing::post(routes::ai::handlers::categorize_item_handler))
+        .route("/assign-icon", axum::routing::post(routes::ai::handlers::assign_todo_icon_handler))
         .route("/hc", get(|| async { "OK" }))
         .route("/ready", get(readiness_handler)) // Deep/Readiness check
         .route_layer(middleware::from_fn_with_state(

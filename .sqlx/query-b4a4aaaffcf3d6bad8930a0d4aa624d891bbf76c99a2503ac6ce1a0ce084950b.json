@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name FROM categories WHERE \"userId\" = $1 ORDER BY position ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b4a4aaaffcf3d6bad8930a0d4aa624d891bbf76c99a2503ac6ce1a0ce084950b"
+}

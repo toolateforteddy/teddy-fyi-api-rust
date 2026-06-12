@@ -54,7 +54,7 @@ pub async fn fetch_remote_todo_mutations(
             r#"SELECT
                 id, title, "isCompleted" as is_completed, "createdAt" as created_at, position, "scheduledDate" as scheduled_date,
                 "recurrenceRule" as recurrence_rule, "scheduledAt" as scheduled_at, "userId" as user_id, "parentId" as parent_id, "isDaily" as is_daily,
-                "dueDate" as due_date, description, "listId" as list_id, priority, sync_state, version, is_deleted
+                "dueDate" as due_date, description, "listId" as list_id, priority, icon, sync_state, version, is_deleted
                FROM todo_items
                WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)"#,
             last_synced_at,
@@ -80,6 +80,7 @@ pub async fn fetch_remote_todo_mutations(
                 description: row.description,
                 list_id: row.list_id,
                 priority: row.priority,
+                icon: row.icon,
                 sync_state: row.sync_state,
                 version: row.version,
                 is_deleted: row.is_deleted,

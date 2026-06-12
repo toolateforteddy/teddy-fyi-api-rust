@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE todo_items SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+  "query": "UPDATE todo_lists SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
   "describe": {
     "columns": [],
     "parameters": {
@@ -13,5 +13,5 @@
     },
     "nullable": []
   },
-  "hash": "4fc89ace4fe107a73a3bc523b257ac70e2c2f60c9ba141e4141b621ab750dfbb"
+  "hash": "e9034b6f2a7d6c3008fc5d67aa37084cb7494820a22b357a8eb762aa4000b7e7"
 }

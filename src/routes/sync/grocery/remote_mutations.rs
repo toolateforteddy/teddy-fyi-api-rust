@@ -113,7 +113,7 @@ pub async fn fetch_remote_grocery_mutations(
 
         // Fetch categories changed after last_synced_at by OTHER clients
         let updated_categories = sqlx::query!(
-            r#"SELECT id, name, position, "userId" as user_id, version
+            r#"SELECT id, name, position, "userId" as user_id, icon, version
                FROM categories
                WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)"#,
             last_synced_at,
@@ -128,6 +128,7 @@ pub async fn fetch_remote_grocery_mutations(
                 name: row.name,
                 position: row.position,
                 user_id: row.user_id,
+                icon: row.icon,
                 version: row.version,
             };
             let data_val = serde_json::to_value(&item_data).ok();

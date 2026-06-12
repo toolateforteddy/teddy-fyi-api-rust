@@ -8,6 +8,7 @@ pub async fn process_todo_list_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[TodoListChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
@@ -39,6 +40,7 @@ pub async fn process_todo_list_changes(
                                     name = EXCLUDED.name,
                                     "colorHex" = EXCLUDED."colorHex",
                                     "userId" = EXCLUDED."userId",
+                                    sync_state = EXCLUDED.sync_state,
                                     version = EXCLUDED.version,
                                     is_deleted = EXCLUDED.is_deleted,
                                     updated_at = EXCLUDED.updated_at,
@@ -50,13 +52,19 @@ pub async fn process_todo_list_changes(
                             .bind(&item.color_hex)
                             .bind(&item.user_id)
                             .bind(item.created_at)
-                            .bind(&item.sync_state)
+                            .bind("SYNCED")
                             .bind(next_version)
                             .bind(item.is_deleted)
                             .bind(server_timestamp)
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -103,6 +111,7 @@ pub async fn process_todo_list_changes(
                                     name = EXCLUDED.name,
                                     "colorHex" = EXCLUDED."colorHex",
                                     "userId" = EXCLUDED."userId",
+                                    sync_state = EXCLUDED.sync_state,
                                     version = EXCLUDED.version,
                                     is_deleted = EXCLUDED.is_deleted,
                                     updated_at = EXCLUDED.updated_at,
@@ -114,13 +123,19 @@ pub async fn process_todo_list_changes(
                             .bind(&item.color_hex)
                             .bind(&item.user_id)
                             .bind(item.created_at)
-                            .bind(&item.sync_state)
+                            .bind("SYNCED")
                             .bind(next_version)
                             .bind(item.is_deleted)
                             .bind(server_timestamp)
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -146,7 +161,7 @@ pub async fn process_todo_list_changes(
                         }
 
                         sqlx::query!(
-                            "UPDATE todo_lists SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+                            "UPDATE todo_lists SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
                             next_version,
                             server_timestamp,
                             client_id,
@@ -154,19 +169,31 @@ pub async fn process_todo_list_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: change.id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(change.id.clone());
             }
             OperationType::Delete => {
-                sqlx::query!(
-                    "UPDATE todo_lists SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3",
+                let row = sqlx::query!(
+                    "UPDATE todo_lists SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,
                     client_id,
                     change.id
                 )
-                .execute(&mut **tx)
+                .fetch_one(&mut **tx)
                 .await?;
+
+                upload_status.push(SuccessResult {
+                    id: change.id.clone(),
+                    version: row.version,
+                    sync_state: "SYNCED".to_string(),
+                });
                 success_ids.push(change.id.clone());
             }
         }

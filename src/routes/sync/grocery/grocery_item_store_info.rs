@@ -8,6 +8,7 @@ pub async fn process_grocery_item_store_info_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[GroceryItemStoreInfoChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = format!("{}-{}", change.grocery_item_id, change.store_id);
@@ -58,6 +59,12 @@ pub async fn process_grocery_item_store_info_changes(
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: string_id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -121,6 +128,12 @@ pub async fn process_grocery_item_store_info_changes(
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: string_id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -156,6 +169,12 @@ pub async fn process_grocery_item_store_info_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(string_id);

@@ -17,3 +17,5 @@ chrono = { version = "0.4.45", features = ["serde"] }
 argon2 = "0.5.3"
 jsonwebtoken = { version = "10.4.0", default-features = false, features = ["rust_crypto", "use_pem"] }
 rand = "0.10.1"
+reqwest = { version = "0.12", features = ["json"] }
+schemars = "0.8"

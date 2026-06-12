@@ -8,6 +8,7 @@ pub async fn process_grocery_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[GroceryChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = change.id.to_string();
@@ -75,6 +76,12 @@ pub async fn process_grocery_changes(
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: string_id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -156,6 +163,12 @@ pub async fn process_grocery_changes(
                             .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
+
+                            upload_status.push(SuccessResult {
+                                id: string_id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
                         }
                         Err(err) => {
                             tracing::error!(
@@ -189,19 +202,31 @@ pub async fn process_grocery_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(string_id);
             }
             OperationType::Delete => {
-                sqlx::query!(
-                    "UPDATE grocery_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3",
+                let row = sqlx::query!(
+                    "UPDATE grocery_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,
                     client_id,
                     change.id
                 )
-                .execute(&mut **tx)
+                .fetch_one(&mut **tx)
                 .await?;
+
+                upload_status.push(SuccessResult {
+                    id: string_id.clone(),
+                    version: row.version,
+                    sync_state: "SYNCED".to_string(),
+                });
                 success_ids.push(string_id);
             }
         }

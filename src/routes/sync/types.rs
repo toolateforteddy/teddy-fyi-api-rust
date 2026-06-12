@@ -153,8 +153,16 @@ pub struct SyncRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SuccessResult {
+    pub id: String,
+    pub version: i32,
+    pub sync_state: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SyncResponse {
     pub success_ids: Vec<String>,
+    pub upload_status: Vec<SuccessResult>,
     pub remote_todo_list_changes: Vec<TodoListChangeDelta>,
     pub remote_todo_changes: Vec<TodoChangeDelta>,
     pub remote_grocery_list_changes: Vec<GroceryListChangeDelta>,
@@ -170,6 +178,7 @@ pub struct SyncResponse {
 pub enum AppError {
     Database(sqlx::Error),
     Serialization(serde_json::Error),
+    Gemini(String),
 }
 
 impl IntoResponse for AppError {
@@ -182,6 +191,10 @@ impl IntoResponse for AppError {
             AppError::Serialization(err) => {
                 tracing::error!("Serialization error: {:?}", err);
                 (StatusCode::BAD_REQUEST, "Invalid payload")
+            }
+            AppError::Gemini(err) => {
+                tracing::error!("Gemini error: {}", err);
+                (StatusCode::SERVICE_UNAVAILABLE, "AI service error")
             }
         };
 
@@ -247,6 +260,7 @@ pub struct TodoItemData {
     #[serde(rename = "listId")]
     pub list_id: Option<String>,
     pub priority: i32,
+    pub icon: Option<String>,
     pub sync_state: String,
     pub version: i32,
     pub is_deleted: bool,
@@ -299,6 +313,7 @@ pub struct CategoryData {
     pub position: i32,
     #[serde(default, rename = "userId")]
     pub user_id: Option<String>,
+    pub icon: Option<String>,
     pub version: i32,
 }
 

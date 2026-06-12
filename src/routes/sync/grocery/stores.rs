@@ -8,6 +8,7 @@ pub async fn process_store_changes(
     server_timestamp: DateTime<Utc>,
     changes: &[StoreChangeDelta],
     success_ids: &mut Vec<String>,
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = change.id.to_string();
@@ -52,6 +53,12 @@ pub async fn process_store_changes(
                     .bind(client_id)
                     .execute(&mut **tx)
                     .await?;
+
+                    upload_status.push(SuccessResult {
+                        id: string_id.clone(),
+                        version: next_version,
+                        sync_state: "SYNCED".to_string(),
+                    });
                 }
                 success_ids.push(string_id);
             }
@@ -101,6 +108,12 @@ pub async fn process_store_changes(
                     .bind(client_id)
                     .execute(&mut **tx)
                     .await?;
+
+                    upload_status.push(SuccessResult {
+                        id: string_id.clone(),
+                        version: next_version,
+                        sync_state: "SYNCED".to_string(),
+                    });
                 } else {
                     let record =
                         sqlx::query!("SELECT version FROM stores WHERE id = $1", change.id)
@@ -125,6 +138,12 @@ pub async fn process_store_changes(
                         )
                         .execute(&mut **tx)
                         .await?;
+
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: next_version,
+                            sync_state: "SYNCED".to_string(),
+                        });
                     }
                 }
                 success_ids.push(string_id);

@@ -29,6 +29,7 @@ pub async fn sync_handler(
     process_todo_changes(
         &mut tx,
         &payload.client_id,
+        &state.gemini_api_key,
         server_timestamp,
         &payload.todo_changes,
         &mut success_ids,

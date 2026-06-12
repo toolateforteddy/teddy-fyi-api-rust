@@ -10,6 +10,8 @@ fn setup_state(pool: PgPool) -> AppState {
         client_id: "test-client".to_string(),
         google_client: Arc::new(google_oauth::AsyncClient::new("test-client")),
         db_pool: pool,
+        jwt_secret: "test-secret".to_string(),
+        gemini_api_key: "test-key".to_string(),
     }
 }
 

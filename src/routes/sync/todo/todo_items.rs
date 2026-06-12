@@ -1,3 +1,4 @@
+use crate::routes::ai::service::assign_todo_icon;
 use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -5,6 +6,7 @@ use sqlx::{Postgres, Transaction};
 pub async fn process_todo_changes(
     tx: &mut Transaction<'_, Postgres>,
     client_id: &str,
+    gemini_api_key: &str,
     server_timestamp: DateTime<Utc>,
     changes: &[TodoChangeDelta],
     success_ids: &mut Vec<String>,
@@ -16,7 +18,18 @@ pub async fn process_todo_changes(
                 tracing::info!("Inserting todo {}", change.id);
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoItemData>(data.clone()) {
-                        Ok(item) => {
+                        Ok(mut item) => {
+                            let mut current_updated_by = client_id.to_string();
+
+                            // Auto-assign icon if missing
+                            if item.icon.as_deref().unwrap_or("").is_empty() {
+                                if let Ok(icon) = assign_todo_icon(gemini_api_key, &item.title).await {
+                                    item.icon = Some(icon);
+                                    // Change updated_by_client so it is returned to the caller as a remote mutation
+                                    current_updated_by = "SERVER-AI".to_string();
+                                }
+                            }
+
                             let record = sqlx::query!(
                                 "SELECT version FROM todo_items WHERE id = $1",
                                 change.id
@@ -80,7 +93,7 @@ pub async fn process_todo_changes(
                             .bind(next_version)
                             .bind(item.is_deleted)
                             .bind(server_timestamp)
-                            .bind(client_id)
+                            .bind(&current_updated_by)
                             .execute(&mut **tx)
                             .await?;
 
@@ -105,7 +118,17 @@ pub async fn process_todo_changes(
                 tracing::info!("Updating todo {}", change.id);
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoItemData>(data.clone()) {
-                        Ok(item) => {
+                        Ok(mut item) => {
+                            let mut current_updated_by = client_id.to_string();
+
+                            // Auto-assign icon if missing
+                            if item.icon.as_deref().unwrap_or("").is_empty() {
+                                if let Ok(icon) = assign_todo_icon(gemini_api_key, &item.title).await {
+                                    item.icon = Some(icon);
+                                    current_updated_by = "SERVER-AI".to_string();
+                                }
+                            }
+
                             let record = sqlx::query!(
                                 "SELECT version FROM todo_items WHERE id = $1",
                                 change.id
@@ -175,7 +198,7 @@ pub async fn process_todo_changes(
                             .bind(next_version)
                             .bind(item.is_deleted)
                             .bind(server_timestamp)
-                            .bind(client_id)
+                            .bind(&current_updated_by)
                             .execute(&mut **tx)
                             .await?;
 

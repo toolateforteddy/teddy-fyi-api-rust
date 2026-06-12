@@ -6,3 +6,6 @@ pub use gemini::*;
 
 pub mod handlers;
 pub use handlers::*;
+
+pub mod service;
+pub use service::*;

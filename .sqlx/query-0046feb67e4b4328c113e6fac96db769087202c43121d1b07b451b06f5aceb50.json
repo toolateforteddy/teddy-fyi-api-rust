@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n                id, name, quantity, \"isBought\" as is_bought, \"createdAt\" as created_at, position, \"categoryId\" as category_id,\n                \"timesBought\" as times_bought, \"userId\" as user_id, \"isActive\" as is_active, \"listId\" as list_id, unit, notes, version, is_deleted\n               FROM grocery_items\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT\n                id, name, quantity, \"isBought\" as is_bought, \"createdAt\" as created_at, position, \"categoryId\" as category_id,\n                \"timesBought\" as times_bought, \"userId\" as user_id, \"isActive\" as is_active, \"listId\" as list_id, unit, notes, version, is_deleted, sync_state\n               FROM grocery_items\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,11 @@
         "ordinal": 14,
         "name": "is_deleted",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "sync_state",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -100,8 +105,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "09afdbb91c13f98eb5888a30c2135f85274a3bdc6e3195995f51e70e5c9a7f6d"
+  "hash": "0046feb67e4b4328c113e6fac96db769087202c43121d1b07b451b06f5aceb50"
 }

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE grocery_item_store_info SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE \"groceryItemId\" = $3 AND \"storeId\" = $4 RETURNING version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ba3f65a69a48db9c178e5121a7a6ac7f8fb3bbef890f58080d9d0c3c10650ae8"
+}

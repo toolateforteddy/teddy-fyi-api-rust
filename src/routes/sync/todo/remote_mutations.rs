@@ -35,7 +35,7 @@ pub async fn fetch_remote_todo_mutations(
                 is_deleted: row.is_deleted,
             };
 
-            let data_val = serde_json::to_value(&item_data).ok();
+            let data_val = serde_json::to_value(&item_data)?;
 
             remote_todo_list_changes.push(TodoListChangeDelta {
                 id: row.id,
@@ -45,7 +45,7 @@ pub async fn fetch_remote_todo_mutations(
                     OperationType::Update
                 },
                 version: row.version,
-                data: data_val,
+                data: Some(data_val),
             });
         }
 
@@ -86,7 +86,7 @@ pub async fn fetch_remote_todo_mutations(
                 is_deleted: row.is_deleted,
             };
 
-            let data_val = serde_json::to_value(&item_data).ok();
+            let data_val = serde_json::to_value(&item_data)?;
 
             remote_todo_changes.push(TodoChangeDelta {
                 id: row.id,
@@ -96,7 +96,7 @@ pub async fn fetch_remote_todo_mutations(
                     OperationType::Update
                 },
                 version: row.version,
-                data: data_val,
+                data: Some(data_val),
             });
         }
     }

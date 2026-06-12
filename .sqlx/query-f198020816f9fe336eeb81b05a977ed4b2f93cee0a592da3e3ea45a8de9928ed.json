@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                                INSERT INTO todo_lists (\n                                    id, name, \"colorHex\", \"userId\", \"createdAt\", sync_state, version,\n                                    is_deleted, updated_at, updated_by_client\n                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n                                ON CONFLICT (id) DO UPDATE SET\n                                    name = EXCLUDED.name,\n                                    \"colorHex\" = EXCLUDED.\"colorHex\",\n                                    \"userId\" = EXCLUDED.\"userId\",\n                                    sync_state = EXCLUDED.sync_state,\n                                    version = EXCLUDED.version,\n                                    is_deleted = EXCLUDED.is_deleted,\n                                    updated_at = EXCLUDED.updated_at,\n                                    updated_by_client = EXCLUDED.updated_by_client\n                                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Int4",
+        "Bool",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f198020816f9fe336eeb81b05a977ed4b2f93cee0a592da3e3ea45a8de9928ed"
+}

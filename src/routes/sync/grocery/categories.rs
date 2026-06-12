@@ -13,112 +13,77 @@ pub async fn process_category_changes(
     for change in changes {
         let string_id = change.id.to_string();
         match change.operation_type {
-            OperationType::Insert => {
-                tracing::info!("Inserting category {}", change.id);
+            OperationType::Insert | OperationType::Update => {
+                tracing::info!("Processing category {}", change.id);
                 if let Some(ref data) = change.data {
-                    let item = serde_json::from_value::<CategoryData>(data.clone())?;
-                    let record = sqlx::query!(
-                        "SELECT version FROM categories WHERE id = $1",
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
+                    match serde_json::from_value::<CategoryData>(data.clone()) {
+                        Ok(item) => {
+                            let record = sqlx::query!(
+                                "SELECT version FROM categories WHERE id = $1",
+                                item.id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?;
 
-                    let next_version = if let Some(row) = record {
-                        std::cmp::max(row.version, item.version) + 1
-                    } else {
-                        item.version
-                    };
+                            let next_version = if let Some(row) = record {
+                                if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
+                                    tracing::warn!(
+                                        "MVCC Conflict for category {}. Client version: {}, Server version: {}. Resolving via LWW.",
+                                        change.id, change.version, row.version
+                                    );
+                                }
+                                std::cmp::max(row.version, item.version) + 1
+                            } else {
+                                item.version
+                            };
 
-                    sqlx::query(
-                        r#"
-                        INSERT INTO categories (
-                            id, name, position, "userId", icon, version, updated_at, updated_by_client
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        ON CONFLICT (id) DO UPDATE SET
-                            name = EXCLUDED.name,
-                            position = EXCLUDED.position,
-                            "userId" = EXCLUDED."userId",
-                            icon = EXCLUDED.icon,
-                            version = EXCLUDED.version,
-                            updated_at = EXCLUDED.updated_at,
-                            updated_by_client = EXCLUDED.updated_by_client
-                        "#,
-                    )
-                    .bind(item.id)
-                    .bind(&item.name)
-                    .bind(item.position)
-                    .bind(&item.user_id)
-                    .bind(&item.icon)
-                    .bind(next_version)
-                    .bind(server_timestamp)
-                    .bind(client_id)
-                    .execute(&mut **tx)
-                    .await?;
+                            sqlx::query!(
+                                r#"
+                                INSERT INTO categories (
+                                    id, name, position, "userId", icon, version, is_deleted, sync_state, updated_at, updated_by_client
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                ON CONFLICT (id) DO UPDATE SET
+                                    name = EXCLUDED.name,
+                                    position = EXCLUDED.position,
+                                    "userId" = EXCLUDED."userId",
+                                    icon = EXCLUDED.icon,
+                                    version = EXCLUDED.version,
+                                    is_deleted = EXCLUDED.is_deleted,
+                                    sync_state = EXCLUDED.sync_state,
+                                    updated_at = EXCLUDED.updated_at,
+                                    updated_by_client = EXCLUDED.updated_by_client
+                                "#,
+                                item.id,
+                                item.name,
+                                item.position,
+                                item.user_id,
+                                item.icon,
+                                next_version,
+                                item.is_deleted,
+                                "SYNCED",
+                                server_timestamp,
+                                client_id
+                            )
+                            .execute(&mut **tx)
+                            .await?;
 
-                    upload_status.push(SuccessResult {
-                        id: string_id.clone(),
-                        version: next_version,
-                        sync_state: "SYNCED".to_string(),
-                    });
-                }
-                success_ids.push(string_id);
-            }
-            OperationType::Update => {
-                tracing::info!("Updating category {}", change.id);
-                if let Some(ref data) = change.data {
-                    let item = serde_json::from_value::<CategoryData>(data.clone())?;
-                    let record = sqlx::query!(
-                        "SELECT version FROM categories WHERE id = $1",
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    let next_version = if let Some(row) = record {
-                        if change.version < row.version {
-                            tracing::warn!(
-                                "MVCC Conflict for category {}. Client version: {}, Server version: {}. Resolving via LWW.",
-                                change.id, change.version, row.version
-                            );
+                            upload_status.push(SuccessResult {
+                                id: string_id.clone(),
+                                version: next_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
+                            success_ids.push(string_id);
                         }
-                        std::cmp::max(row.version, change.version) + 1
-                    } else {
-                        change.version
-                    };
-
-                    sqlx::query(
-                        r#"
-                        INSERT INTO categories (
-                            id, name, position, "userId", icon, version, updated_at, updated_by_client
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        ON CONFLICT (id) DO UPDATE SET
-                            name = EXCLUDED.name,
-                            position = EXCLUDED.position,
-                            "userId" = EXCLUDED."userId",
-                            icon = EXCLUDED.icon,
-                            version = EXCLUDED.version,
-                            updated_at = EXCLUDED.updated_at,
-                            updated_by_client = EXCLUDED.updated_by_client
-                        "#,
-                    )
-                    .bind(item.id)
-                    .bind(&item.name)
-                    .bind(item.position)
-                    .bind(&item.user_id)
-                    .bind(&item.icon)
-                    .bind(next_version)
-                    .bind(server_timestamp)
-                    .bind(client_id)
-                    .execute(&mut **tx)
-                    .await?;
-
-                    upload_status.push(SuccessResult {
-                        id: string_id.clone(),
-                        version: next_version,
-                        sync_state: "SYNCED".to_string(),
-                    });
-                } else {
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to deserialize CategoryData for category {}: {:?}",
+                                change.id,
+                                err
+                            );
+                            return Err(AppError::Serialization(err));
+                        }
+                    }
+                } else if matches!(change.operation_type, OperationType::Update) {
                     let record =
                         sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
                             .fetch_optional(&mut **tx)
@@ -126,15 +91,8 @@ pub async fn process_category_changes(
 
                     if let Some(row) = record {
                         let next_version = row.version + 1;
-                        if change.version < row.version {
-                            tracing::warn!(
-                                "MVCC Conflict for category {}. Client version: {}, Server version: {}. Resolving via LWW.",
-                                change.id, change.version, row.version
-                            );
-                        }
-
                         sqlx::query!(
-                            "UPDATE categories SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+                            "UPDATE categories SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
                             next_version,
                             server_timestamp,
                             client_id,
@@ -148,14 +106,25 @@ pub async fn process_category_changes(
                             version: next_version,
                             sync_state: "SYNCED".to_string(),
                         });
+                        success_ids.push(string_id);
                     }
                 }
-                success_ids.push(string_id);
             }
             OperationType::Delete => {
-                sqlx::query!("DELETE FROM categories WHERE id = $1", change.id)
-                    .execute(&mut **tx)
-                    .await?;
+                let row = sqlx::query!(
+                    "UPDATE categories SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
+                    server_timestamp,
+                    client_id,
+                    change.id
+                )
+                .fetch_one(&mut **tx)
+                .await?;
+
+                upload_status.push(SuccessResult {
+                    id: string_id.clone(),
+                    version: row.version,
+                    sync_state: "SYNCED".to_string(),
+                });
                 success_ids.push(string_id);
             }
         }

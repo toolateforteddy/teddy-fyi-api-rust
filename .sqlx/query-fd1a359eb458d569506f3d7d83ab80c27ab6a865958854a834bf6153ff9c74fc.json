@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, position, \"userId\" as user_id, icon, version\n               FROM categories\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT id, name, position, \"isDefaultSupported\" as is_default_supported, \"userId\" as user_id, version, is_deleted, sync_state\n               FROM stores\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -20,18 +20,28 @@
       },
       {
         "ordinal": 3,
-        "name": "user_id",
-        "type_info": "Text"
+        "name": "is_default_supported",
+        "type_info": "Bool"
       },
       {
         "ordinal": 4,
-        "name": "icon",
+        "name": "user_id",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
         "name": "version",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "sync_state",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -44,10 +54,12 @@
       false,
       false,
       false,
+      false,
       true,
-      true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "d3ae7d3274c0a53db9a0314d39dd78b0ee1d9d1af16fe375baeff0104201a394"
+  "hash": "fd1a359eb458d569506f3d7d83ab80c27ab6a865958854a834bf6153ff9c74fc"
 }

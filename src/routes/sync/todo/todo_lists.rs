@@ -12,8 +12,8 @@ pub async fn process_todo_list_changes(
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
-            OperationType::Insert => {
-                tracing::info!("Inserting todo list {}", change.id);
+            OperationType::Insert | OperationType::Update => {
+                tracing::info!("Processing todo list {}", change.id);
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoListData>(data.clone()) {
                         Ok(item) => {
@@ -25,83 +25,18 @@ pub async fn process_todo_list_changes(
                             .await?;
 
                             let next_version = if let Some(row) = record {
-                                std::cmp::max(row.version, item.version) + 1
-                            } else {
-                                item.version
-                            };
-
-                            sqlx::query(
-                                r#"
-                                INSERT INTO todo_lists (
-                                    id, name, "colorHex", "userId", "createdAt", sync_state, version,
-                                    is_deleted, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                                ON CONFLICT (id) DO UPDATE SET
-                                    name = EXCLUDED.name,
-                                    "colorHex" = EXCLUDED."colorHex",
-                                    "userId" = EXCLUDED."userId",
-                                    sync_state = EXCLUDED.sync_state,
-                                    version = EXCLUDED.version,
-                                    is_deleted = EXCLUDED.is_deleted,
-                                    updated_at = EXCLUDED.updated_at,
-                                    updated_by_client = EXCLUDED.updated_by_client
-                                "#,
-                            )
-                            .bind(&item.id)
-                            .bind(&item.name)
-                            .bind(&item.color_hex)
-                            .bind(&item.user_id)
-                            .bind(item.created_at)
-                            .bind("SYNCED")
-                            .bind(next_version)
-                            .bind(item.is_deleted)
-                            .bind(server_timestamp)
-                            .bind(client_id)
-                            .execute(&mut **tx)
-                            .await?;
-
-                            upload_status.push(SuccessResult {
-                                id: change.id.clone(),
-                                version: next_version,
-                                sync_state: "SYNCED".to_string(),
-                            });
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                "Failed to deserialize TodoListData for todo list {}: {:?}",
-                                change.id,
-                                err
-                            );
-                        }
-                    }
-                }
-                success_ids.push(change.id.clone());
-            }
-            OperationType::Update => {
-                tracing::info!("Updating todo list {}", change.id);
-                if let Some(ref data) = change.data {
-                    match serde_json::from_value::<TodoListData>(data.clone()) {
-                        Ok(item) => {
-                            let record = sqlx::query!(
-                                "SELECT version FROM todo_lists WHERE id = $1",
-                                change.id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?;
-
-                            let next_version = if let Some(row) = record {
-                                if change.version < row.version {
+                                if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
                                     tracing::warn!(
                                         "MVCC Conflict for todo list {}. Client version: {}, Server version: {}. Resolving via LWW.",
                                         change.id, change.version, row.version
                                     );
                                 }
-                                std::cmp::max(row.version, change.version) + 1
+                                std::cmp::max(row.version, item.version) + 1
                             } else {
-                                change.version
+                                item.version
                             };
 
-                            sqlx::query(
+                            sqlx::query!(
                                 r#"
                                 INSERT INTO todo_lists (
                                     id, name, "colorHex", "userId", "createdAt", sync_state, version,
@@ -117,17 +52,17 @@ pub async fn process_todo_list_changes(
                                     updated_at = EXCLUDED.updated_at,
                                     updated_by_client = EXCLUDED.updated_by_client
                                 "#,
+                                item.id,
+                                item.name,
+                                item.color_hex,
+                                item.user_id,
+                                item.created_at,
+                                "SYNCED",
+                                next_version,
+                                item.is_deleted,
+                                server_timestamp,
+                                client_id
                             )
-                            .bind(&item.id)
-                            .bind(&item.name)
-                            .bind(&item.color_hex)
-                            .bind(&item.user_id)
-                            .bind(item.created_at)
-                            .bind("SYNCED")
-                            .bind(next_version)
-                            .bind(item.is_deleted)
-                            .bind(server_timestamp)
-                            .bind(client_id)
                             .execute(&mut **tx)
                             .await?;
 
@@ -136,6 +71,7 @@ pub async fn process_todo_list_changes(
                                 version: next_version,
                                 sync_state: "SYNCED".to_string(),
                             });
+                            success_ids.push(change.id.clone());
                         }
                         Err(err) => {
                             tracing::error!(
@@ -143,9 +79,10 @@ pub async fn process_todo_list_changes(
                                 change.id,
                                 err
                             );
+                            return Err(AppError::Serialization(err));
                         }
                     }
-                } else {
+                } else if matches!(change.operation_type, OperationType::Update) {
                     let record =
                         sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
                             .fetch_optional(&mut **tx)
@@ -153,13 +90,6 @@ pub async fn process_todo_list_changes(
 
                     if let Some(row) = record {
                         let next_version = row.version + 1;
-                        if change.version < row.version {
-                            tracing::warn!(
-                                "MVCC Conflict for todo list {}. Client version: {}, Server version: {}. Resolving via LWW.",
-                                change.id, change.version, row.version
-                            );
-                        }
-
                         sqlx::query!(
                             "UPDATE todo_lists SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
                             next_version,
@@ -175,9 +105,9 @@ pub async fn process_todo_list_changes(
                             version: next_version,
                             sync_state: "SYNCED".to_string(),
                         });
+                        success_ids.push(change.id.clone());
                     }
                 }
-                success_ids.push(change.id.clone());
             }
             OperationType::Delete => {
                 let row = sqlx::query!(

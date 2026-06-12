@@ -33,7 +33,7 @@ async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::erro
 
 async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
     // Ping the database
-    match sqlx::query("SELECT 1").execute(&state.db_pool).await {
+    match sqlx::query!("SELECT 1 as one").fetch_one(&state.db_pool).await {
         Ok(_) => (StatusCode::OK, "OK").into_response(),
         Err(err) => {
             tracing::error!("Readiness probe database connection failed: {:?}", err);

@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                                INSERT INTO todo_items (\n                                    id, title, \"isCompleted\", \"createdAt\", position, \"scheduledDate\",\n                                    \"recurrenceRule\", \"scheduledAt\", \"userId\", \"parentId\", \"isDaily\",\n                                    \"dueDate\", description, \"listId\", priority, icon, sync_state, version,\n                                    is_deleted, updated_at, updated_by_client\n                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)\n                                ON CONFLICT (id) DO UPDATE SET\n                                    title = EXCLUDED.title,\n                                    \"isCompleted\" = EXCLUDED.\"isCompleted\",\n                                    position = EXCLUDED.position,\n                                    \"scheduledDate\" = EXCLUDED.\"scheduledDate\",\n                                    \"recurrenceRule\" = EXCLUDED.\"recurrenceRule\",\n                                    \"scheduledAt\" = EXCLUDED.\"scheduledAt\",\n                                    \"userId\" = EXCLUDED.\"userId\",\n                                    \"parentId\" = EXCLUDED.\"parentId\",\n                                    \"isDaily\" = EXCLUDED.\"isDaily\",\n                                    \"dueDate\" = EXCLUDED.\"dueDate\",\n                                    description = EXCLUDED.description,\n                                    \"listId\" = EXCLUDED.\"listId\",\n                                    priority = EXCLUDED.priority,\n                                    icon = EXCLUDED.icon,\n                                    sync_state = EXCLUDED.sync_state,\n                                    version = EXCLUDED.version,\n                                    is_deleted = EXCLUDED.is_deleted,\n                                    updated_at = EXCLUDED.updated_at,\n                                    updated_by_client = EXCLUDED.updated_by_client\n                                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool",
+        "Int8",
+        "Int4",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Bool",
+        "Int8",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Int4",
+        "Bool",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fb9ce159f2bdbffd2fbbef1c2ecb13b7e7f707bfbcdd5815a50c365985be44a3"
+}

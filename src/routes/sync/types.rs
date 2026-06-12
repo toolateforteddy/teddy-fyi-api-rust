@@ -120,9 +120,9 @@ pub struct GroceryChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemStoreInfoChangeDelta {
-    #[serde(rename = "groceryItemId", deserialize_with = "deserialize_i32_from_string_or_number")]
+    #[serde(alias = "grocery_item_id", rename = "groceryItemId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub grocery_item_id: i32,
-    #[serde(rename = "storeId", deserialize_with = "deserialize_i32_from_string_or_number")]
+    #[serde(alias = "store_id", rename = "storeId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub store_id: i32,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
@@ -134,21 +134,21 @@ pub struct GroceryItemStoreInfoChangeDelta {
 pub struct SyncRequest {
     pub last_synced_at: Option<DateTime<Utc>>,
     pub client_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "todoListChanges")]
     pub todo_list_changes: Vec<TodoListChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "todoChanges")]
     pub todo_changes: Vec<TodoChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "groceryListChanges")]
     pub grocery_list_changes: Vec<GroceryListChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "groceryListMemberChanges")]
     pub grocery_list_member_changes: Vec<GroceryListMemberChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "storeChanges")]
     pub store_changes: Vec<StoreChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "categoryChanges")]
     pub category_changes: Vec<CategoryChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "groceryChanges")]
     pub grocery_changes: Vec<GroceryChangeDelta>,
-    #[serde(default)]
+    #[serde(default, alias = "groceryItemStoreInfoChanges")]
     pub grocery_item_store_info_changes: Vec<GroceryItemStoreInfoChangeDelta>,
 }
 
@@ -222,14 +222,16 @@ impl From<serde_json::Error> for AppError {
 pub struct TodoListData {
     pub id: String,
     pub name: String,
-    #[serde(rename = "colorHex")]
+    #[serde(alias = "color_hex", rename = "colorHex")]
     pub color_hex: String,
-    #[serde(rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: Option<String>,
-    #[serde(rename = "createdAt")]
+    #[serde(alias = "created_at", rename = "createdAt")]
     pub created_at: i64,
+    #[serde(alias = "sync_state")]
     pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted")]
     pub is_deleted: bool,
 }
 
@@ -237,32 +239,34 @@ pub struct TodoListData {
 pub struct TodoItemData {
     pub id: String,
     pub title: String,
-    #[serde(rename = "isCompleted")]
+    #[serde(alias = "is_completed", rename = "isCompleted")]
     pub is_completed: bool,
-    #[serde(rename = "createdAt")]
+    #[serde(alias = "created_at", rename = "createdAt")]
     pub created_at: i64,
     pub position: i32,
-    #[serde(rename = "scheduledDate")]
+    #[serde(alias = "scheduled_date", rename = "scheduledDate")]
     pub scheduled_date: Option<String>,
-    #[serde(rename = "recurrenceRule")]
+    #[serde(alias = "recurrence_rule", rename = "recurrenceRule")]
     pub recurrence_rule: Option<String>,
-    #[serde(rename = "scheduledAt")]
+    #[serde(alias = "scheduled_at", rename = "scheduledAt")]
     pub scheduled_at: i64,
-    #[serde(rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: Option<String>,
-    #[serde(rename = "parentId")]
+    #[serde(alias = "parent_id", rename = "parentId")]
     pub parent_id: Option<String>,
-    #[serde(rename = "isDaily")]
+    #[serde(alias = "is_daily", rename = "isDaily")]
     pub is_daily: bool,
-    #[serde(rename = "dueDate")]
+    #[serde(alias = "due_date", rename = "dueDate")]
     pub due_date: Option<i64>,
     pub description: Option<String>,
-    #[serde(rename = "listId")]
+    #[serde(alias = "list_id", rename = "listId")]
     pub list_id: Option<String>,
     pub priority: i32,
     pub icon: Option<String>,
+    #[serde(alias = "sync_state")]
     pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted")]
     pub is_deleted: bool,
 }
 
@@ -270,24 +274,36 @@ pub struct TodoItemData {
 pub struct GroceryListData {
     pub id: String,
     pub name: String,
-    #[serde(rename = "ownerId")]
+    #[serde(alias = "owner_id", rename = "ownerId")]
     pub owner_id: Option<String>,
-    #[serde(rename = "createdAt")]
+    #[serde(alias = "created_at", rename = "createdAt")]
     pub created_at: i64,
+    #[serde(alias = "sync_state", default = "default_sync_state")]
+    pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted", default)]
+    pub is_deleted: bool,
+}
+
+fn default_sync_state() -> String {
+    "SYNCED".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryListMemberData {
     pub id: String,
-    #[serde(rename = "listId")]
+    #[serde(alias = "list_id", rename = "listId")]
     pub list_id: String,
-    #[serde(rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: String,
     pub role: String,
-    #[serde(rename = "joinedAt")]
+    #[serde(alias = "joined_at", rename = "joinedAt")]
     pub joined_at: i64,
+    #[serde(alias = "sync_state", default = "default_sync_state")]
+    pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted", default)]
+    pub is_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -297,11 +313,15 @@ pub struct StoreData {
     pub name: String,
     #[serde(default)]
     pub position: i32,
-    #[serde(default, rename = "isDefaultSupported")]
+    #[serde(alias = "is_default_supported", rename = "isDefaultSupported")]
     pub is_default_supported: bool,
-    #[serde(default, rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: Option<String>,
+    #[serde(alias = "sync_state", default = "default_sync_state")]
+    pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted", default)]
+    pub is_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -311,10 +331,14 @@ pub struct CategoryData {
     pub name: String,
     #[serde(default)]
     pub position: i32,
-    #[serde(default, rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: Option<String>,
     pub icon: Option<String>,
+    #[serde(alias = "sync_state", default = "default_sync_state")]
+    pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted", default)]
+    pub is_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -323,37 +347,43 @@ pub struct GroceryItemData {
     pub id: i32,
     pub name: String,
     pub quantity: String,
-    #[serde(rename = "isBought")]
+    #[serde(alias = "is_bought", rename = "isBought")]
     pub is_bought: bool,
-    #[serde(rename = "createdAt")]
+    #[serde(alias = "created_at", rename = "createdAt")]
     pub created_at: i64,
     pub position: i32,
-    #[serde(default, rename = "categoryId", deserialize_with = "deserialize_option_i32_from_string_or_number")]
+    #[serde(alias = "category_id", rename = "categoryId", default, deserialize_with = "deserialize_option_i32_from_string_or_number")]
     pub category_id: Option<i32>,
-    #[serde(rename = "timesBought")]
+    #[serde(alias = "times_bought", rename = "timesBought")]
     pub times_bought: i32,
-    #[serde(rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: Option<String>,
-    #[serde(rename = "isActive")]
+    #[serde(alias = "is_active", rename = "isActive")]
     pub is_active: bool,
-    #[serde(rename = "listId")]
+    #[serde(alias = "list_id", rename = "listId")]
     pub list_id: Option<String>,
     pub unit: Option<String>,
     pub notes: Option<String>,
+    #[serde(alias = "sync_state", default = "default_sync_state")]
+    pub sync_state: String,
     pub version: i32,
     pub is_deleted: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemStoreInfoData {
-    #[serde(rename = "groceryItemId", deserialize_with = "deserialize_i32_from_string_or_number")]
+    #[serde(alias = "grocery_item_id", rename = "groceryItemId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub grocery_item_id: i32,
-    #[serde(rename = "storeId", deserialize_with = "deserialize_i32_from_string_or_number")]
+    #[serde(alias = "store_id", rename = "storeId", deserialize_with = "deserialize_i32_from_string_or_number")]
     pub store_id: i32,
     pub price: Option<f64>,
-    #[serde(rename = "isAvailable")]
+    #[serde(alias = "is_available", rename = "isAvailable")]
     pub is_available: bool,
-    #[serde(rename = "userId")]
+    #[serde(alias = "user_id", rename = "userId")]
     pub user_id: Option<String>,
+    #[serde(alias = "sync_state", default = "default_sync_state")]
+    pub sync_state: String,
     pub version: i32,
+    #[serde(alias = "is_deleted", default)]
+    pub is_deleted: bool,
 }

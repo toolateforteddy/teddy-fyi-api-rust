@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                                INSERT INTO grocery_lists (\n                                    id, name, \"ownerId\", \"createdAt\", version, is_deleted, sync_state, updated_at, updated_by_client\n                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n                                ON CONFLICT (id) DO UPDATE SET\n                                    name = EXCLUDED.name,\n                                    \"ownerId\" = EXCLUDED.\"ownerId\",\n                                    version = EXCLUDED.version,\n                                    is_deleted = EXCLUDED.is_deleted,\n                                    sync_state = EXCLUDED.sync_state,\n                                    updated_at = EXCLUDED.updated_at,\n                                    updated_by_client = EXCLUDED.updated_by_client\n                                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4",
+        "Bool",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ad7e85e578db70e7307326dbb436796150d6525ad0388b079b14e5db1f9cfeb2"
+}

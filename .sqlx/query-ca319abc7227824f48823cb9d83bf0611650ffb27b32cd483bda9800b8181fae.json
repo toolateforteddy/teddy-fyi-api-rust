@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id, price, \"isAvailable\" as is_available, \"userId\" as user_id, version\n               FROM grocery_item_store_info\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id, price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, sync_state\n               FROM grocery_item_store_info\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,16 @@
         "ordinal": 5,
         "name": "version",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "sync_state",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -46,8 +56,10 @@
       true,
       false,
       true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "a08cee5d20455df134ee1b6bd534fdcabf10b274510fdbf8e6547efb0fe4684f"
+  "hash": "ca319abc7227824f48823cb9d83bf0611650ffb27b32cd483bda9800b8181fae"
 }

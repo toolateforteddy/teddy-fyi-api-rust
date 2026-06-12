@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE grocery_items SET version = $1, updated_at = $2, updated_by_client = $3 WHERE id = $4",
+  "query": "UPDATE categories SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
   "describe": {
     "columns": [],
     "parameters": {
@@ -13,5 +13,5 @@
     },
     "nullable": []
   },
-  "hash": "12ab54684bc036790e6de3ede5da874180b4061a7103b055727c096d32225996"
+  "hash": "a42eb57bbc27e761a442e77a6fa6d5197bb4b298bbae06c7304068ec0eee6cc9"
 }

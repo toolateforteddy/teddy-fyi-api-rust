@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO categories (id, name, position, \"userId\", icon, version, updated_at, updated_by_client, is_deleted, sync_state)\n         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b08a8b49ca9f8bac044dcae9bb2089930f0407cae49cb6297462a891c7d02e5d"
+}

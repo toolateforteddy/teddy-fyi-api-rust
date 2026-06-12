@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, \"ownerId\" as owner_id, \"createdAt\" as created_at, version\n               FROM grocery_lists\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT id, name, \"ownerId\" as owner_id, \"createdAt\" as created_at, version, is_deleted, sync_state\n               FROM grocery_lists\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,16 @@
         "ordinal": 4,
         "name": "version",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "sync_state",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -40,8 +50,10 @@
       false,
       true,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "2ed1a9e2be3e76e3eada0060405bfe4a8e6907bc5dcc87a111a1167076ba317d"
+  "hash": "513db31495af7fdc6326d31257d502299e2585f0c5ac133f9d5fddcc81443f9d"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, \"listId\" as list_id, \"userId\" as user_id, role, \"joinedAt\" as joined_at, version\n               FROM grocery_list_members\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT id, \"listId\" as list_id, \"userId\" as user_id, role, \"joinedAt\" as joined_at, version, is_deleted, sync_state\n               FROM grocery_list_members\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,16 @@
         "ordinal": 5,
         "name": "version",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "sync_state",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -46,8 +56,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "f0c9f0f8a730909a0a969442cd62f2fc28d13a01eb3c52e8d134d85f900c0633"
+  "hash": "540815902675c33536b20469fa431b5eafcb16a0b6204d31e6e38749181b2b11"
 }

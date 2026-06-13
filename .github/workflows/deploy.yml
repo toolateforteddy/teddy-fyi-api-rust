@@ -1,0 +1,66 @@
+name: Build and Push to Google Container Registry
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  deploy:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+
+    # Required permissions for Workload Identity Federation
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Set up Rust toolchain for running tests
+      - name: Set up Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      # Run Cargo tests (requires SQLx offline mode for query verification)
+      - name: Run Tests
+        env:
+          SQLX_OFFLINE: true
+        run: make test
+
+      # Authenticate to Google Cloud.
+      # You can authenticate using either Workload Identity Federation (Recommended)
+      # or a Google Cloud Service Account Key. See the documentation in the pull request / readme.
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # Option 1: Workload Identity Federation (Secure)
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+          
+          # Option 2: Service Account Key (Fallback)
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # Set up Docker Buildx (required for caching)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Set up gcloud CLI & configure docker authentication
+      - name: Configure Docker
+        run: |
+          gcloud auth configure-docker gcr.io --quiet
+
+      # Build, tag, and push the container using the Makefile target.
+      # We inject the commit SHA as the VERSION variable to prevent local image tag collisions
+      # on shared runner machines, and leverage GitHub Actions caching for Docker.
+      - name: Build and Push Docker Image
+        run: |
+          make docker-push \
+            VERSION=${{ github.sha }} \
+            BUILDER="docker buildx" \
+            BUILD_ARGS="--cache-from=type=gha --cache-to=type=gha,mode=max --load"

@@ -2,6 +2,8 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /usr/src/teddy-fyi-api-rust
 COPY . .
+# Enable SQLx offline mode for query verification without a database connection
+ENV SQLX_OFFLINE=true
 # Build the release version for maximum performance
 RUN cargo build --release
 

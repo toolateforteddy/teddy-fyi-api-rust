@@ -36,7 +36,7 @@ BUILD_ARGS ?=
 docker-build:
 	$(BUILDER) build $(BUILD_ARGS) -t $(IMAGE_NAME):$(VERSION) .
 
-docker-tag:
+docker-tag: docker-build
 	docker tag $(IMAGE_NAME):$(VERSION) $(REGISTRY)/$(PROJECT_ID)/$(IMAGE_NAME):latest
 	docker tag $(IMAGE_NAME):$(VERSION) $(REGISTRY)/$(PROJECT_ID)/$(IMAGE_NAME):$(VERSION)
 

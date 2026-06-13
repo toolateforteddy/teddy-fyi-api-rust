@@ -56,11 +56,6 @@ jobs:
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          # Option 1: Workload Identity Federation (Secure)
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
-          
-          # Option 2: Service Account Key (Fallback)
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       # Set up Docker Buildx (required for caching)
@@ -81,11 +76,6 @@ jobs:
             VERSION=${{ github.sha }} \
             BUILDER="docker buildx" \
             BUILD_ARGS="--cache-from=type=gha --cache-to=type=gha,mode=max --load"
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Get GKE Credentials
         uses: google-github-actions/get-gke-credentials@v2

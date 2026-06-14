@@ -3,12 +3,18 @@ use super::remote_mutations::*;
 use super::todo::*;
 use super::types::*;
 use crate::state::AppState;
-use axum::extract::{Json, State};
+use crate::auth::tokens::Claims;
+use axum::{
+    extract::{Json, State},
+    Extension,
+};
 use chrono::Utc;
 use sqlx::{Postgres, Transaction};
+use redis::AsyncCommands;
 
 pub async fn sync_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     AppJson(payload): AppJson<SyncRequest>,
 ) -> Result<Json<SyncResponse>, AppError> {
     let mut tx: Transaction<'_, Postgres> = state.db_pool.begin().await?;
@@ -113,6 +119,40 @@ pub async fn sync_handler(
 
     // Commit transaction
     tx.commit().await?;
+
+    let has_mutations = !payload.todo_list_changes.is_empty()
+        || !payload.todo_changes.is_empty()
+        || !payload.grocery_list_changes.is_empty()
+        || !payload.grocery_list_member_changes.is_empty()
+        || !payload.store_changes.is_empty()
+        || !payload.category_changes.is_empty()
+        || !payload.grocery_changes.is_empty()
+        || !payload.grocery_item_store_info_changes.is_empty();
+
+    if has_mutations {
+        if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+            let ts_str = server_timestamp.to_rfc3339();
+            
+            // Update ALL scope
+            let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:All", claims.sub), &ts_str, 86400).await;
+
+            // Update specific scopes
+            let has_todo = !payload.todo_list_changes.is_empty() || !payload.todo_changes.is_empty();
+            let has_grocery = !payload.grocery_list_changes.is_empty()
+                || !payload.grocery_list_member_changes.is_empty()
+                || !payload.store_changes.is_empty()
+                || !payload.category_changes.is_empty()
+                || !payload.grocery_changes.is_empty()
+                || !payload.grocery_item_store_info_changes.is_empty();
+
+            if has_todo {
+                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Todo", claims.sub), &ts_str, 86400).await;
+            }
+            if has_grocery {
+                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Grocery", claims.sub), &ts_str, 86400).await;
+            }
+        }
+    }
 
     Ok(Json(SyncResponse {
         success_ids,

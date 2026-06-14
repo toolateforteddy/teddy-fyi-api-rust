@@ -1,4 +1,4 @@
-.PHONY: build run test clean install init docker-build docker-run docker-run-i docker-clean docker-tag docker-push
+.PHONY: build run dev test clean install init docker-build docker-run docker-run-i docker-clean docker-tag docker-push
 
 # Local Rust commands
 init:
@@ -14,6 +14,9 @@ build:
 
 run:
 	cargo run
+
+dev:
+	./scripts/dev.sh
 
 test:
 	cargo test

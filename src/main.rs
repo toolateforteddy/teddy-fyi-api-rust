@@ -55,6 +55,10 @@ async fn main() {
     let web_client_id = std::env::var("GOOGLE_CLIENT_ID_GROCERY_WEB").unwrap_or_default();
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://cache-svc:6379".to_string());
+    let redis_client = redis::Client::open(redis_url).expect("Invalid Redis URL");
+    let cookie_domain = std::env::var("COOKIE_DOMAIN").unwrap_or_else(|_| ".teddy.fyi".to_string());
+    
     let app_state = AppState {
         client_id: client_id.clone(),
         web_client_id,
@@ -64,11 +68,14 @@ async fn main() {
             .expect("Failed to initialize PostgreSQL"),
         jwt_secret,
         gemini_api_key,
+        redis_client,
+        cookie_domain,
     };
 
     // api routes group
     let api_routes = Router::new()
         .route("/sync", axum::routing::post(routes::sync::sync_handler))
+        .route("/sync/status", axum::routing::get(routes::sync::status::sync_status_handler))
         .route("/categorize", axum::routing::post(routes::ai::handlers::categorize_item_handler))
         .route("/assign-icon", axum::routing::post(routes::ai::handlers::assign_todo_icon_handler))
         .route("/hc", get(|| async { "OK" }))

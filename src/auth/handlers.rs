@@ -83,10 +83,17 @@ pub async fn login_handler(
     })?;
 
     if payload.use_cookie.unwrap_or(false) {
-        let cookie_header_value = format!(
-            "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=86400",
-            access_token
-        );
+        let cookie_header_value = if state.cookie_domain.is_empty() {
+            format!(
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
+                access_token
+            )
+        } else {
+            format!(
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age=86400",
+                access_token, state.cookie_domain
+            )
+        };
         
         let email = google_payload.email.clone();
 
@@ -154,10 +161,17 @@ pub async fn refresh_handler(
     })?;
 
     if payload.use_cookie.unwrap_or(false) {
-        let cookie_header_value = format!(
-            "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=86400",
-            access_token
-        );
+        let cookie_header_value = if state.cookie_domain.is_empty() {
+            format!(
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
+                access_token
+            )
+        } else {
+            format!(
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age=86400",
+                access_token, state.cookie_domain
+            )
+        };
         
         let browser_response = BrowserRefreshResponse {
             refresh_token: new_refresh_token,
@@ -214,12 +228,20 @@ pub async fn logout_handler(
     }
 
     // 2. Clear cookie
-    let cookie_header_value = "access_token=; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=0";
+    let cookie_header_value = if state.cookie_domain.is_empty() {
+        "access_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_string()
+    } else {
+        format!(
+            "access_token=; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age=0",
+            state.cookie_domain
+        )
+    };
     
     let mut response = StatusCode::OK.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        header::HeaderValue::from_static(cookie_header_value),
+        header::HeaderValue::from_str(&cookie_header_value)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     );
     Ok(response)
 }

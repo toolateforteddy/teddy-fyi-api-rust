@@ -16,8 +16,23 @@ pub async fn require_auth(
     let auth_header = req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .and_then(|h| h.strip_prefix("Bearer "));
+
+    let token = if let Some(token_val) = auth_header {
+        token_val.to_string()
+    } else {
+        req.headers()
+            .get(header::COOKIE)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|cookie_str| {
+                cookie_str.split(';')
+                    .map(|s| s.trim())
+                    .find(|s| s.starts_with("access_token="))
+                    .and_then(|s| s.strip_prefix("access_token="))
+            })
+            .ok_or(StatusCode::UNAUTHORIZED)?
+            .to_string()
+    };
 
     let client_uuid_header = req.headers()
         .get("X-Client-UUID")
@@ -27,7 +42,7 @@ pub async fn require_auth(
     let secret = &state.jwt_secret;
 
     let token_data = decode::<Claims>(
-        auth_header,
+        &token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::new(Algorithm::HS256),
     ).map_err(|_| StatusCode::UNAUTHORIZED)?;

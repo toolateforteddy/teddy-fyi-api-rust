@@ -8,6 +8,7 @@ use std::sync::Arc;
 fn setup_state(pool: PgPool) -> AppState {
     AppState {
         client_id: "test-client".to_string(),
+        web_client_id: "test-web-client".to_string(),
         google_client: Arc::new(google_oauth::AsyncClient::new("test-client")),
         db_pool: pool,
         jwt_secret: "test-secret".to_string(),

@@ -52,11 +52,13 @@ async fn main() {
     tracing_subscriber::fmt().json().init();
 
     let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
+    let web_client_id = std::env::var("GOOGLE_CLIENT_ID_GROCERY_WEB").unwrap_or_default();
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
     let app_state = AppState {
         client_id: client_id.clone(),
-        google_client: Arc::new(google_oauth::AsyncClient::new(&client_id)),
+        web_client_id,
+        google_client: Arc::new(google_oauth::AsyncClient::new("")),
         db_pool: init_postgres()
             .await
             .expect("Failed to initialize PostgreSQL"),
@@ -81,7 +83,29 @@ async fn main() {
     let auth_routes = Router::new()
         .route("/login", axum::routing::post(auth::handlers::login_handler))
         .route("/refresh", axum::routing::post(auth::handlers::refresh_handler))
+        .route("/logout", axum::routing::post(auth::handlers::logout_handler))
         .with_state(app_state.clone());
+
+    // Explicit CORS Configurations:
+    // - allow_origin: Must explicitly point to https://teddy.fyi.
+    // - allow_credentials: Set to true.
+    // - allow_methods: Explicitly allow GET, POST, PUT, DELETE, OPTIONS.
+    // - allow_headers: Explicitly allow Content-Type, Authorization, and X-Client-UUID.
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin("https://teddy.fyi".parse::<axum::http::HeaderValue>().unwrap())
+        .allow_credentials(true)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-client-uuid"),
+        ]);
 
     // Build our application with multiple routes
     let app = Router::new()
@@ -89,7 +113,8 @@ async fn main() {
         .route("/hellov2", get(|| async { "world2" }))
         .route("/healthcheck", get(|| async { "OK" })) // Shallow/Liveness check
         .nest("/api", api_routes)
-        .nest("/auth", auth_routes);
+        .nest("/auth", auth_routes)
+        .layer(cors);
 
     // Read the port from the environment, falling back to 3000
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());

@@ -1,4 +1,4 @@
-use axum::{extract::{State, Json}, http::StatusCode, response::IntoResponse};
+use axum::{extract::{State, Json}, http::{header, StatusCode}, response::{IntoResponse, Response}};
 use serde::{Deserialize, Serialize};
 use crate::state::AppState;
 use crate::auth::tokens::{create_access_token, hash_refresh_token, verify_refresh_token};
@@ -9,7 +9,9 @@ use rand::distr::Alphanumeric;
 pub struct LoginRequest {
     pub user_id: String,
     pub client_uuid: String,
+    #[serde(alias = "id_token")]
     pub google_auth_token: String,
+    pub use_cookie: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -18,20 +20,39 @@ pub struct AuthResponse {
     pub refresh_token: String,
 }
 
+#[derive(Serialize)]
+pub struct BrowserAuthResponse {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub refresh_token: String,
+}
+
+#[derive(Serialize)]
+pub struct BrowserRefreshResponse {
+    pub refresh_token: String,
+}
+
 #[derive(Deserialize)]
 pub struct RefreshRequest {
     pub user_id: String,
     pub client_uuid: String,
     pub refresh_token: String,
+    pub use_cookie: Option<bool>,
 }
 
 pub async fn login_handler(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<Response, StatusCode> {
     // 1. Verify Google Token (reusing existing google_client)
-    state.google_client.validate_id_token(&payload.google_auth_token).await
+    let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Manually verify that the audience claim matches either the Android or Web client ID
+    if google_payload.aud != state.client_id && google_payload.aud != state.web_client_id {
+        tracing::warn!("Audience mismatch: expected {} or {}, got {}", state.client_id, state.web_client_id, google_payload.aud);
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
     // 2. Generate tokens
     let access_token = create_access_token(&payload.user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
@@ -61,13 +82,36 @@ pub async fn login_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(AuthResponse { access_token, refresh_token }))
+    if payload.use_cookie.unwrap_or(false) {
+        let cookie_header_value = format!(
+            "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=86400",
+            access_token
+        );
+        
+        let email = google_payload.email.clone();
+
+        let browser_response = BrowserAuthResponse {
+            user_id: payload.user_id,
+            email,
+            refresh_token,
+        };
+
+        let mut response = Json(browser_response).into_response();
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            header::HeaderValue::from_str(&cookie_header_value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+        Ok(response)
+    } else {
+        Ok(Json(AuthResponse { access_token, refresh_token }).into_response())
+    }
 }
 
 pub async fn refresh_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<Response, StatusCode> {
     // 1. Get session
     let session = sqlx::query_as!(
         crate::auth::models::Session,
@@ -109,5 +153,73 @@ pub async fn refresh_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(AuthResponse { access_token, refresh_token: new_refresh_token }))
+    if payload.use_cookie.unwrap_or(false) {
+        let cookie_header_value = format!(
+            "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=86400",
+            access_token
+        );
+        
+        let browser_response = BrowserRefreshResponse {
+            refresh_token: new_refresh_token,
+        };
+
+        let mut response = Json(browser_response).into_response();
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            header::HeaderValue::from_str(&cookie_header_value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+        Ok(response)
+    } else {
+        Ok(Json(AuthResponse { access_token, refresh_token: new_refresh_token }).into_response())
+    }
+}
+
+pub async fn logout_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, StatusCode> {
+    // 1. Try to extract access token to delete db session if possible
+    let auth_header = headers.get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+
+    let token = if let Some(token_val) = auth_header {
+        Some(token_val.to_string())
+    } else {
+        headers.get(header::COOKIE)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|cookie_str| {
+                cookie_str.split(';')
+                    .map(|s| s.trim())
+                    .find(|s| s.starts_with("access_token="))
+                    .and_then(|s| s.strip_prefix("access_token="))
+            })
+            .map(|t| t.to_string())
+    };
+
+    if let Some(t) = token {
+        if let Ok(token_data) = jsonwebtoken::decode::<crate::auth::tokens::Claims>(
+            &t,
+            &jsonwebtoken::DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+        ) {
+            // Delete the session from database
+            let _ = sqlx::query!(
+                "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+                token_data.claims.sub,
+                token_data.claims.client_uuid
+            ).execute(&state.db_pool).await;
+        }
+    }
+
+    // 2. Clear cookie
+    let cookie_header_value = "access_token=; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=0";
+    
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        header::HeaderValue::from_static(cookie_header_value),
+    );
+    Ok(response)
 }

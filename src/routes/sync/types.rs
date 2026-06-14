@@ -130,10 +130,26 @@ pub struct GroceryItemStoreInfoChangeDelta {
     pub data: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SyncScope {
+    All,
+    Grocery,
+    Todo,
+}
+
+impl Default for SyncScope {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SyncRequest {
     pub last_synced_at: Option<DateTime<Utc>>,
     pub client_id: String,
+    #[serde(default)]
+    pub scope: Option<SyncScope>,
     #[serde(default, alias = "todoListChanges")]
     pub todo_list_changes: Vec<TodoListChangeDelta>,
     #[serde(default, alias = "todoChanges")]

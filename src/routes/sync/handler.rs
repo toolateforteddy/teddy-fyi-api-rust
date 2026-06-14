@@ -103,7 +103,13 @@ pub async fn sync_handler(
         remote_category_changes,
         remote_grocery_changes,
         remote_grocery_item_store_info_changes,
-    ) = fetch_remote_mutations(&mut tx, &payload.client_id, payload.last_synced_at).await?;
+    ) = fetch_remote_mutations(
+        &mut tx,
+        &payload.client_id,
+        payload.last_synced_at,
+        payload.scope.unwrap_or(SyncScope::All),
+    )
+    .await?;
 
     // Commit transaction
     tx.commit().await?;

@@ -8,6 +8,7 @@ pub async fn fetch_remote_mutations(
     tx: &mut Transaction<'_, Postgres>,
     client_id: &str,
     last_synced_at: Option<DateTime<Utc>>,
+    scope: SyncScope,
 ) -> Result<
     (
         Vec<TodoListChangeDelta>,
@@ -21,8 +22,11 @@ pub async fn fetch_remote_mutations(
     ),
     AppError,
 > {
-    let (remote_todo_list_changes, remote_todo_changes) =
-        fetch_remote_todo_mutations(tx, client_id, last_synced_at).await?;
+    let (remote_todo_list_changes, remote_todo_changes) = if scope == SyncScope::All || scope == SyncScope::Todo {
+        fetch_remote_todo_mutations(tx, client_id, last_synced_at).await?
+    } else {
+        (vec![], vec![])
+    };
 
     let (
         remote_grocery_list_changes,
@@ -31,7 +35,11 @@ pub async fn fetch_remote_mutations(
         remote_category_changes,
         remote_grocery_changes,
         remote_grocery_item_store_info_changes,
-    ) = fetch_remote_grocery_mutations(tx, client_id, last_synced_at).await?;
+    ) = if scope == SyncScope::All || scope == SyncScope::Grocery {
+        fetch_remote_grocery_mutations(tx, client_id, last_synced_at).await?
+    } else {
+        (vec![], vec![], vec![], vec![], vec![], vec![])
+    };
 
     Ok((
         remote_todo_list_changes,

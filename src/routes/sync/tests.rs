@@ -1,6 +1,6 @@
 use super::*;
 use crate::state::AppState;
-use axum::{extract::State, Json};
+use axum::extract::State;
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -32,6 +32,7 @@ async fn test_sync_handler_insert_todo_list(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![TodoListChangeDelta {
             id: "list-1".to_string(),
             operation_type: OperationType::Insert,
@@ -47,7 +48,7 @@ async fn test_sync_handler_insert_todo_list(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state), Json(req))
+    let res = sync_handler(State(state), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -81,6 +82,7 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-1".to_string(),
@@ -96,7 +98,7 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state), Json(req))
+    let res = sync_handler(State(state), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -118,6 +120,7 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-2".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-2".to_string(),
@@ -133,7 +136,7 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state), Json(req))
+    let res = sync_handler(State(state), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -166,6 +169,7 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-2".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-3".to_string(),
@@ -181,7 +185,7 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state), Json(req))
+    let res = sync_handler(State(state), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -226,7 +230,8 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(last_synced),
-        client_id: "client-2".to_string(), // different client id, so it gets the changes
+        client_id: "client-2".to_string(),
+        scope: None, // different client id, so it gets the changes
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -237,7 +242,7 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state), Json(req))
+    let res = sync_handler(State(state), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -265,6 +270,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
@@ -280,7 +286,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state.clone()), Json(req))
+    let res = sync_handler(State(state.clone()), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -299,6 +305,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     let req_update = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
@@ -314,7 +321,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res_update = sync_handler(State(state.clone()), Json(req_update))
+    let res_update = sync_handler(State(state.clone()), AppJson(req_update))
         .await
         .expect("Handler should succeed")
         .0;
@@ -334,6 +341,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     let req_delete = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
@@ -349,7 +357,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res_delete = sync_handler(State(state.clone()), Json(req_delete))
+    let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
         .await
         .expect("Handler should succeed")
         .0;
@@ -397,6 +405,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -412,7 +421,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state.clone()), Json(req))
+    let res = sync_handler(State(state.clone()), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -432,6 +441,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     let req_update = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -447,7 +457,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res_update = sync_handler(State(state.clone()), Json(req_update))
+    let res_update = sync_handler(State(state.clone()), AppJson(req_update))
         .await
         .expect("Handler should succeed")
         .0;
@@ -467,6 +477,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     let req_delete = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -482,7 +493,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res_delete = sync_handler(State(state.clone()), Json(req_delete))
+    let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
         .await
         .expect("Handler should succeed")
         .0;
@@ -528,6 +539,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -548,7 +560,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res = sync_handler(State(state.clone()), Json(req))
+    let res = sync_handler(State(state.clone()), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -579,6 +591,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     let req_update = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -599,7 +612,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res_update = sync_handler(State(state.clone()), Json(req_update))
+    let res_update = sync_handler(State(state.clone()), AppJson(req_update))
         .await
         .expect("Handler should succeed")
         .0;
@@ -622,6 +635,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     let req_delete = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -642,7 +656,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
     };
 
-    let res_delete = sync_handler(State(state.clone()), Json(req_delete))
+    let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
         .await
         .expect("Handler should succeed")
         .0;
@@ -722,6 +736,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -743,7 +758,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         }],
     };
 
-    let res = sync_handler(State(state.clone()), Json(req))
+    let res = sync_handler(State(state.clone()), AppJson(req))
         .await
         .expect("Handler should succeed")
         .0;
@@ -784,6 +799,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     let req_update = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -805,7 +821,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         }],
     };
 
-    let res_update = sync_handler(State(state.clone()), Json(req_update))
+    let res_update = sync_handler(State(state.clone()), AppJson(req_update))
         .await
         .expect("Handler should succeed")
         .0;
@@ -833,6 +849,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     let req_delete = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![],
         grocery_list_changes: vec![],
@@ -854,7 +871,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         }],
     };
 
-    let res_delete = sync_handler(State(state.clone()), Json(req_delete))
+    let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
         .await
         .expect("Handler should succeed")
         .0;
@@ -1276,6 +1293,7 @@ fn test_sync_request_deserialization_defaults() {
     let req: SyncRequest = serde_json::from_str(json_data).expect("Should deserialize successfully with missing fields");
     assert_eq!(req.client_id, "test-client-id");
     assert!(req.last_synced_at.is_none());
+    assert!(req.scope.is_none());
     assert!(req.todo_list_changes.is_empty());
     assert!(req.todo_changes.is_empty());
     assert!(req.grocery_list_changes.is_empty());
@@ -1284,4 +1302,152 @@ fn test_sync_request_deserialization_defaults() {
     assert!(req.category_changes.is_empty());
     assert!(req.grocery_changes.is_empty());
     assert!(req.grocery_item_store_info_changes.is_empty());
+}
+
+#[test]
+fn test_sync_request_deserialization_null_scope() {
+    let json_data = r#"{
+        "client_id": "test-client-id",
+        "scope": null
+    }"#;
+
+    let req: SyncRequest = serde_json::from_str(json_data).expect("Should deserialize successfully with null scope");
+    assert!(req.scope.is_none());
+}
+
+#[test]
+fn test_sync_request_deserialization_scope_grocery() {
+    let json_data = r#"{
+        "client_id": "test-client-id",
+        "scope": "GROCERY"
+    }"#;
+
+    let req: SyncRequest = serde_json::from_str(json_data).expect("Should deserialize successfully with GROCERY scope");
+    assert_eq!(req.scope, Some(SyncScope::Grocery));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_scope_grocery(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let other_client = "other-client";
+    
+    // Todo List
+    sqlx::query!(
+        r#"INSERT INTO todo_lists (id, name, "colorHex", "userId", "createdAt", sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)"#,
+        "todolist-scope-1",
+        "Scope List",
+        "#FF0000",
+        "user-1",
+        0_i64,
+        "SYNCED",
+        1_i32,
+        false,
+        other_client
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Grocery List
+    sqlx::query!(
+        r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)"#,
+        "grocerylist-scope-1",
+        "Scope Grocery List",
+        "owner-1",
+        0_i64,
+        1_i32,
+        other_client,
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let req = SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        scope: Some(SyncScope::Grocery),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert!(res.remote_grocery_list_changes.iter().any(|d| d.id == "grocerylist-scope-1"));
+    assert!(res.remote_todo_list_changes.is_empty());
+}
+
+#[sqlx::test]
+async fn test_sync_handler_scope_todo(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let other_client = "other-client";
+    
+    // Todo List
+    sqlx::query!(
+        r#"INSERT INTO todo_lists (id, name, "colorHex", "userId", "createdAt", sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)"#,
+        "todolist-scope-2",
+        "Scope List",
+        "#FF0000",
+        "user-1",
+        0_i64,
+        "SYNCED",
+        1_i32,
+        false,
+        other_client
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Grocery List
+    sqlx::query!(
+        r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)"#,
+        "grocerylist-scope-2",
+        "Scope Grocery List",
+        "owner-1",
+        0_i64,
+        1_i32,
+        other_client,
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let req = SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        scope: Some(SyncScope::Todo),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert!(res.remote_todo_list_changes.iter().any(|d| d.id == "todolist-scope-2"));
+    assert!(res.remote_grocery_list_changes.is_empty());
 }

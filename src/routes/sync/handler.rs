@@ -9,7 +9,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn sync_handler(
     State(state): State<AppState>,
-    Json(payload): Json<SyncRequest>,
+    AppJson(payload): AppJson<SyncRequest>,
 ) -> Result<Json<SyncResponse>, AppError> {
     let mut tx: Transaction<'_, Postgres> = state.db_pool.begin().await?;
     let server_timestamp = Utc::now();

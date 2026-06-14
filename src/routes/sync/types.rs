@@ -178,6 +178,7 @@ pub struct SyncResponse {
 pub enum AppError {
     Database(sqlx::Error),
     Serialization(serde_json::Error),
+    Deserialization(String),
     Gemini(String),
 }
 
@@ -186,15 +187,19 @@ impl IntoResponse for AppError {
         let (status, error_message) = match self {
             AppError::Database(err) => {
                 tracing::error!("Database error: {:?}", err);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal database error")
+                (StatusCode::INTERNAL_SERVER_ERROR, "Internal database error".to_string())
             }
             AppError::Serialization(err) => {
                 tracing::error!("Serialization error: {:?}", err);
-                (StatusCode::BAD_REQUEST, "Invalid payload")
+                (StatusCode::BAD_REQUEST, format!("Invalid payload: {}", err))
+            }
+            AppError::Deserialization(err) => {
+                tracing::error!("Deserialization error: {}", err);
+                (StatusCode::BAD_REQUEST, format!("Invalid JSON payload: {}", err))
             }
             AppError::Gemini(err) => {
                 tracing::error!("Gemini error: {}", err);
-                (StatusCode::SERVICE_UNAVAILABLE, "AI service error")
+                (StatusCode::SERVICE_UNAVAILABLE, "AI service error".to_string())
             }
         };
 
@@ -215,6 +220,28 @@ impl From<sqlx::Error> for AppError {
 impl From<serde_json::Error> for AppError {
     fn from(err: serde_json::Error) -> Self {
         AppError::Serialization(err)
+    }
+}
+
+pub struct AppJson<T>(pub T);
+
+#[axum::async_trait]
+impl<S, T> axum::extract::FromRequest<S> for AppJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request(req: axum::http::Request<axum::body::Body>, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(value) => Ok(AppJson(value.0)),
+            Err(rejection) => {
+                let err_msg = rejection.to_string();
+                tracing::error!("JSON deserialization rejection: {}", err_msg);
+                Err(AppError::Deserialization(err_msg))
+            }
+        }
     }
 }
 

@@ -4,6 +4,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn process_store_changes(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     server_timestamp: DateTime<Utc>,
     changes: &[StoreChangeDelta],
@@ -22,6 +23,18 @@ pub async fn process_store_changes(
                                 sqlx::query!("SELECT version FROM stores WHERE id = $1", item.id)
                                     .fetch_optional(&mut **tx)
                                     .await?;
+
+                            if record.is_some() {
+                                let store_owner = sqlx::query!(
+                                    r#"SELECT "userId" as user_id FROM stores WHERE id = $1"#,
+                                    item.id
+                                )
+                                .fetch_one(&mut **tx)
+                                .await?;
+                                if store_owner.user_id.as_deref() != Some(user_id) {
+                                    return Err(AppError::Forbidden(format!("User is not authorized to update store {}", item.id)));
+                                }
+                            }
 
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
@@ -55,7 +68,7 @@ pub async fn process_store_changes(
                                 item.name,
                                 item.position,
                                 item.is_default_supported,
-                                item.user_id,
+                                user_id, // override with authenticated user_id
                                 next_version,
                                 item.is_deleted,
                                 "SYNCED",
@@ -82,6 +95,18 @@ pub async fn process_store_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
+                    let store_owner = sqlx::query!(
+                        r#"SELECT "userId" as user_id FROM stores WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+                    if let Some(row) = store_owner {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update store {}", change.id)));
+                        }
+                    }
+
                     let record =
                         sqlx::query!("SELECT version FROM stores WHERE id = $1", change.id)
                             .fetch_optional(&mut **tx)
@@ -109,6 +134,18 @@ pub async fn process_store_changes(
                 }
             }
             OperationType::Delete => {
+                let store_owner = sqlx::query!(
+                    r#"SELECT "userId" as user_id FROM stores WHERE id = $1"#,
+                    change.id
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(row) = store_owner {
+                    if row.user_id.as_deref() != Some(user_id) {
+                        return Err(AppError::Forbidden(format!("User is not authorized to delete store {}", change.id)));
+                    }
+                }
+
                 let row = sqlx::query!(
                     "UPDATE stores SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,

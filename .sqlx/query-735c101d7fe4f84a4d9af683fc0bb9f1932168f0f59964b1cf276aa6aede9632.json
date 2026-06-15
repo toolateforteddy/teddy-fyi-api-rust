@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                                        INSERT INTO grocery_item_store_info (\n                                            \"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_at, updated_by_client\n                                        ) VALUES ($1, $2, $3, $4, $5, 1, FALSE, 'SYNCED', $6, NULL)\n                                        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Float8",
+        "Bool",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "735c101d7fe4f84a4d9af683fc0bb9f1932168f0f59964b1cf276aa6aede9632"
+}

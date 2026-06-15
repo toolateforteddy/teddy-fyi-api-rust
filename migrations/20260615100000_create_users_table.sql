@@ -1,0 +1,7 @@
+-- Create users table
+CREATE TABLE IF NOT EXISTS "users" (
+    "id" TEXT PRIMARY KEY,
+    "email" TEXT,
+    "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

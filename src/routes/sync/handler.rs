@@ -25,6 +25,7 @@ pub async fn sync_handler(
     // Process todo_list_changes first as todo_items reference todo_lists
     process_todo_list_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.todo_list_changes,
@@ -34,6 +35,7 @@ pub async fn sync_handler(
     .await?;
     process_todo_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         &state.gemini_api_key,
         server_timestamp,
@@ -46,6 +48,7 @@ pub async fn sync_handler(
     // Process grocery_lists, grocery_list_members, stores, categories first, then grocery_items and grocery_item_store_info
     process_grocery_list_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.grocery_list_changes,
@@ -55,6 +58,7 @@ pub async fn sync_handler(
     .await?;
     process_grocery_list_member_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.grocery_list_member_changes,
@@ -64,6 +68,7 @@ pub async fn sync_handler(
     .await?;
     process_store_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.store_changes,
@@ -73,6 +78,7 @@ pub async fn sync_handler(
     .await?;
     process_category_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.category_changes,
@@ -82,6 +88,7 @@ pub async fn sync_handler(
     .await?;
     process_grocery_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.grocery_changes,
@@ -91,6 +98,7 @@ pub async fn sync_handler(
     .await?;
     process_grocery_item_store_info_changes(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         server_timestamp,
         &payload.grocery_item_store_info_changes,
@@ -111,6 +119,7 @@ pub async fn sync_handler(
         remote_grocery_item_store_info_changes,
     ) = fetch_remote_mutations(
         &mut tx,
+        &claims.sub,
         &payload.client_id,
         payload.last_synced_at,
         payload.scope.unwrap_or(SyncScope::All),

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n                id, name, quantity, \"isBought\" as is_bought, \"createdAt\" as created_at, position, \"categoryId\" as category_id,\n                \"timesBought\" as times_bought, \"userId\" as user_id, \"isActive\" as is_active, \"listId\" as list_id, unit, notes, version, is_deleted, sync_state\n               FROM grocery_items\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT\n                gi.id, gi.name, gi.quantity, gi.\"isBought\" as is_bought, gi.\"createdAt\" as created_at, gi.position, gi.\"categoryId\" as category_id,\n                gi.\"timesBought\" as times_bought, gi.\"userId\" as user_id, gi.\"isActive\" as is_active, gi.\"listId\" as list_id, gi.unit, gi.notes, gi.version, gi.is_deleted, gi.sync_state\n               FROM grocery_items gi\n               LEFT JOIN grocery_list_members glm ON gi.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1\n               WHERE (glm.id IS NOT NULL OR (gi.\"listId\" IS NULL AND gi.\"userId\" = $1))\n                 AND gi.updated_at > $2\n                 AND (gi.updated_by_client != $3 OR gi.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -86,6 +86,7 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Timestamptz",
         "Text"
       ]
@@ -109,5 +110,5 @@
       false
     ]
   },
-  "hash": "0046feb67e4b4328c113e6fac96db769087202c43121d1b07b451b06f5aceb50"
+  "hash": "dbbfba7717e7fec594103d07dc3e8c73e2cf9c9bfe3300d08e7251c8566db9a3"
 }

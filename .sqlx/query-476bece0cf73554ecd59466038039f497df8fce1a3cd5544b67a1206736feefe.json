@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, position, \"isDefaultSupported\" as is_default_supported, \"userId\" as user_id, version, is_deleted, sync_state\n               FROM stores\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT id, name, position, \"isDefaultSupported\" as is_default_supported, \"userId\" as user_id, version, is_deleted, sync_state\n               FROM stores\n               WHERE \"userId\" = $1\n                 AND updated_at > $2\n                 AND (updated_by_client != $3 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,7 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Timestamptz",
         "Text"
       ]
@@ -61,5 +62,5 @@
       false
     ]
   },
-  "hash": "fd1a359eb458d569506f3d7d83ab80c27ab6a865958854a834bf6153ff9c74fc"
+  "hash": "476bece0cf73554ecd59466038039f497df8fce1a3cd5544b67a1206736feefe"
 }

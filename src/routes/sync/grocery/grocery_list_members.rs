@@ -4,6 +4,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn process_grocery_list_member_changes(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     server_timestamp: DateTime<Utc>,
     changes: &[GroceryListMemberChangeDelta],
@@ -17,6 +18,24 @@ pub async fn process_grocery_list_member_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryListMemberData>(data.clone()) {
                         Ok(item) => {
+                            // Verify permission: User must either be joining themselves, or already be a member of the list
+                            let is_joining_self = item.user_id == user_id;
+                            let is_already_member = sqlx::query!(
+                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                item.list_id,
+                                user_id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?
+                            .is_some();
+
+                            if !is_joining_self && !is_already_member {
+                                return Err(AppError::Forbidden(format!(
+                                    "User is not authorized to manage membership for list {}",
+                                    item.list_id
+                                )));
+                            }
+
                             let record = sqlx::query!(
                                 "SELECT version FROM grocery_list_members WHERE id = $1",
                                 change.id
@@ -82,6 +101,32 @@ pub async fn process_grocery_list_member_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
+                    let member_record = sqlx::query!(
+                        r#"SELECT "listId" as list_id, "userId" as user_id FROM grocery_list_members WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(member_rec) = member_record {
+                        let is_self = member_rec.user_id == user_id;
+                        let is_member = sqlx::query!(
+                            r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                            member_rec.list_id,
+                            user_id
+                        )
+                        .fetch_optional(&mut **tx)
+                        .await?
+                        .is_some();
+
+                        if !is_self && !is_member {
+                            return Err(AppError::Forbidden(format!(
+                                "User is not authorized to update membership {}",
+                                change.id
+                            )));
+                        }
+                    }
+
                     let record = sqlx::query!(
                         "SELECT version FROM grocery_list_members WHERE id = $1",
                         change.id
@@ -111,6 +156,32 @@ pub async fn process_grocery_list_member_changes(
                 }
             }
             OperationType::Delete => {
+                let member_record = sqlx::query!(
+                    r#"SELECT "listId" as list_id, "userId" as user_id FROM grocery_list_members WHERE id = $1"#,
+                    change.id
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
+
+                if let Some(member_rec) = member_record {
+                    let is_self = member_rec.user_id == user_id;
+                    let is_member = sqlx::query!(
+                        r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                        member_rec.list_id,
+                        user_id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?
+                    .is_some();
+
+                    if !is_self && !is_member {
+                        return Err(AppError::Forbidden(format!(
+                            "User is not authorized to delete membership {}",
+                            change.id
+                        )));
+                    }
+                }
+
                 let row = sqlx::query!(
                     "UPDATE grocery_list_members SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,

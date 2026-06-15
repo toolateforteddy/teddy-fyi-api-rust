@@ -4,6 +4,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn process_grocery_item_store_info_changes(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     server_timestamp: DateTime<Utc>,
     changes: &[GroceryItemStoreInfoChangeDelta],
@@ -28,6 +29,21 @@ pub async fn process_grocery_item_store_info_changes(
                             )
                             .fetch_optional(&mut **tx)
                             .await?;
+
+                            if record.is_some() {
+                                let owner = sqlx::query!(
+                                    r#"SELECT "userId" as user_id FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
+                                    item.grocery_item_id, item.store_id
+                                )
+                                .fetch_one(&mut **tx)
+                                .await?;
+                                if owner.user_id.as_deref() != Some(user_id) {
+                                    return Err(AppError::Forbidden(format!(
+                                        "User is not authorized to update store info for item {} store {}",
+                                        item.grocery_item_id, item.store_id
+                                    )));
+                                }
+                            }
 
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
@@ -60,7 +76,7 @@ pub async fn process_grocery_item_store_info_changes(
                                 item.store_id,
                                 item.price,
                                 item.is_available,
-                                item.user_id,
+                                user_id, // override with authenticated user_id
                                 next_version,
                                 item.is_deleted,
                                 "SYNCED",
@@ -87,6 +103,21 @@ pub async fn process_grocery_item_store_info_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
+                    let owner = sqlx::query!(
+                        r#"SELECT "userId" as user_id FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
+                        change.grocery_item_id, change.store_id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+                    if let Some(row) = owner {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!(
+                                "User is not authorized to update store info for item {} store {}",
+                                change.grocery_item_id, change.store_id
+                            )));
+                        }
+                    }
+
                     let record = sqlx::query!(
                         r#"SELECT version FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
                         change.grocery_item_id, change.store_id
@@ -117,6 +148,21 @@ pub async fn process_grocery_item_store_info_changes(
                 }
             }
             OperationType::Delete => {
+                let owner = sqlx::query!(
+                    r#"SELECT "userId" as user_id FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
+                    change.grocery_item_id, change.store_id
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(row) = owner {
+                    if row.user_id.as_deref() != Some(user_id) {
+                        return Err(AppError::Forbidden(format!(
+                            "User is not authorized to delete store info for item {} store {}",
+                            change.grocery_item_id, change.store_id
+                        )));
+                    }
+                }
+
                 let row = sqlx::query!(
                     r#"UPDATE grocery_item_store_info SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE "groceryItemId" = $3 AND "storeId" = $4 RETURNING version"#,
                     server_timestamp,

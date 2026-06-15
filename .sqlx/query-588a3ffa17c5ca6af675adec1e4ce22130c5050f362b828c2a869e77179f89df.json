@@ -1,32 +1,32 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, position, \"userId\" as user_id, icon, version, is_deleted, sync_state\n               FROM categories\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT glm.id, glm.\"listId\" as list_id, glm.\"userId\" as user_id, glm.role, glm.\"joinedAt\" as joined_at, glm.version, glm.is_deleted, glm.sync_state\n               FROM grocery_list_members glm\n               JOIN grocery_list_members my_glm ON glm.\"listId\" = my_glm.\"listId\"\n               WHERE my_glm.\"userId\" = $1\n                 AND glm.updated_at > $2\n                 AND (glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Int4"
+        "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "name",
+        "name": "list_id",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "position",
-        "type_info": "Int4"
-      },
-      {
-        "ordinal": 3,
         "name": "user_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
-        "name": "icon",
+        "ordinal": 3,
+        "name": "role",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "joined_at",
+        "type_info": "Int8"
       },
       {
         "ordinal": 5,
@@ -46,6 +46,7 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Timestamptz",
         "Text"
       ]
@@ -54,12 +55,12 @@
       false,
       false,
       false,
-      true,
-      true,
+      false,
+      false,
       false,
       false,
       false
     ]
   },
-  "hash": "724187031d717c7062794cce843aa3c7983b1c5069762c77c82f6a858393027a"
+  "hash": "588a3ffa17c5ca6af675adec1e4ce22130c5050f362b828c2a869e77179f89df"
 }

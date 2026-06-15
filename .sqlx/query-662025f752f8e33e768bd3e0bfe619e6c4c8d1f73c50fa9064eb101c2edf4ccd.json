@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, \"listId\" as list_id, \"userId\" as user_id, role, \"joinedAt\" as joined_at, version, is_deleted, sync_state\n               FROM grocery_list_members\n               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)",
+  "query": "SELECT\n                id, name, \"colorHex\" as color_hex, \"userId\" as user_id, \"createdAt\" as created_at, sync_state, version, is_deleted\n               FROM todo_lists\n               WHERE \"userId\" = $1\n                 AND updated_at > $2 AND (updated_by_client != $3 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -10,42 +10,43 @@
       },
       {
         "ordinal": 1,
-        "name": "list_id",
+        "name": "name",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "user_id",
+        "name": "color_hex",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "role",
+        "name": "user_id",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "joined_at",
+        "name": "created_at",
         "type_info": "Int8"
       },
       {
         "ordinal": 5,
+        "name": "sync_state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "is_deleted",
         "type_info": "Bool"
-      },
-      {
-        "ordinal": 7,
-        "name": "sync_state",
-        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Timestamptz",
         "Text"
       ]
@@ -54,12 +55,12 @@
       false,
       false,
       false,
-      false,
+      true,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "540815902675c33536b20469fa431b5eafcb16a0b6204d31e6e38749181b2b11"
+  "hash": "662025f752f8e33e768bd3e0bfe619e6c4c8d1f73c50fa9064eb101c2edf4ccd"
 }

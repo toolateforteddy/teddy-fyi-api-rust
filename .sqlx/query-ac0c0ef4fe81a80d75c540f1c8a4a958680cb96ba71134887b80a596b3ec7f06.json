@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, sync_state, updated_at, updated_by_client)\n                                       VALUES ($1, $2, $3, $4, $5, 1, 'SYNCED', $6, NULL)\n                                       ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ac0c0ef4fe81a80d75c540f1c8a4a958680cb96ba71134887b80a596b3ec7f06"
+}

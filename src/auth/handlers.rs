@@ -70,7 +70,22 @@ pub async fn login_handler(
         .map(char::from)
         .collect();
 
-    // 3. Upsert session
+    // 3. Upsert user info in users table
+    sqlx::query!(
+        r#"INSERT INTO users (id, email)
+           VALUES ($1, $2)
+           ON CONFLICT (id) DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email), updated_at = NOW()"#,
+        user_id,
+        email
+    )
+    .execute(&state.db_pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to upsert user: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // 4. Upsert session
     let refresh_token_hash = hash_refresh_token(&refresh_token);
     let expiration = chrono::Utc::now() + chrono::Duration::days(7);
 

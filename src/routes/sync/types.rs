@@ -196,6 +196,7 @@ pub enum AppError {
     Serialization(serde_json::Error),
     Deserialization(String),
     Gemini(String),
+    Forbidden(String),
 }
 
 impl IntoResponse for AppError {
@@ -216,6 +217,10 @@ impl IntoResponse for AppError {
             AppError::Gemini(err) => {
                 tracing::error!("Gemini error: {}", err);
                 (StatusCode::SERVICE_UNAVAILABLE, "AI service error".to_string())
+            }
+            AppError::Forbidden(err) => {
+                tracing::error!("Forbidden error: {}", err);
+                (StatusCode::FORBIDDEN, err)
             }
         };
 

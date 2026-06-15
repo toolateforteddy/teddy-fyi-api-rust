@@ -6,6 +6,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn fetch_remote_mutations(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     last_synced_at: Option<DateTime<Utc>>,
     scope: SyncScope,
@@ -23,7 +24,7 @@ pub async fn fetch_remote_mutations(
     AppError,
 > {
     let (remote_todo_list_changes, remote_todo_changes) = if scope == SyncScope::All || scope == SyncScope::Todo {
-        fetch_remote_todo_mutations(tx, client_id, last_synced_at).await?
+        fetch_remote_todo_mutations(tx, user_id, client_id, last_synced_at).await?
     } else {
         (vec![], vec![])
     };
@@ -36,7 +37,7 @@ pub async fn fetch_remote_mutations(
         remote_grocery_changes,
         remote_grocery_item_store_info_changes,
     ) = if scope == SyncScope::All || scope == SyncScope::Grocery {
-        fetch_remote_grocery_mutations(tx, client_id, last_synced_at).await?
+        fetch_remote_grocery_mutations(tx, user_id, client_id, last_synced_at).await?
     } else {
         (vec![], vec![], vec![], vec![], vec![], vec![])
     };

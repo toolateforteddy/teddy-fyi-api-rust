@@ -4,6 +4,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn process_todo_list_changes(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     server_timestamp: DateTime<Utc>,
     changes: &[TodoListChangeDelta],
@@ -23,6 +24,18 @@ pub async fn process_todo_list_changes(
                             )
                             .fetch_optional(&mut **tx)
                             .await?;
+
+                            if record.is_some() {
+                                let owner = sqlx::query!(
+                                    r#"SELECT "userId" as user_id FROM todo_lists WHERE id = $1"#,
+                                    item.id
+                                )
+                                .fetch_one(&mut **tx)
+                                .await?;
+                                if owner.user_id.as_deref() != Some(user_id) {
+                                    return Err(AppError::Forbidden(format!("User is not authorized to update todo list {}", item.id)));
+                                }
+                            }
 
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
@@ -55,7 +68,7 @@ pub async fn process_todo_list_changes(
                                 item.id,
                                 item.name,
                                 item.color_hex,
-                                item.user_id,
+                                user_id, // override with authenticated user_id
                                 item.created_at,
                                 "SYNCED",
                                 next_version,
@@ -83,6 +96,18 @@ pub async fn process_todo_list_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
+                    let owner = sqlx::query!(
+                        r#"SELECT "userId" as user_id FROM todo_lists WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+                    if let Some(row) = owner {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update todo list {}", change.id)));
+                        }
+                    }
+
                     let record =
                         sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
                             .fetch_optional(&mut **tx)
@@ -110,6 +135,18 @@ pub async fn process_todo_list_changes(
                 }
             }
             OperationType::Delete => {
+                let owner = sqlx::query!(
+                    r#"SELECT "userId" as user_id FROM todo_lists WHERE id = $1"#,
+                    change.id
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(row) = owner {
+                    if row.user_id.as_deref() != Some(user_id) {
+                        return Err(AppError::Forbidden(format!("User is not authorized to delete todo list {}", change.id)));
+                    }
+                }
+
                 let row = sqlx::query!(
                     "UPDATE todo_lists SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,

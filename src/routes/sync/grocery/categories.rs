@@ -4,6 +4,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn process_category_changes(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     server_timestamp: DateTime<Utc>,
     changes: &[CategoryChangeDelta],
@@ -24,6 +25,18 @@ pub async fn process_category_changes(
                             )
                             .fetch_optional(&mut **tx)
                             .await?;
+
+                            if record.is_some() {
+                                let category_owner = sqlx::query!(
+                                    r#"SELECT "userId" as user_id FROM categories WHERE id = $1"#,
+                                    item.id
+                                )
+                                .fetch_one(&mut **tx)
+                                .await?;
+                                if category_owner.user_id.as_deref() != Some(user_id) {
+                                    return Err(AppError::Forbidden(format!("User is not authorized to update category {}", item.id)));
+                                }
+                            }
 
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
@@ -56,7 +69,7 @@ pub async fn process_category_changes(
                                 item.id,
                                 item.name,
                                 item.position,
-                                item.user_id,
+                                user_id, // override with authenticated user_id
                                 item.icon,
                                 next_version,
                                 item.is_deleted,
@@ -84,6 +97,18 @@ pub async fn process_category_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
+                    let category_owner = sqlx::query!(
+                        r#"SELECT "userId" as user_id FROM categories WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+                    if let Some(row) = category_owner {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update category {}", change.id)));
+                        }
+                    }
+
                     let record =
                         sqlx::query!("SELECT version FROM categories WHERE id = $1", change.id)
                             .fetch_optional(&mut **tx)
@@ -111,6 +136,18 @@ pub async fn process_category_changes(
                 }
             }
             OperationType::Delete => {
+                let category_owner = sqlx::query!(
+                    r#"SELECT "userId" as user_id FROM categories WHERE id = $1"#,
+                    change.id
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(row) = category_owner {
+                    if row.user_id.as_deref() != Some(user_id) {
+                        return Err(AppError::Forbidden(format!("User is not authorized to delete category {}", change.id)));
+                    }
+                }
+
                 let row = sqlx::query!(
                     "UPDATE categories SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,

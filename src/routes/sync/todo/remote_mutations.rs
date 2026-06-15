@@ -4,6 +4,7 @@ use sqlx::{Postgres, Transaction};
 
 pub async fn fetch_remote_todo_mutations(
     tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
     client_id: &str,
     last_synced_at: Option<DateTime<Utc>>,
 ) -> Result<(Vec<TodoListChangeDelta>, Vec<TodoChangeDelta>), AppError> {
@@ -11,12 +12,14 @@ pub async fn fetch_remote_todo_mutations(
     let mut remote_todo_changes = Vec::new();
 
     if let Some(last_synced_at) = last_synced_at {
-        // Fetch todo_lists changed after last_synced_at by OTHER clients
+        // Fetch todo_lists changed after last_synced_at by OTHER clients belonging to current user
         let updated_todo_lists = sqlx::query!(
             r#"SELECT
                 id, name, "colorHex" as color_hex, "userId" as user_id, "createdAt" as created_at, sync_state, version, is_deleted
                FROM todo_lists
-               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)"#,
+               WHERE "userId" = $1
+                 AND updated_at > $2 AND (updated_by_client != $3 OR updated_by_client IS NULL)"#,
+            user_id,
             last_synced_at,
             client_id
         )
@@ -49,14 +52,16 @@ pub async fn fetch_remote_todo_mutations(
             });
         }
 
-        // Fetch todo_items changed after last_synced_at by OTHER clients
+        // Fetch todo_items changed after last_synced_at by OTHER clients belonging to current user
         let updated_todos = sqlx::query!(
             r#"SELECT
                 id, title, "isCompleted" as is_completed, "createdAt" as created_at, position, "scheduledDate" as scheduled_date,
                 "recurrenceRule" as recurrence_rule, "scheduledAt" as scheduled_at, "userId" as user_id, "parentId" as parent_id, "isDaily" as is_daily,
                 "dueDate" as due_date, description, "listId" as list_id, priority, icon, sync_state, version, is_deleted
                FROM todo_items
-               WHERE updated_at > $1 AND (updated_by_client != $2 OR updated_by_client IS NULL)"#,
+               WHERE "userId" = $1
+                 AND updated_at > $2 AND (updated_by_client != $3 OR updated_by_client IS NULL)"#,
+            user_id,
             last_synced_at,
             client_id
         )

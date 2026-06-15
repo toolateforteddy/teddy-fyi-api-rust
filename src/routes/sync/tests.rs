@@ -128,9 +128,9 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
 #[sqlx::test]
 async fn test_sync_handler_update_todo(pool: PgPool) {
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, is_deleted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-        "todo-2", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1", false
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"userId\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, is_deleted)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        "todo-2", "Test Todo", false, 0_i64, 0_i32, 0_i64, "user-1", false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1", false
     )
     .execute(&pool)
     .await
@@ -177,9 +177,9 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
 #[sqlx::test]
 async fn test_sync_handler_delete_todo(pool: PgPool) {
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, is_deleted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-        "todo-3", "Test Todo", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1", false
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"userId\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, is_deleted)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        "todo-3", "Test Todo", false, 0_i64, 0_i32, 0_i64, "user-1", false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1", false
     )
     .execute(&pool)
     .await
@@ -227,9 +227,9 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
 async fn test_sync_handler_remote_mutations(pool: PgPool) {
     // Insert an old record (not fetched)
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, updated_at, is_deleted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW() - INTERVAL '1 hour', $13)",
-        "todo-old", "Old", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 1_i32, "client-1", false
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"userId\", \"isDaily\", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW() - INTERVAL '1 hour', $14)",
+        "todo-old", "Old", false, 0_i64, 0_i32, 0_i64, "user-1", false, 0_i32, None::<String>, "SYNCED", 1_i32, false, "client-1"
     )
     .execute(&pool)
     .await
@@ -237,9 +237,9 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
 
     // Insert a new record (should be fetched)
     sqlx::query!(
-        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"isDaily\", priority, icon, sync_state, version, updated_by_client, updated_at, is_deleted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13)",
-        "todo-new", "New", false, 0_i64, 0_i32, 0_i64, false, 0_i32, None::<String>, "SYNCED", 2_i32, "client-1", false
+        "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"userId\", \"isDaily\", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), $14)",
+        "todo-new", "New", false, 0_i64, 0_i32, 0_i64, "user-1", false, 0_i32, None::<String>, "SYNCED", 2_i32, false, "client-1"
     )
     .execute(&pool)
     .await
@@ -406,6 +406,14 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         1_i32,
         false,
         "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-2-owner", "glist-2", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -715,8 +723,16 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     .unwrap();
 
     sqlx::query!(
-        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        100, "Test Store", 1, true, 1_i32, false, "SYNCED"
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-3-member", "glist-3", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        100, "Test Store", 1, true, "user-1", 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -941,14 +957,15 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
 
     // --- 2. todo_items ---
     sqlx::query!(
-        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "isDaily", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13)"#,
+        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "userId", "isDaily", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), $14)"#,
         "todoitem-remote-1",
         "Remote Todo",
         false,
         0_i64,
         1_i32,
         0_i64,
+        "user-1",
         false,
         1_i32,
         None::<String>,
@@ -962,7 +979,7 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     .unwrap();
 
     // Verify TODO mutations
-    let (todo_lists, todo_items) = fetch_remote_todo_mutations(&mut tx, client_id, last_synced_at)
+    let (todo_lists, todo_items) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
         .await
         .unwrap();
 
@@ -1092,7 +1109,7 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
         categories,
         grocery_items,
         grocery_item_store_infos,
-    ) = fetch_remote_grocery_mutations(&mut tx, client_id, last_synced_at)
+    ) = fetch_remote_grocery_mutations(&mut tx, "user-1", client_id, last_synced_at)
         .await
         .unwrap();
 
@@ -1137,14 +1154,15 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
 
     // --- 2. todo_items ---
     sqlx::query!(
-        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "isDaily", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13)"#,
+        r#"INSERT INTO todo_items (id, title, "isCompleted", "createdAt", position, "scheduledAt", "userId", "isDaily", priority, icon, sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), $14)"#,
         "todoitem-echo-1",
         "Echo Todo",
         false,
         0_i64,
         1_i32,
         0_i64,
+        "user-1",
         false,
         1_i32,
         None::<String>,
@@ -1158,7 +1176,7 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     .unwrap();
 
     // Verify TODO mutations (should be empty as we are the updater)
-    let (todo_lists, todo_items) = fetch_remote_todo_mutations(&mut tx, client_id, last_synced_at)
+    let (todo_lists, todo_items) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
         .await
         .unwrap();
 
@@ -1288,7 +1306,7 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
         categories,
         grocery_items,
         grocery_item_store_infos,
-    ) = fetch_remote_grocery_mutations(&mut tx, client_id, last_synced_at)
+    ) = fetch_remote_grocery_mutations(&mut tx, "user-1", client_id, last_synced_at)
         .await
         .unwrap();
 
@@ -1381,6 +1399,14 @@ async fn test_sync_handler_scope_grocery(pool: PgPool) {
         other_client,
         false,
         "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-scope-member-1", "grocerylist-scope-1", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -1649,3 +1675,352 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
         let _: i32 = conn.del(&format!("user:{}:last_update:Todo", test_user)).await.unwrap_or(0);
     }
 }
+
+#[sqlx::test]
+async fn test_login_upserts_user(pool: PgPool) {
+    let mut state = setup_state(pool.clone());
+    state.cookie_domain = "".to_string(); // bypass Google OAuth validation via dev/mock token
+
+    let payload = crate::auth::handlers::LoginRequest {
+        user_id: "user-test-login-upsert".to_string(),
+        client_uuid: "client-upsert".to_string(),
+        google_auth_token: "mock.token".to_string(),
+        use_cookie: Some(false),
+    };
+
+    let response = crate::auth::handlers::login_handler(State(state.clone()), Json(payload))
+        .await
+        .expect("Login should succeed");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    // Verify user exists in the database
+    let user = sqlx::query!(
+        "SELECT email FROM users WHERE id = $1",
+        "user-test-login-upsert"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("User should have been upserted");
+    assert_eq!(user.email, Some("dev-user@teddy.fyi".to_string()));
+}
+
+#[sqlx::test]
+async fn test_sync_unauthorized_grocery_list_access(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    
+    // Insert a grocery list with user-2 as member only.
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "glist-forbidden-1",
+        "Forbidden List",
+        0_i64,
+        1_i32,
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-forbidden-member", "glist-forbidden-1", "user-2", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Now, let's call sync_handler (which uses claims for user-1) trying to modify glist-forbidden-1
+    let list_data = GroceryListData {
+        id: "glist-forbidden-1".to_string(),
+        name: "Attempting Modify".to_string(),
+        owner_id: Some("owner-1".to_string()),
+        created_at: 123456789,
+        version: 2,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+    
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![GroceryListChangeDelta {
+            id: "glist-forbidden-1".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: Some(serde_json::to_value(&list_data).unwrap()),
+        }],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let err = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect_err("Handler should fail with Forbidden");
+
+    assert!(matches!(err, AppError::Forbidden(_)));
+}
+
+#[sqlx::test]
+async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    
+    // Insert a grocery list with user-2 as member only.
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "glist-forbidden-2",
+        "Forbidden List",
+        0_i64,
+        1_i32,
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-forbidden-member-2", "glist-forbidden-2", "user-2", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Now, let's call sync_handler (which uses claims for user-1) trying to insert an item for glist-forbidden-2
+    let item_data = GroceryItemData {
+        id: 999,
+        name: "Forbidden Item".to_string(),
+        quantity: "1".to_string(),
+        is_bought: false,
+        created_at: 1000,
+        position: 1,
+        category_id: None,
+        times_bought: 0,
+        user_id: None,
+        is_active: true,
+        list_id: Some("glist-forbidden-2".to_string()),
+        unit: None,
+        notes: None,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+    
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![GroceryChangeDelta {
+            id: 999,
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&item_data).unwrap()),
+        }],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let err = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect_err("Handler should fail with Forbidden");
+
+    assert!(matches!(err, AppError::Forbidden(_)));
+}
+
+#[sqlx::test]
+async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // 1. Create list-alpha and list-beta
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "list-alpha", "Alpha List", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "list-beta", "Beta List", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Add user-1 as member to both lists
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "member-alpha", "list-alpha", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "member-beta", "list-beta", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 3. Create a store owned by user-1
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        500, "Store Omega", 1, true, "user-1", 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 4. Create an item "Milk" in list-alpha, and map it to Store Omega
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+        600, "Milk", "1", false, 0_i64, 1_i32, None::<i32>, 0_i32, "user-1", true, Some("list-alpha".to_string()), None::<String>, None::<String>, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_item_store_info (\"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        600, 500, 2.99, true, "user-1", 1_i32, false, "SYNCED", "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 5. Sync-upload a new item "milk" (lowercase, exact match case-insensitive) in list-beta
+    let item_data = GroceryItemData {
+        id: 700,
+        name: "milk".to_string(),
+        quantity: "2".to_string(),
+        is_bought: false,
+        created_at: 2000,
+        position: 2,
+        category_id: None,
+        times_bought: 0,
+        user_id: None,
+        is_active: true,
+        list_id: Some("list-beta".to_string()),
+        unit: None,
+        notes: None,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![GroceryChangeDelta {
+            id: 700,
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&item_data).unwrap()),
+        }],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect("Sync should succeed")
+        .0;
+
+    assert!(res.success_ids.contains(&"700".to_string()));
+
+    // 6. Verify that grocery_item_store_info has been auto-populated for item 700 and store 500
+    let mapping = sqlx::query!(
+        "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id, price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, updated_by_client
+         FROM grocery_item_store_info
+         WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2",
+        700,
+        500
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Auto-populated store mapping should exist");
+
+    assert_eq!(mapping.price, Some(2.99));
+    assert!(mapping.is_available);
+    assert_eq!(mapping.user_id, Some("user-1".to_string()));
+    assert_eq!(mapping.version, 1);
+    assert!(!mapping.is_deleted);
+    // MUST be NULL/None so it syncs back to client
+    assert_eq!(mapping.updated_by_client, None);
+}
+
+#[sqlx::test]
+async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    
+    // 1. Insert item-1 with NULL listId owned by user-1 (updated by other-client)
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, updated_by_client, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, $14, $15, NOW())",
+        801, "No List Item 1", "1", false, 0_i64, 1_i32, None::<i32>, 0_i32, "user-1", true, None::<String>, None::<String>, 1_i32, false, "other-client"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Insert item-2 with NULL listId owned by user-2 (updated by other-client)
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, updated_by_client, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, $14, $15, NOW())",
+        802, "No List Item 2", "1", false, 0_i64, 1_i32, None::<i32>, 0_i32, "user-2", true, None::<String>, None::<String>, 1_i32, false, "other-client"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 3. Call sync_handler for user-1
+    let req = SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Sync should succeed")
+        .0;
+
+    // 4. Verify user-1 receives item-1 but NOT item-2
+    let received_ids: Vec<i32> = res.remote_grocery_changes.iter().map(|c| c.id).collect();
+    assert!(received_ids.contains(&801));
+    assert!(!received_ids.contains(&802));
+}
+
+

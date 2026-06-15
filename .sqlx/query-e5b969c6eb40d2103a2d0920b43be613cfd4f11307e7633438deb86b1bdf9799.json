@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(MAX(max_updated), '1970-01-01 00:00:00+00'::timestamptz) as \"max_updated!\"\n                   FROM (\n                       SELECT MAX(updated_at) as max_updated FROM todo_lists WHERE \"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM todo_items WHERE \"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM grocery_lists WHERE \"ownerId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM grocery_list_members WHERE \"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM stores WHERE \"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM categories WHERE \"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM grocery_items WHERE \"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(updated_at) as max_updated FROM grocery_item_store_info WHERE \"userId\" = $1\n                   ) subquery",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max_updated!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e5b969c6eb40d2103a2d0920b43be613cfd4f11307e7633438deb86b1bdf9799"
+}

@@ -4,6 +4,10 @@ use axum::extract::State;
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
+use crate::auth::tokens::Claims;
+use axum::{Extension, Json};
+use redis::AsyncCommands;
+
 
 fn setup_state(pool: PgPool) -> AppState {
     AppState {
@@ -13,7 +17,23 @@ fn setup_state(pool: PgPool) -> AppState {
         db_pool: pool,
         jwt_secret: "test-secret".to_string(),
         gemini_api_key: "test-key".to_string(),
+        redis_client: redis::Client::open(
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+        ).unwrap(),
+        cookie_domain: ".teddy.fyi".to_string(),
     }
+}
+
+async fn sync_handler(
+    state: State<AppState>,
+    req: AppJson<SyncRequest>,
+) -> Result<Json<SyncResponse>, AppError> {
+    let claims = Claims {
+        sub: "user-1".to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10000000000,
+    };
+    super::sync_handler(state, Extension(claims), req).await
 }
 
 #[sqlx::test]
@@ -1450,4 +1470,182 @@ async fn test_sync_handler_scope_todo(pool: PgPool) {
 
     assert!(res.remote_todo_list_changes.iter().any(|d| d.id == "todolist-scope-2"));
     assert!(res.remote_grocery_list_changes.is_empty());
+}
+
+#[sqlx::test]
+async fn test_sync_status_handler_db_fallback(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let test_user = "user-status-db-fallback";
+    
+    // Clear any existing cache for test_user
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", test_user)).await.unwrap_or(0);
+    }
+
+    // Insert a todo list for test_user
+    // Use RETURNING updated_at to get the exact database-assigned timestamp
+    let row = sqlx::query!(
+        r#"INSERT INTO todo_lists (id, name, "colorHex", "userId", "createdAt", sync_state, version, is_deleted, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING updated_at"#,
+        "todolist-status-1",
+        "Status List",
+        "#FF0000",
+        test_user,
+        0_i64,
+        "SYNCED",
+        1_i32,
+        false,
+        "client-1"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let updated_time = row.updated_at;
+
+    let claims = Claims {
+        sub: test_user.to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10000000000,
+    };
+
+    // Case 1: client last_synced_at is older (needs sync)
+    let query_older = SyncStatusQuery {
+        last_synced_at: Some(updated_time - chrono::Duration::minutes(5)),
+        scope: Some(SyncScope::All),
+    };
+    let res = sync_status_handler(State(state.clone()), Extension(claims.clone()), axum::extract::Query(query_older))
+        .await
+        .expect("Status handler should succeed")
+        .0;
+
+    assert!(res.needs_sync);
+    assert_eq!(res.latest_version, updated_time);
+
+    // Case 2: client last_synced_at is newer (does not need sync)
+    let query_newer = SyncStatusQuery {
+        last_synced_at: Some(updated_time + chrono::Duration::minutes(5)),
+        scope: Some(SyncScope::All),
+    };
+    let res_newer = sync_status_handler(State(state.clone()), Extension(claims.clone()), axum::extract::Query(query_newer))
+        .await
+        .expect("Status handler should succeed")
+        .0;
+
+    assert!(!res_newer.needs_sync);
+
+    // Verify key was set in Redis
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let ts_str: Option<String> = conn.get(&format!("user:{}:last_update:All", test_user)).await.unwrap_or(None);
+        assert!(ts_str.is_some());
+        
+        // Clean up
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", test_user)).await.unwrap_or(0);
+    }
+}
+
+#[sqlx::test]
+async fn test_sync_status_handler_cache_hit(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let test_user = "user-status-cache-hit";
+    
+    // Only run if Redis is actually connectable
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let cached_time = Utc::now() - chrono::Duration::hours(2);
+        let ts_str = cached_time.to_rfc3339();
+        
+        let _: () = conn.set(&format!("user:{}:last_update:Todo", test_user), &ts_str).await.unwrap();
+
+        let claims = Claims {
+            sub: test_user.to_string(),
+            client_uuid: "client-1".to_string(),
+            exp: 10000000000,
+        };
+
+        // Even if DB has a newer/older timestamp or is empty, it should use the cache
+        let query = SyncStatusQuery {
+            last_synced_at: Some(cached_time - chrono::Duration::minutes(5)),
+            scope: Some(SyncScope::Todo),
+        };
+        let res = sync_status_handler(State(state.clone()), Extension(claims.clone()), axum::extract::Query(query))
+            .await
+            .expect("Status handler should succeed")
+            .0;
+
+        assert!(res.needs_sync);
+        assert!((res.latest_version - cached_time).num_seconds().abs() < 2);
+
+        // Clean up
+        let _: i32 = conn.del(&format!("user:{}:last_update:Todo", test_user)).await.unwrap_or(0);
+    }
+}
+
+#[sqlx::test]
+async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let test_user = "user-updates-redis-cache";
+
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", test_user)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Todo", test_user)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Grocery", test_user)).await.unwrap_or(0);
+    }
+
+    let list_data = TodoListData {
+        id: "list-status-cache-1".to_string(),
+        name: "Cache Test List".to_string(),
+        color_hex: "#FF0000".to_string(),
+        user_id: Some(test_user.to_string()),
+        created_at: 0,
+        sync_state: "SYNCED".to_string(),
+        version: 1,
+        is_deleted: false,
+    };
+    
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        scope: None,
+        todo_list_changes: vec![TodoListChangeDelta {
+            id: "list-status-cache-1".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&list_data).unwrap()),
+        }],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+    };
+
+    let claims = Claims {
+        sub: test_user.to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10000000000,
+    };
+
+    let res = super::sync_handler(State(state.clone()), Extension(claims.clone()), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert_eq!(res.success_ids, vec!["list-status-cache-1"]);
+
+    // Verify Redis has keys updated for All and Todo
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let all_ts: Option<String> = conn.get(&format!("user:{}:last_update:All", test_user)).await.unwrap_or(None);
+        let todo_ts: Option<String> = conn.get(&format!("user:{}:last_update:Todo", test_user)).await.unwrap_or(None);
+        let grocery_ts: Option<String> = conn.get(&format!("user:{}:last_update:Grocery", test_user)).await.unwrap_or(None);
+
+        assert!(all_ts.is_some(), "All cache key should be updated");
+        assert!(todo_ts.is_some(), "Todo cache key should be updated");
+        assert!(grocery_ts.is_none(), "Grocery cache key should not be updated");
+
+        // Clean up
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", test_user)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Todo", test_user)).await.unwrap_or(0);
+    }
 }

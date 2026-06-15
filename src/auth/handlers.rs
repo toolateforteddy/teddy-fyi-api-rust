@@ -44,18 +44,24 @@ pub async fn login_handler(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, StatusCode> {
-    // 1. Verify Google Token (reusing existing google_client)
-    let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // 1. Resolve user ID and email (supporting dev bypass)
+    let (user_id, email) = if payload.google_auth_token.starts_with("mock.") && state.cookie_domain.is_empty() {
+        (payload.user_id.clone(), Some("dev-user@teddy.fyi".to_string()))
+    } else {
+        // Verify Google Token (reusing existing google_client)
+        let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // Manually verify that the audience claim matches either the Android or Web client ID
-    if google_payload.aud != state.client_id && google_payload.aud != state.web_client_id {
-        tracing::warn!("Audience mismatch: expected {} or {}, got {}", state.client_id, state.web_client_id, google_payload.aud);
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+        // Manually verify that the audience claim matches either the Android or Web client ID
+        if google_payload.aud != state.client_id && google_payload.aud != state.web_client_id {
+            tracing::warn!("Audience mismatch: expected {} or {}, got {}", state.client_id, state.web_client_id, google_payload.aud);
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        (payload.user_id.clone(), google_payload.email.clone())
+    };
 
     // 2. Generate tokens
-    let access_token = create_access_token(&payload.user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
+    let access_token = create_access_token(&user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let refresh_token: String = rand::rng()
@@ -73,7 +79,7 @@ pub async fn login_handler(
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (user_id, client_uuid) DO UPDATE
          SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at",
-        payload.user_id,
+        user_id,
         payload.client_uuid,
         refresh_token_hash,
         expiration
@@ -94,11 +100,9 @@ pub async fn login_handler(
                 access_token, state.cookie_domain
             )
         };
-        
-        let email = google_payload.email.clone();
 
         let browser_response = BrowserAuthResponse {
-            user_id: payload.user_id,
+            user_id,
             email,
             refresh_token,
         };

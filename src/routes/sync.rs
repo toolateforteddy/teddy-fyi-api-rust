@@ -16,6 +16,12 @@ pub use status::*;
 pub mod handler;
 pub use handler::*;
 
+pub mod config;
+pub use config::*;
+
+pub mod drawing;
+pub use drawing::*;
+
 #[cfg(test)]
 pub mod tests;
 

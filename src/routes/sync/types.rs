@@ -1,6 +1,7 @@
 use axum::{http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, Deserializer};
+use uuid::Uuid;
 
 pub fn deserialize_i32_from_string_or_number<'de, D>(deserializer: D) -> Result<i32, D::Error>
 where
@@ -130,12 +131,33 @@ pub struct GroceryItemStoreInfoChangeDelta {
     pub data: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConfigChangeDelta {
+    pub id: Uuid,
+    #[serde(rename = "type")]
+    pub operation_type: OperationType,
+    pub version: i32,
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DrawingChangeDelta {
+    pub id: Uuid,
+    #[serde(rename = "type")]
+    pub operation_type: OperationType,
+    pub version: i32,
+    pub data: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyncScope {
     All,
     Grocery,
     Todo,
+    ScribbleBox,
+    ScribbleKeep,
+    ScribbleKeepCloud,
 }
 
 impl Default for SyncScope {
@@ -166,6 +188,10 @@ pub struct SyncRequest {
     pub grocery_changes: Vec<GroceryChangeDelta>,
     #[serde(default, alias = "groceryItemStoreInfoChanges")]
     pub grocery_item_store_info_changes: Vec<GroceryItemStoreInfoChangeDelta>,
+    #[serde(default, alias = "configChanges")]
+    pub config_changes: Vec<ConfigChangeDelta>,
+    #[serde(default, alias = "drawingChanges")]
+    pub drawing_changes: Vec<DrawingChangeDelta>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -187,6 +213,8 @@ pub struct SyncResponse {
     pub remote_category_changes: Vec<CategoryChangeDelta>,
     pub remote_grocery_changes: Vec<GroceryChangeDelta>,
     pub remote_grocery_item_store_info_changes: Vec<GroceryItemStoreInfoChangeDelta>,
+    pub remote_config_changes: Vec<ConfigChangeDelta>,
+    pub remote_drawing_changes: Vec<DrawingChangeDelta>,
     pub server_timestamp: DateTime<Utc>,
 }
 
@@ -434,4 +462,41 @@ pub struct GroceryItemStoreInfoData {
     pub version: i32,
     #[serde(alias = "is_deleted", default)]
     pub is_deleted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConfigData {
+    pub id: Uuid,
+    #[serde(alias = "user_id", rename = "userId")]
+    pub user_id: Uuid,
+    #[serde(alias = "client_uuid", rename = "clientUuid")]
+    pub client_uuid: Uuid,
+    pub version: i32,
+    #[serde(alias = "is_deleted", rename = "isDeleted")]
+    pub is_deleted: bool,
+    #[serde(alias = "last_modified", rename = "lastModified")]
+    pub last_modified: i64,
+    #[serde(alias = "sync_state", rename = "syncState", default = "default_sync_state")]
+    pub sync_state: String,
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DrawingData {
+    pub id: Uuid,
+    #[serde(alias = "user_id", rename = "userId")]
+    pub user_id: Uuid,
+    #[serde(alias = "client_uuid", rename = "clientUuid")]
+    pub client_uuid: Uuid,
+    pub version: i32,
+    #[serde(alias = "is_deleted", rename = "isDeleted")]
+    pub is_deleted: bool,
+    #[serde(alias = "last_modified", rename = "lastModified")]
+    pub last_modified: i64,
+    #[serde(alias = "sync_state", rename = "syncState", default = "default_sync_state")]
+    pub sync_state: String,
+    #[serde(alias = "created_at", rename = "createdAt")]
+    pub created_at: i64,
+    pub data: serde_json::Value,
 }

@@ -93,6 +93,30 @@ async fn get_latest_db_timestamp(
             .fetch_one(&state.db_pool)
             .await?
         }
+        SyncScope::ScribbleBox | SyncScope::ScribbleKeep => {
+            let user_uuid = super::remote_mutations::parse_or_hash_uuid(user_id);
+            sqlx::query_scalar!(
+                r#"SELECT COALESCE(MAX(to_timestamp(last_modified / 1000.0)), '1970-01-01 00:00:00+00'::timestamptz) as "max_updated!"
+                   FROM configs WHERE user_id = $1"#,
+                user_uuid
+            )
+            .fetch_one(&state.db_pool)
+            .await?
+        }
+        SyncScope::ScribbleKeepCloud => {
+            let user_uuid = super::remote_mutations::parse_or_hash_uuid(user_id);
+            sqlx::query_scalar!(
+                r#"SELECT COALESCE(MAX(max_updated), '1970-01-01 00:00:00+00'::timestamptz) as "max_updated!"
+                   FROM (
+                       SELECT to_timestamp(last_modified / 1000.0) as max_updated FROM configs WHERE user_id = $1
+                       UNION ALL
+                       SELECT to_timestamp(last_modified / 1000.0) as max_updated FROM drawings WHERE user_id = $1
+                   ) subquery"#,
+                user_uuid
+            )
+            .fetch_one(&state.db_pool)
+            .await?
+        }
     };
 
     Ok(max_updated)

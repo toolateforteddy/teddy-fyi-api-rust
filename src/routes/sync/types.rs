@@ -167,7 +167,7 @@ pub struct ConfigSyncItem {
 pub struct DrawingSyncItem {
     pub id: Uuid,
     #[serde(alias = "userId")]
-    pub user_id: Option<Uuid>,
+    pub user_id: Option<String>,
     #[serde(alias = "createdAt")]
     pub created_at: i64,
     pub data: serde_json::Value,
@@ -516,9 +516,9 @@ pub struct GroceryItemStoreInfoData {
 pub struct ConfigData {
     pub id: Uuid,
     #[serde(alias = "userId")]
-    pub user_id: Uuid,
+    pub user_id: String,
     #[serde(alias = "clientUuid")]
-    pub client_uuid: Uuid,
+    pub client_uuid: String,
     pub version: i32,
     #[serde(alias = "isDeleted")]
     pub is_deleted: bool,
@@ -534,9 +534,9 @@ pub struct ConfigData {
 pub struct DrawingData {
     pub id: Uuid,
     #[serde(alias = "userId")]
-    pub user_id: Uuid,
+    pub user_id: String,
     #[serde(alias = "clientUuid")]
-    pub client_uuid: Uuid,
+    pub client_uuid: String,
     pub version: i32,
     #[serde(alias = "isDeleted")]
     pub is_deleted: bool,

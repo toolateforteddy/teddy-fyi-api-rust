@@ -1,5 +1,7 @@
 .PHONY: build run dev test clean install init docker-build docker-run docker-run-i docker-clean docker-tag docker-push
 
+DATABASE_URL ?= postgresql://postgres:postgres@localhost:5432/neondb
+
 # Local Rust commands
 init:
 	@echo "Installing Rust toolchain..."
@@ -19,7 +21,7 @@ dev:
 	./scripts/dev.sh
 
 test:
-	cargo test
+	DATABASE_URL="$(DATABASE_URL)" cargo test
 
 clean:
 	cargo clean

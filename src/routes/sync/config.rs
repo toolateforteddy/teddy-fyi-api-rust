@@ -193,8 +193,8 @@ pub async fn fetch_remote_config_mutations(
     for row in rows {
         let item_data = ConfigData {
             id: row.id,
-            user_id: row.user_id,
-            client_uuid: row.client_uuid,
+            user_id: row.user_id.to_string(),
+            client_uuid: row.client_uuid.to_string(),
             version: row.version,
             is_deleted: row.is_deleted,
             last_modified: row.last_modified,

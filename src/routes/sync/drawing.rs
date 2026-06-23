@@ -191,8 +191,8 @@ pub async fn fetch_remote_drawing_mutations(
     for row in rows {
         let item_data = DrawingData {
             id: row.id,
-            user_id: row.user_id,
-            client_uuid: row.client_uuid,
+            user_id: row.user_id.to_string(),
+            client_uuid: row.client_uuid.to_string(),
             version: row.version,
             is_deleted: row.is_deleted,
             last_modified: row.last_modified,
@@ -349,7 +349,7 @@ pub async fn fetch_drawings_for_response(
         rows.into_iter()
             .map(|row| DrawingSyncItem {
                 id: row.id,
-                user_id: Some(row.user_id),
+                user_id: Some(row.user_id.to_string()),
                 created_at: row.created_at,
                 data: row.data,
                 sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
@@ -372,7 +372,7 @@ pub async fn fetch_drawings_for_response(
         rows.into_iter()
             .map(|row| DrawingSyncItem {
                 id: row.id,
-                user_id: Some(row.user_id),
+                user_id: Some(row.user_id.to_string()),
                 created_at: row.created_at,
                 data: row.data,
                 sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),

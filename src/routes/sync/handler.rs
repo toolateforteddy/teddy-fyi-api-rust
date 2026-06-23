@@ -26,6 +26,16 @@ pub async fn sync_handler(
 
     let scope = payload.scope.unwrap_or(SyncScope::All);
 
+    tracing::info!(
+        "Incoming sync request: client_id={}, scope={:?}, config_changes={}, drawing_changes={}, todo_changes={}, grocery_changes={}",
+        payload.client_id,
+        scope,
+        payload.config_changes.len(),
+        payload.drawing_changes.len(),
+        payload.todo_changes.len(),
+        payload.grocery_changes.len()
+    );
+
     match scope {
         SyncScope::ScribbleBox => {
             let user_uuid = parse_or_hash_uuid(&claims.sub);

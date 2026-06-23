@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(MAX(to_timestamp(last_modified / 1000.0)), '1970-01-01 00:00:00+00'::timestamptz) as \"max_updated!\"\n                   FROM configs WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max_updated!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e12b0bd6742e50cb8894c5c8abd47b782505e74bec07db0a6ec266d2f01858b9"
+}

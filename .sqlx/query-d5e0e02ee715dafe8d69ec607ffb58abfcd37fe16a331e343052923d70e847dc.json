@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) VALUES ($1, $2, $3, $4, $5, $6, $7::text::sync_state, $8, $9) ON CONFLICT (id) DO UPDATE SET client_uuid = EXCLUDED.client_uuid, version = EXCLUDED.version, is_deleted = EXCLUDED.is_deleted, last_modified = EXCLUDED.last_modified, sync_state = EXCLUDED.sync_state, data = EXCLUDED.data",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Bool",
+        "Int8",
+        "Text",
+        "Int8",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d5e0e02ee715dafe8d69ec607ffb58abfcd37fe16a331e343052923d70e847dc"
+}

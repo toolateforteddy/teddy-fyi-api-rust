@@ -149,6 +149,37 @@ pub struct DrawingChangeDelta {
     pub data: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConfigSyncItem {
+    pub id: Uuid,
+    pub key: String,
+    pub value: String,
+    #[serde(alias = "syncState", rename = "syncState", default = "default_sync_state")]
+    pub sync_state: String,
+    pub version: i32,
+    #[serde(alias = "isDeleted", rename = "isDeleted")]
+    pub is_deleted: bool,
+    #[serde(alias = "lastModified", rename = "lastModified")]
+    pub last_modified: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DrawingSyncItem {
+    pub id: Uuid,
+    #[serde(alias = "userId", rename = "userId")]
+    pub user_id: Option<Uuid>,
+    #[serde(alias = "createdAt", rename = "createdAt")]
+    pub created_at: i64,
+    pub data: serde_json::Value,
+    #[serde(alias = "syncState", rename = "syncState", default = "default_sync_state")]
+    pub sync_state: String,
+    pub version: i32,
+    #[serde(alias = "isDeleted", rename = "isDeleted")]
+    pub is_deleted: bool,
+    #[serde(alias = "lastModified", rename = "lastModified")]
+    pub last_modified: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyncScope {
@@ -192,6 +223,10 @@ pub struct SyncRequest {
     pub config_changes: Vec<ConfigChangeDelta>,
     #[serde(default, alias = "drawingChanges")]
     pub drawing_changes: Vec<DrawingChangeDelta>,
+    #[serde(default)]
+    pub configs: Vec<ConfigSyncItem>,
+    #[serde(default)]
+    pub drawings: Vec<DrawingSyncItem>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -215,6 +250,10 @@ pub struct SyncResponse {
     pub remote_grocery_item_store_info_changes: Vec<GroceryItemStoreInfoChangeDelta>,
     pub remote_config_changes: Vec<ConfigChangeDelta>,
     pub remote_drawing_changes: Vec<DrawingChangeDelta>,
+    #[serde(default)]
+    pub configs: Vec<ConfigSyncItem>,
+    #[serde(default)]
+    pub drawings: Vec<DrawingSyncItem>,
     pub server_timestamp: DateTime<Utc>,
 }
 

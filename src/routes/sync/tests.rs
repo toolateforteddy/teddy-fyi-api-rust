@@ -71,6 +71,8 @@ async fn test_sync_handler_insert_todo_list(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -123,6 +125,8 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -163,6 +167,8 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -214,6 +220,8 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -273,6 +281,8 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -319,6 +329,8 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -356,6 +368,8 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -394,6 +408,8 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -468,6 +484,8 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -506,6 +524,8 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -544,6 +564,8 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -613,6 +635,8 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -667,6 +691,8 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -713,6 +739,8 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -825,6 +853,8 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         }],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -890,6 +920,8 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         }],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -942,6 +974,8 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         }],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -1463,6 +1497,8 @@ async fn test_sync_handler_scope_grocery(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -1528,6 +1564,8 @@ async fn test_sync_handler_scope_todo(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -1688,6 +1726,8 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let claims = Claims {
@@ -1804,6 +1844,8 @@ async fn test_sync_unauthorized_grocery_list_access(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1878,6 +1920,8 @@ async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1992,6 +2036,8 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -2061,6 +2107,8 @@ async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -2148,6 +2196,8 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
             version: 1,
             data: Some(serde_json::to_value(&drawing_data).unwrap()),
         }],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -2245,6 +2295,8 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -2342,6 +2394,8 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
         drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -2356,5 +2410,155 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
     assert!(!res.remote_config_changes.is_empty());
     assert!(!res.remote_drawing_changes.is_empty());
 }
+
+#[sqlx::test]
+async fn test_sync_handler_flat_configs(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let other_client = "client-2";
+    let other_client_uuid = parse_or_hash_uuid(other_client);
+    let user_uuid = parse_or_hash_uuid("user-1");
+
+    // 1. Setup DB with remote config
+    sqlx::query!(
+        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        uuid::Uuid::new_v4(),
+        user_uuid,
+        other_client_uuid,
+        1_i32,
+        false,
+        Utc::now().timestamp_millis(),
+        "theme",
+        "dark"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Prepare request with flat configs list
+    let config_id = uuid::Uuid::new_v4();
+    let config_item = ConfigSyncItem {
+        id: config_id,
+        key: "font_size".to_string(),
+        value: "14".to_string(),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        scope: Some(SyncScope::ScribbleKeep),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![config_item],
+        drawings: vec![],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    // Verify configs returned contains BOTH our uploaded config and the other client's config
+    let returned_ids: Vec<uuid::Uuid> = res.configs.iter().map(|c| c.id).collect();
+    assert!(returned_ids.contains(&config_id));
+    assert_eq!(res.configs.len(), 2);
+
+    // Verify config is in DB
+    let count = sqlx::query!("SELECT count(*) FROM configs WHERE id = $1", config_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[sqlx::test]
+async fn test_sync_handler_flat_drawings(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let other_client = "client-2";
+    let other_client_uuid = parse_or_hash_uuid(other_client);
+    let user_uuid = parse_or_hash_uuid("user-1");
+
+    // 1. Setup DB with remote drawing
+    sqlx::query!(
+        "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        uuid::Uuid::new_v4(),
+        user_uuid,
+        other_client_uuid,
+        1_i32,
+        false,
+        Utc::now().timestamp_millis(),
+        1000_i64,
+        serde_json::json!({ "strokes": [] })
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Prepare request with flat drawings list (ScribbleBox uploads drawing)
+    let drawing_id = uuid::Uuid::new_v4();
+    let drawing_item = DrawingSyncItem {
+        id: drawing_id,
+        user_id: Some(user_uuid),
+        created_at: 1000,
+        data: serde_json::json!({ "strokes": [1] }),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        scope: Some(SyncScope::ScribbleBox),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![drawing_item],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    // Under ScribbleBox, only our own uploaded drawing is returned, no remote drawings
+    let returned_ids: Vec<uuid::Uuid> = res.drawings.iter().map(|d| d.id).collect();
+    assert!(returned_ids.contains(&drawing_id));
+    assert_eq!(res.drawings.len(), 1);
+
+    // Verify drawing is in DB
+    let count = sqlx::query!("SELECT count(*) FROM drawings WHERE id = $1", drawing_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
 
 

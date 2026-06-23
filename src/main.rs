@@ -1,6 +1,8 @@
 pub mod routes;
 pub mod state;
 pub mod auth;
+pub mod models;
+pub mod dao;
 
 use axum::{
     extract::State,

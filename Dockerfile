@@ -1,20 +1,28 @@
-# Stage 1: Build the Rust application
-FROM rust:1-bookworm AS builder
-WORKDIR /usr/src/teddy-fyi-api-rust
+# Stage 1: Cargo Chef Planner
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
+WORKDIR /app
+
+FROM chef AS planner
 COPY . .
-# Enable SQLx offline mode for query verification without a database connection
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 2: Cargo Chef Builder
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Build dependencies - this layer will be cached in GHA cache
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Build the actual application
+COPY . .
 ENV SQLX_OFFLINE=true
-# Build the release version for maximum performance
 RUN cargo build --release
 
-# Stage 2: Create a minimal runtime image
+# Stage 3: Minimal Runtime Image
 FROM debian:bookworm-slim
-# Install certificates in case your API ever needs to make outgoing HTTPS requests
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-# Copy the compiled binary from the builder stage
-COPY --from=builder /usr/src/teddy-fyi-api-rust/target/release/teddy-fyi-api-rust /app/
+COPY --from=builder /app/target/release/teddy-fyi-api-rust /app/
 
 ENV PORT=8080
 EXPOSE 8080

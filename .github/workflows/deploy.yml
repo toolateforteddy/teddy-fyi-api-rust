@@ -69,15 +69,19 @@ jobs:
         run: |
           gcloud auth configure-docker gcr.io --quiet
 
-      # Build, tag, and push the container using the Makefile target.
-      # We inject the commit SHA as the VERSION variable to prevent local image tag collisions
-      # on shared runner machines, and leverage GitHub Actions caching for Docker.
+      # Build, tag, and push the container using the official docker/build-push-action.
+      # This builds and pushes directly to GCR, bypassing the slow local docker load step,
+      # and utilizes the gha cache backend.
       - name: Build and Push Docker Image
-        run: |
-          make docker-push \
-            VERSION=${{ github.sha }} \
-            BUILDER="docker buildx" \
-            BUILD_ARGS="--cache-from=type=gha --cache-to=type=gha,mode=max --load"
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:latest
+            gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Get GKE Credentials
         uses: google-github-actions/get-gke-credentials@v2

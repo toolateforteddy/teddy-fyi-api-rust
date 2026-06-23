@@ -46,22 +46,30 @@ async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    // Initialize structured JSON logging
-    tracing_subscriber::fmt().json().init();
-
+async fn init_app_state() -> AppState {
     let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
     let web_client_id = std::env::var("GOOGLE_CLIENT_ID_GROCERY_WEB").unwrap_or_default();
+    let scribbleroute_client_id = std::env::var("SCRIBBLEROUTE_API_CLIENT_ID").unwrap_or_default();
+
+    let mut google_client_ids = std::collections::HashSet::new();
+    if !client_id.is_empty() {
+        google_client_ids.insert(client_id);
+    }
+    if !web_client_id.is_empty() {
+        google_client_ids.insert(web_client_id);
+    }
+    if !scribbleroute_client_id.is_empty() {
+        google_client_ids.insert(scribbleroute_client_id);
+    }
+
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://cache-svc:6379".to_string());
     let redis_client = redis::Client::open(redis_url).expect("Invalid Redis URL");
     let cookie_domain = std::env::var("COOKIE_DOMAIN").unwrap_or_else(|_| ".teddy.fyi".to_string());
     
-    let app_state = AppState {
-        client_id: client_id.clone(),
-        web_client_id,
+    AppState {
+        google_client_ids,
         google_client: Arc::new(google_oauth::AsyncClient::new("")),
         db_pool: init_postgres()
             .await
@@ -70,7 +78,15 @@ async fn main() {
         gemini_api_key,
         redis_client,
         cookie_domain,
-    };
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // Initialize structured JSON logging
+    tracing_subscriber::fmt().json().init();
+
+    let app_state = init_app_state().await;
 
     // api routes group
     let api_routes = Router::new()

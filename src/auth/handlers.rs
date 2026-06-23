@@ -52,9 +52,12 @@ pub async fn login_handler(
         let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-        // Manually verify that the audience claim matches either the Android or Web client ID
-        if google_payload.aud != state.client_id && google_payload.aud != state.web_client_id {
-            tracing::warn!("Audience mismatch: expected {} or {}, got {}", state.client_id, state.web_client_id, google_payload.aud);
+        if !state.google_client_ids.contains(&google_payload.aud) {
+            tracing::warn!(
+                "Audience mismatch: expected one of {:?}, got {}",
+                state.google_client_ids,
+                google_payload.aud
+            );
             return Err(StatusCode::UNAUTHORIZED);
         }
         (payload.user_id.clone(), google_payload.email.clone())

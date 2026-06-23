@@ -154,29 +154,29 @@ pub struct ConfigSyncItem {
     pub id: Uuid,
     pub key: String,
     pub value: String,
-    #[serde(alias = "syncState", rename = "syncState", default = "default_sync_state")]
+    #[serde(alias = "syncState", default = "default_sync_state")]
     pub sync_state: String,
     pub version: i32,
-    #[serde(alias = "isDeleted", rename = "isDeleted")]
+    #[serde(alias = "isDeleted")]
     pub is_deleted: bool,
-    #[serde(alias = "lastModified", rename = "lastModified")]
+    #[serde(alias = "lastModified")]
     pub last_modified: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DrawingSyncItem {
     pub id: Uuid,
-    #[serde(alias = "userId", rename = "userId")]
+    #[serde(alias = "userId")]
     pub user_id: Option<Uuid>,
-    #[serde(alias = "createdAt", rename = "createdAt")]
+    #[serde(alias = "createdAt")]
     pub created_at: i64,
     pub data: serde_json::Value,
-    #[serde(alias = "syncState", rename = "syncState", default = "default_sync_state")]
+    #[serde(alias = "syncState", default = "default_sync_state")]
     pub sync_state: String,
     pub version: i32,
-    #[serde(alias = "isDeleted", rename = "isDeleted")]
+    #[serde(alias = "isDeleted")]
     pub is_deleted: bool,
-    #[serde(alias = "lastModified", rename = "lastModified")]
+    #[serde(alias = "lastModified")]
     pub last_modified: i64,
 }
 
@@ -515,16 +515,16 @@ pub struct GroceryItemStoreInfoData {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConfigData {
     pub id: Uuid,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "userId")]
     pub user_id: Uuid,
-    #[serde(alias = "client_uuid", rename = "clientUuid")]
+    #[serde(alias = "clientUuid")]
     pub client_uuid: Uuid,
     pub version: i32,
-    #[serde(alias = "is_deleted", rename = "isDeleted")]
+    #[serde(alias = "isDeleted")]
     pub is_deleted: bool,
-    #[serde(alias = "last_modified", rename = "lastModified")]
+    #[serde(alias = "lastModified")]
     pub last_modified: i64,
-    #[serde(alias = "sync_state", rename = "syncState", default = "default_sync_state")]
+    #[serde(alias = "syncState", default = "default_sync_state")]
     pub sync_state: String,
     pub key: String,
     pub value: String,
@@ -533,18 +533,18 @@ pub struct ConfigData {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DrawingData {
     pub id: Uuid,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "userId")]
     pub user_id: Uuid,
-    #[serde(alias = "client_uuid", rename = "clientUuid")]
+    #[serde(alias = "clientUuid")]
     pub client_uuid: Uuid,
     pub version: i32,
-    #[serde(alias = "is_deleted", rename = "isDeleted")]
+    #[serde(alias = "isDeleted")]
     pub is_deleted: bool,
-    #[serde(alias = "last_modified", rename = "lastModified")]
+    #[serde(alias = "lastModified")]
     pub last_modified: i64,
-    #[serde(alias = "sync_state", rename = "syncState", default = "default_sync_state")]
+    #[serde(alias = "syncState", default = "default_sync_state")]
     pub sync_state: String,
-    #[serde(alias = "created_at", rename = "createdAt")]
+    #[serde(alias = "createdAt")]
     pub created_at: i64,
     pub data: serde_json::Value,
 }

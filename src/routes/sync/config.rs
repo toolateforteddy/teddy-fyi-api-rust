@@ -34,8 +34,16 @@ pub async fn process_config_changes(
                                     row.version + 1
                                 } else if item.version < row.version {
                                     if item.last_modified >= row.last_modified {
+                                        tracing::warn!(
+                                            "MVCC Conflict for config {}. Client version: {}, Server version: {}. Resolving via LWW (Client wins: client last_modified {} >= server last_modified {}). Overwriting server state.",
+                                            change_id, item.version, row.version, item.last_modified, row.last_modified
+                                        );
                                         row.version + 1
                                     } else {
+                                        tracing::warn!(
+                                            "MVCC Conflict for config {}. Client version: {}, Server version: {}. Resolving via LWW (Server wins: client last_modified {} < server last_modified {}). Rejecting client update.",
+                                            change_id, item.version, row.version, item.last_modified, row.last_modified
+                                        );
                                         // Server has a newer write. Reject incoming update, return current server state version
                                         upload_status.push(SuccessResult {
                                             id: change_id.to_string(),
@@ -46,11 +54,20 @@ pub async fn process_config_changes(
                                         continue;
                                     }
                                 } else {
+                                    // Client is ahead
                                     item.version + 1
                                 }
                             } else {
                                 item.version
                             };
+
+                            tracing::info!(
+                                "Applying config upsert for {} (key: {}). Version: {}, is_deleted: {}",
+                                change_id,
+                                item.key,
+                                next_version,
+                                item.is_deleted
+                            );
 
                             sqlx::query!(
                                 "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
@@ -98,6 +115,7 @@ pub async fn process_config_changes(
 
                     if let Some(row) = existing {
                         let next_version = row.version + 1;
+                        tracing::info!("Applying config metadata update for {}. Next version: {}", change_id, next_version);
                         sqlx::query!(
                             "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' WHERE id = $3 AND user_id = $4",
                             next_version,
@@ -128,6 +146,7 @@ pub async fn process_config_changes(
 
                 if let Some(row) = existing {
                     let next_version = row.version + 1;
+                    tracing::info!("Applying config soft-delete for {}. Next version: {}", change_id, next_version);
                     sqlx::query!(
                         "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE' WHERE id = $3 AND user_id = $4",
                         next_version,

@@ -210,6 +210,14 @@ pub async fn sync_handler(
         }
     }
 
+    let client_uuid = parse_or_hash_uuid(&payload.client_id);
+    tracing::info!(
+        "Sync successful for client ID {} (UUID: {}) with scope {:?}",
+        payload.client_id,
+        client_uuid,
+        scope
+    );
+
     Ok(Json(SyncResponse {
         success_ids,
         upload_status,

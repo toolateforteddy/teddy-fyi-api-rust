@@ -12,7 +12,8 @@ pub async fn process_config_changes(
     upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
-        let change_id = change.id;
+        let change_id = &change.id;
+        let change_uuid = super::remote_mutations::parse_or_hash_uuid(change_id);
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing config {}", change_id);
@@ -22,7 +23,7 @@ pub async fn process_config_changes(
                             // Fetch existing config from database
                             let existing = sqlx::query!(
                                 "SELECT version, last_modified, value FROM configs WHERE id = $1 AND user_id = $2",
-                                change_id,
+                                change_uuid,
                                 user_id
                             )
                             .fetch_optional(&mut **tx)
@@ -61,7 +62,7 @@ pub async fn process_config_changes(
                                      last_modified = EXCLUDED.last_modified, \
                                      sync_state = EXCLUDED.sync_state, \
                                      value = EXCLUDED.value",
-                                change_id,
+                                change_uuid,
                                 user_id,
                                 client_id,
                                 next_version,
@@ -89,7 +90,7 @@ pub async fn process_config_changes(
                 } else if matches!(change.operation_type, OperationType::Update) {
                     let existing = sqlx::query!(
                         "SELECT version FROM configs WHERE id = $1 AND user_id = $2",
-                        change_id,
+                        change_uuid,
                         user_id
                     )
                     .fetch_optional(&mut **tx)
@@ -101,7 +102,7 @@ pub async fn process_config_changes(
                             "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' WHERE id = $3 AND user_id = $4",
                             next_version,
                             client_id,
-                            change_id,
+                            change_uuid,
                             user_id
                         )
                         .execute(&mut **tx)
@@ -119,7 +120,7 @@ pub async fn process_config_changes(
             OperationType::Delete => {
                 let existing = sqlx::query!(
                     "SELECT version FROM configs WHERE id = $1 AND user_id = $2",
-                    change_id,
+                    change_uuid,
                     user_id
                 )
                 .fetch_optional(&mut **tx)
@@ -131,7 +132,7 @@ pub async fn process_config_changes(
                         "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE' WHERE id = $3 AND user_id = $4",
                         next_version,
                         client_id,
-                        change_id,
+                        change_uuid,
                         user_id
                     )
                     .execute(&mut **tx)
@@ -186,7 +187,7 @@ pub async fn fetch_remote_config_mutations(
         let data_val = serde_json::to_value(&item_data)?;
 
         remote_changes.push(ConfigChangeDelta {
-            id: row.id,
+            id: row.id.to_string(),
             operation_type: if row.is_deleted {
                 OperationType::Delete
             } else {

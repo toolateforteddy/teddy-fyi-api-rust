@@ -133,7 +133,7 @@ pub struct GroceryItemStoreInfoChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConfigChangeDelta {
-    pub id: Uuid,
+    pub id: String,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
     pub version: i32,
@@ -142,7 +142,7 @@ pub struct ConfigChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DrawingChangeDelta {
-    pub id: Uuid,
+    pub id: String,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
     pub version: i32,
@@ -283,11 +283,20 @@ where
     type Rejection = AppError;
 
     async fn from_request(req: axum::http::Request<axum::body::Body>, state: &S) -> Result<Self, Self::Rejection> {
-        match axum::Json::<T>::from_request(req, state).await {
-            Ok(value) => Ok(AppJson(value.0)),
-            Err(rejection) => {
+        let bytes = axum::body::Bytes::from_request(req, state)
+            .await
+            .map_err(|rejection| {
                 let err_msg = rejection.to_string();
-                tracing::error!("JSON deserialization rejection: {}", err_msg);
+                tracing::error!("Failed to read request body bytes: {}", err_msg);
+                AppError::Deserialization(err_msg)
+            })?;
+
+        match serde_json::from_slice::<T>(&bytes) {
+            Ok(value) => Ok(AppJson(value)),
+            Err(err) => {
+                let err_msg = err.to_string();
+                let body_str = String::from_utf8_lossy(&bytes);
+                tracing::error!("JSON deserialization rejection. Error: {}. Body: {}", err_msg, body_str);
                 Err(AppError::Deserialization(err_msg))
             }
         }

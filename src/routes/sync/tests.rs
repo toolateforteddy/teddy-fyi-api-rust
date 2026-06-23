@@ -2143,7 +2143,7 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
         grocery_item_store_info_changes: vec![],
         config_changes: vec![],
         drawing_changes: vec![DrawingChangeDelta {
-            id: drawing_id,
+            id: drawing_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&drawing_data).unwrap()),
@@ -2239,7 +2239,7 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
         grocery_changes: vec![],
         grocery_item_store_info_changes: vec![],
         config_changes: vec![ConfigChangeDelta {
-            id: config_id,
+            id: config_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&config_data).unwrap()),
@@ -2336,7 +2336,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
         grocery_changes: vec![],
         grocery_item_store_info_changes: vec![],
         config_changes: vec![ConfigChangeDelta {
-            id: config_id,
+            id: config_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&config_data).unwrap()),

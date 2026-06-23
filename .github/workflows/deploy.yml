@@ -31,8 +31,8 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        entrypoint: ["docker-entrypoint.sh"]
-        command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+        entrypoint: docker-entrypoint.sh
+        command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
 
     steps:
       - name: Checkout Code

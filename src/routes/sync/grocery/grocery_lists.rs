@@ -179,6 +179,62 @@ pub async fn process_grocery_list_changes(
                 .fetch_one(&mut **tx)
                 .await?;
 
+                // Soft delete associated grocery items
+                sqlx::query!(
+                    r#"UPDATE grocery_items 
+                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
+                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                    server_timestamp,
+                    client_id,
+                    change.id
+                )
+                .execute(&mut **tx)
+                .await?;
+
+                // Soft delete associated grocery list members
+                sqlx::query!(
+                    r#"UPDATE grocery_list_members 
+                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
+                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                    server_timestamp,
+                    client_id,
+                    change.id
+                )
+                .execute(&mut **tx)
+                .await?;
+
+                // Soft delete associated stores tied to this list
+                sqlx::query!(
+                    r#"UPDATE stores
+                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2
+                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                    server_timestamp,
+                    client_id,
+                    change.id
+                )
+                .execute(&mut **tx)
+                .await?;
+
+                // Soft delete associated categories tied to this list
+                sqlx::query!(
+                    r#"UPDATE categories
+                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2
+                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                    server_timestamp,
+                    client_id,
+                    change.id
+                )
+                .execute(&mut **tx)
+                .await?;
+
+                // Hard delete associated list invites
+                sqlx::query!(
+                    r#"DELETE FROM list_invites WHERE "listId" = $1"#,
+                    change.id
+                )
+                .execute(&mut **tx)
+                .await?;
+
                 upload_status.push(SuccessResult {
                     id: change.id.clone(),
                     version: row.version,

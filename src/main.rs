@@ -96,6 +96,8 @@ async fn main() {
         .route("/sync/status", axum::routing::get(routes::sync::status::sync_status_handler))
         .route("/categorize", axum::routing::post(routes::ai::handlers::categorize_item_handler))
         .route("/assign-icon", axum::routing::post(routes::ai::handlers::assign_todo_icon_handler))
+        .route("/lists/invite", axum::routing::post(routes::lists::invite_handler))
+        .route("/lists/join", axum::routing::post(routes::lists::join_handler))
         .route("/hc", get(|| async { "OK" }))
         .route("/ready", get(readiness_handler)) // Deep/Readiness check
         .route_layer(middleware::from_fn_with_state(

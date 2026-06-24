@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_list_members (\n            id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state, updated_at, updated_by_client\n        ) VALUES ($1, $2, $3, $4, $5, 1, FALSE, 'SYNCED', NOW(), NULL)\n        ON CONFLICT (id) DO UPDATE SET\n            is_deleted = FALSE,\n            version = grocery_list_members.version + 1,\n            updated_at = NOW(),\n            updated_by_client = NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "912b214484b02b7002618d9b0ee82031098833aecc279baef7efa6c9502b8d68"
+}

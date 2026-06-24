@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT s.id, s.name, s.position, s.\"isDefaultSupported\" as is_default_supported, s.\"userId\" as user_id, s.version, s.is_deleted, s.sync_state, s.\"listId\" as list_id\n               FROM stores s\n               LEFT JOIN grocery_list_members glm ON s.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n               WHERE (s.\"userId\" = $1 OR glm.id IS NOT NULL)\n                 AND s.updated_at > $2\n                 AND (s.updated_by_client != $3 OR s.updated_by_client IS NULL)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "position",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_default_supported",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "sync_state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "list_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "0ee1af84f197f3f565ada6e46b5609bed5be85e7b1ff08af80bb8fa08222e8b8"
+}

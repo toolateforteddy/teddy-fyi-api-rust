@@ -24,14 +24,44 @@ pub async fn process_store_changes(
                                     .fetch_optional(&mut **tx)
                                     .await?;
 
+                            if let Some(ref list_id) = item.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if !is_member {
+                                    return Err(AppError::Forbidden(format!("User is not a member of list {}", list_id)));
+                                }
+                            }
+
                             if record.is_some() {
-                                let store_owner = sqlx::query!(
-                                    r#"SELECT "userId" as user_id FROM stores WHERE id = $1"#,
+                                let existing = sqlx::query!(
+                                    r#"SELECT "userId" as user_id, "listId" as list_id FROM stores WHERE id = $1"#,
                                     item.id
                                 )
                                 .fetch_one(&mut **tx)
                                 .await?;
-                                if store_owner.user_id.as_deref() != Some(user_id) {
+                                let mut authorized = existing.user_id.as_deref() == Some(user_id);
+                                if !authorized {
+                                    if let Some(ref list_id) = existing.list_id {
+                                        let is_member = sqlx::query!(
+                                            r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                            list_id,
+                                            user_id
+                                        )
+                                        .fetch_optional(&mut **tx)
+                                        .await?
+                                        .is_some();
+                                        if is_member {
+                                            authorized = true;
+                                        }
+                                    }
+                                }
+                                if !authorized {
                                     return Err(AppError::Forbidden(format!("User is not authorized to update store {}", item.id)));
                                 }
                             }
@@ -51,13 +81,14 @@ pub async fn process_store_changes(
                             sqlx::query!(
                                 r#"
                                 INSERT INTO stores (
-                                    id, name, position, "isDefaultSupported", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                    id, name, position, "isDefaultSupported", "userId", "listId", version, is_deleted, sync_state, updated_at, updated_by_client
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                                 ON CONFLICT (id) DO UPDATE SET
                                     name = EXCLUDED.name,
                                     position = EXCLUDED.position,
                                     "isDefaultSupported" = EXCLUDED."isDefaultSupported",
                                     "userId" = EXCLUDED."userId",
+                                    "listId" = EXCLUDED."listId",
                                     version = EXCLUDED.version,
                                     is_deleted = EXCLUDED.is_deleted,
                                     sync_state = EXCLUDED.sync_state,
@@ -69,6 +100,7 @@ pub async fn process_store_changes(
                                 item.position,
                                 item.is_default_supported,
                                 user_id, // override with authenticated user_id
+                                item.list_id,
                                 next_version,
                                 item.is_deleted,
                                 "SYNCED",
@@ -95,14 +127,30 @@ pub async fn process_store_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let store_owner = sqlx::query!(
-                        r#"SELECT "userId" as user_id FROM stores WHERE id = $1"#,
+                    let existing = sqlx::query!(
+                        r#"SELECT "userId" as user_id, "listId" as list_id FROM stores WHERE id = $1"#,
                         change.id
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
-                    if let Some(row) = store_owner {
-                        if row.user_id.as_deref() != Some(user_id) {
+                    if let Some(row) = existing {
+                        let mut authorized = row.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = row.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
+                            }
+                        }
+                        if !authorized {
                             return Err(AppError::Forbidden(format!("User is not authorized to update store {}", change.id)));
                         }
                     }
@@ -134,14 +182,30 @@ pub async fn process_store_changes(
                 }
             }
             OperationType::Delete => {
-                let store_owner = sqlx::query!(
-                    r#"SELECT "userId" as user_id FROM stores WHERE id = $1"#,
+                let existing = sqlx::query!(
+                    r#"SELECT "userId" as user_id, "listId" as list_id FROM stores WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
-                if let Some(row) = store_owner {
-                    if row.user_id.as_deref() != Some(user_id) {
+                if let Some(row) = existing {
+                    let mut authorized = row.user_id.as_deref() == Some(user_id);
+                    if !authorized {
+                        if let Some(ref list_id) = row.list_id {
+                            let is_member = sqlx::query!(
+                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                list_id,
+                                user_id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?
+                            .is_some();
+                            if is_member {
+                                authorized = true;
+                            }
+                        }
+                    }
+                    if !authorized {
                         return Err(AppError::Forbidden(format!("User is not authorized to delete store {}", change.id)));
                     }
                 }

@@ -48,7 +48,7 @@ pub async fn process_grocery_changes(
                             if record.is_some() && matches!(change.operation_type, OperationType::Update) {
                                 // For Update, verify existing item's list membership too
                                 let existing_item = sqlx::query!(
-                                    r#"SELECT "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                                    r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
                                     change.id
                                 )
                                 .fetch_one(&mut **tx)
@@ -67,6 +67,10 @@ pub async fn process_grocery_changes(
                                             "User is not authorized to update grocery item in list {}",
                                             list_id
                                         )));
+                                    }
+                                } else {
+                                    if existing_item.user_id.as_deref() != Some(user_id) {
+                                        return Err(AppError::Forbidden(format!("User is not authorized to update grocery item {}", change.id)));
                                     }
                                 }
                             }
@@ -198,7 +202,7 @@ pub async fn process_grocery_changes(
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
                     let existing_item = sqlx::query!(
-                        r#"SELECT "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                        r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
                         change.id
                     )
                     .fetch_optional(&mut **tx)
@@ -219,6 +223,10 @@ pub async fn process_grocery_changes(
                                     "User is not authorized to update grocery item in list {}",
                                     list_id
                                 )));
+                            }
+                        } else {
+                            if row.user_id.as_deref() != Some(user_id) {
+                                return Err(AppError::Forbidden(format!("User is not authorized to update grocery item {}", change.id)));
                             }
                         }
                     }
@@ -251,7 +259,7 @@ pub async fn process_grocery_changes(
             }
             OperationType::Delete => {
                 let existing_item = sqlx::query!(
-                    r#"SELECT "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                    r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
@@ -272,6 +280,10 @@ pub async fn process_grocery_changes(
                                 "User is not authorized to delete grocery item in list {}",
                                 list_id
                             )));
+                        }
+                    } else {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!("User is not authorized to delete grocery item {}", change.id)));
                         }
                     }
                 }

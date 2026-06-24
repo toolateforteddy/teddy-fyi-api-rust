@@ -31,17 +31,37 @@ pub async fn process_grocery_item_store_info_changes(
                             .await?;
 
                             if record.is_some() {
-                                let owner = sqlx::query!(
-                                    r#"SELECT "userId" as user_id FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
-                                    item.grocery_item_id, item.store_id
+                                let parent_item = sqlx::query!(
+                                    r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                                    item.grocery_item_id
                                 )
-                                .fetch_one(&mut **tx)
+                                .fetch_optional(&mut **tx)
                                 .await?;
-                                if owner.user_id.as_deref() != Some(user_id) {
-                                    return Err(AppError::Forbidden(format!(
-                                        "User is not authorized to update store info for item {} store {}",
-                                        item.grocery_item_id, item.store_id
-                                    )));
+                                if let Some(parent) = parent_item {
+                                    let mut authorized = parent.user_id.as_deref() == Some(user_id);
+                                    if !authorized {
+                                        if let Some(ref list_id) = parent.list_id {
+                                            let is_member = sqlx::query!(
+                                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                                list_id,
+                                                user_id
+                                            )
+                                            .fetch_optional(&mut **tx)
+                                            .await?
+                                            .is_some();
+                                            if is_member {
+                                                authorized = true;
+                                            }
+                                        }
+                                    }
+                                    if !authorized {
+                                        return Err(AppError::Forbidden(format!(
+                                            "User is not authorized to update store info for item {} store {}",
+                                            item.grocery_item_id, item.store_id
+                                        )));
+                                    }
+                                } else {
+                                    return Err(AppError::Forbidden(format!("Parent grocery item not found: {}", item.grocery_item_id)));
                                 }
                             }
 
@@ -103,19 +123,37 @@ pub async fn process_grocery_item_store_info_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let owner = sqlx::query!(
-                        r#"SELECT "userId" as user_id FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
-                        change.grocery_item_id, change.store_id
+                    let parent_item = sqlx::query!(
+                        r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                        change.grocery_item_id
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
-                    if let Some(row) = owner {
-                        if row.user_id.as_deref() != Some(user_id) {
+                    if let Some(parent) = parent_item {
+                        let mut authorized = parent.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = parent.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
+                            }
+                        }
+                        if !authorized {
                             return Err(AppError::Forbidden(format!(
                                 "User is not authorized to update store info for item {} store {}",
                                 change.grocery_item_id, change.store_id
                             )));
                         }
+                    } else {
+                        return Err(AppError::Forbidden(format!("Parent grocery item not found: {}", change.grocery_item_id)));
                     }
 
                     let record = sqlx::query!(
@@ -148,19 +186,37 @@ pub async fn process_grocery_item_store_info_changes(
                 }
             }
             OperationType::Delete => {
-                let owner = sqlx::query!(
-                    r#"SELECT "userId" as user_id FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
-                    change.grocery_item_id, change.store_id
+                let parent_item = sqlx::query!(
+                    r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                    change.grocery_item_id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
-                if let Some(row) = owner {
-                    if row.user_id.as_deref() != Some(user_id) {
+                if let Some(parent) = parent_item {
+                    let mut authorized = parent.user_id.as_deref() == Some(user_id);
+                    if !authorized {
+                        if let Some(ref list_id) = parent.list_id {
+                            let is_member = sqlx::query!(
+                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                list_id,
+                                user_id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?
+                            .is_some();
+                            if is_member {
+                                authorized = true;
+                            }
+                        }
+                    }
+                    if !authorized {
                         return Err(AppError::Forbidden(format!(
                             "User is not authorized to delete store info for item {} store {}",
                             change.grocery_item_id, change.store_id
                         )));
                     }
+                } else {
+                    return Err(AppError::Forbidden(format!("Parent grocery item not found: {}", change.grocery_item_id)));
                 }
 
                 let row = sqlx::query!(

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT gl.id, gl.name, gl.\"ownerId\" as owner_id, gl.\"createdAt\" as created_at, gl.version, gl.is_deleted, gl.sync_state\n               FROM grocery_lists gl\n               JOIN grocery_list_members glm ON gl.id = glm.\"listId\"\n               WHERE glm.\"userId\" = $1\n                 AND gl.updated_at > $2\n                 AND (gl.updated_by_client != $3 OR gl.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT gl.id, gl.name, gl.\"ownerId\" as owner_id, gl.\"createdAt\" as created_at, gl.version, gl.is_deleted, gl.sync_state\n               FROM grocery_lists gl\n               LEFT JOIN grocery_list_members glm ON gl.id = glm.\"listId\" AND glm.is_deleted = FALSE\n               WHERE (gl.\"ownerId\" = $1 OR glm.\"userId\" = $1)\n                 AND gl.updated_at > $2\n                 AND (gl.updated_by_client != $3 OR gl.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -56,5 +56,5 @@
       false
     ]
   },
-  "hash": "b8bf87c2ac958b455e331fdfa4b56ef57a08b59ce0f8bd72821f79d38694c104"
+  "hash": "02b97995278f7bdbf2c8e7e18db1c0b78857390dad0f2db9c502c9b763e4d631"
 }

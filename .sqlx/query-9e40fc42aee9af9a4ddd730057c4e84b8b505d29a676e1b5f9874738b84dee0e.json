@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                                INSERT INTO categories (\n                                    id, name, position, \"userId\", icon, \"listId\", version, is_deleted, sync_state, updated_at, updated_by_client\n                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n                                ON CONFLICT (id) DO UPDATE SET\n                                    name = EXCLUDED.name,\n                                    position = EXCLUDED.position,\n                                    \"userId\" = EXCLUDED.\"userId\",\n                                    icon = EXCLUDED.icon,\n                                    \"listId\" = EXCLUDED.\"listId\",\n                                    version = EXCLUDED.version,\n                                    is_deleted = EXCLUDED.is_deleted,\n                                    sync_state = EXCLUDED.sync_state,\n                                    updated_at = EXCLUDED.updated_at,\n                                    updated_by_client = EXCLUDED.updated_by_client\n                                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Bool",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e40fc42aee9af9a4ddd730057c4e84b8b505d29a676e1b5f9874738b84dee0e"
+}

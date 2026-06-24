@@ -26,14 +26,44 @@ pub async fn process_category_changes(
                             .fetch_optional(&mut **tx)
                             .await?;
 
+                            if let Some(ref list_id) = item.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if !is_member {
+                                    return Err(AppError::Forbidden(format!("User is not a member of list {}", list_id)));
+                                }
+                            }
+
                             if record.is_some() {
-                                let category_owner = sqlx::query!(
-                                    r#"SELECT "userId" as user_id FROM categories WHERE id = $1"#,
+                                let existing = sqlx::query!(
+                                    r#"SELECT "userId" as user_id, "listId" as list_id FROM categories WHERE id = $1"#,
                                     item.id
                                 )
                                 .fetch_one(&mut **tx)
                                 .await?;
-                                if category_owner.user_id.as_deref() != Some(user_id) {
+                                let mut authorized = existing.user_id.as_deref() == Some(user_id);
+                                if !authorized {
+                                    if let Some(ref list_id) = existing.list_id {
+                                        let is_member = sqlx::query!(
+                                            r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                            list_id,
+                                            user_id
+                                        )
+                                        .fetch_optional(&mut **tx)
+                                        .await?
+                                        .is_some();
+                                        if is_member {
+                                            authorized = true;
+                                        }
+                                    }
+                                }
+                                if !authorized {
                                     return Err(AppError::Forbidden(format!("User is not authorized to update category {}", item.id)));
                                 }
                             }
@@ -53,13 +83,14 @@ pub async fn process_category_changes(
                             sqlx::query!(
                                 r#"
                                 INSERT INTO categories (
-                                    id, name, position, "userId", icon, version, is_deleted, sync_state, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                    id, name, position, "userId", icon, "listId", version, is_deleted, sync_state, updated_at, updated_by_client
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                                 ON CONFLICT (id) DO UPDATE SET
                                     name = EXCLUDED.name,
                                     position = EXCLUDED.position,
                                     "userId" = EXCLUDED."userId",
                                     icon = EXCLUDED.icon,
+                                    "listId" = EXCLUDED."listId",
                                     version = EXCLUDED.version,
                                     is_deleted = EXCLUDED.is_deleted,
                                     sync_state = EXCLUDED.sync_state,
@@ -71,6 +102,7 @@ pub async fn process_category_changes(
                                 item.position,
                                 user_id, // override with authenticated user_id
                                 item.icon,
+                                item.list_id,
                                 next_version,
                                 item.is_deleted,
                                 "SYNCED",
@@ -97,14 +129,30 @@ pub async fn process_category_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let category_owner = sqlx::query!(
-                        r#"SELECT "userId" as user_id FROM categories WHERE id = $1"#,
+                    let existing = sqlx::query!(
+                        r#"SELECT "userId" as user_id, "listId" as list_id FROM categories WHERE id = $1"#,
                         change.id
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
-                    if let Some(row) = category_owner {
-                        if row.user_id.as_deref() != Some(user_id) {
+                    if let Some(row) = existing {
+                        let mut authorized = row.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = row.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
+                            }
+                        }
+                        if !authorized {
                             return Err(AppError::Forbidden(format!("User is not authorized to update category {}", change.id)));
                         }
                     }
@@ -136,14 +184,30 @@ pub async fn process_category_changes(
                 }
             }
             OperationType::Delete => {
-                let category_owner = sqlx::query!(
-                    r#"SELECT "userId" as user_id FROM categories WHERE id = $1"#,
+                let existing = sqlx::query!(
+                    r#"SELECT "userId" as user_id, "listId" as list_id FROM categories WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
-                if let Some(row) = category_owner {
-                    if row.user_id.as_deref() != Some(user_id) {
+                if let Some(row) = existing {
+                    let mut authorized = row.user_id.as_deref() == Some(user_id);
+                    if !authorized {
+                        if let Some(ref list_id) = row.list_id {
+                            let is_member = sqlx::query!(
+                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                list_id,
+                                user_id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?
+                            .is_some();
+                            if is_member {
+                                authorized = true;
+                            }
+                        }
+                    }
+                    if !authorized {
                         return Err(AppError::Forbidden(format!("User is not authorized to delete category {}", change.id)));
                     }
                 }

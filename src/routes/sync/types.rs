@@ -446,6 +446,8 @@ pub struct StoreData {
     pub version: i32,
     #[serde(alias = "is_deleted", default)]
     pub is_deleted: bool,
+    #[serde(alias = "listId", alias = "list_id")]
+    pub list_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -463,6 +465,8 @@ pub struct CategoryData {
     pub version: i32,
     #[serde(alias = "is_deleted", default)]
     pub is_deleted: bool,
+    #[serde(alias = "listId", alias = "list_id")]
+    pub list_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

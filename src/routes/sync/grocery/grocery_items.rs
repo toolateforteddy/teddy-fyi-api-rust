@@ -12,7 +12,7 @@ pub async fn process_grocery_changes(
     upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
-        let string_id = change.id.to_string();
+        let string_id = change.id.clone();
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing grocery item {}", change.id);

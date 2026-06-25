@@ -6,12 +6,12 @@
       {
         "ordinal": 0,
         "name": "grocery_item_id",
-        "type_info": "Int4"
+        "type_info": "Text"
       },
       {
         "ordinal": 1,
         "name": "store_id",
-        "type_info": "Int4"
+        "type_info": "Text"
       },
       {
         "ordinal": 2,
@@ -46,8 +46,8 @@
     ],
     "parameters": {
       "Left": [
-        "Int4",
-        "Int4"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [

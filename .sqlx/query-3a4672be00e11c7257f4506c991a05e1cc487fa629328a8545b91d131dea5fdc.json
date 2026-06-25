@@ -5,13 +5,13 @@
     "columns": [],
     "parameters": {
       "Left": [
-        "Int4",
+        "Text",
         "Text",
         "Text",
         "Bool",
         "Int8",
         "Int4",
-        "Int4",
+        "Text",
         "Int4",
         "Text",
         "Bool",

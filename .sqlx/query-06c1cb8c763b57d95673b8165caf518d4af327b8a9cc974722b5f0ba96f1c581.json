@@ -13,7 +13,7 @@
       "Left": [
         "Timestamptz",
         "Text",
-        "Int4"
+        "Text"
       ]
     },
     "nullable": [

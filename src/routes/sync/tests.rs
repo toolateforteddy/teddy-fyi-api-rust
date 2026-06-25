@@ -590,7 +590,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
 
     // 1. Test Stores Insert
     let store_data = StoreData {
-        id: 10,
+        id: "10".to_string(),
         name: "Supermarket".to_string(),
         position: 1,
         is_default_supported: true,
@@ -602,7 +602,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     };
     // Test Categories Insert
     let category_data = CategoryData {
-        id: 20,
+        id: "20".to_string(),
         name: "Produce".to_string(),
         position: 2,
         user_id: None,
@@ -622,13 +622,13 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_list_changes: vec![],
         grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
-            id: 10,
+            id: "10".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&store_data).unwrap()),
         }],
         category_changes: vec![CategoryChangeDelta {
-            id: 20,
+            id: "20".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&category_data).unwrap()),
@@ -650,7 +650,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
 
     // 2. Test Stores & Categories Update
     let updated_store = StoreData {
-        id: 10,
+        id: "10".to_string(),
         name: "Updated Supermarket".to_string(),
         position: 1,
         is_default_supported: true,
@@ -661,7 +661,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         list_id: None,
     };
     let updated_category = CategoryData {
-        id: 20,
+        id: "20".to_string(),
         name: "Updated Produce".to_string(),
         position: 2,
         user_id: None,
@@ -680,13 +680,13 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_list_changes: vec![],
         grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
-            id: 10,
+            id: "10".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&updated_store).unwrap()),
         }],
         category_changes: vec![CategoryChangeDelta {
-            id: 20,
+            id: "20".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&updated_category).unwrap()),
@@ -706,13 +706,13 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     assert!(res_update.success_ids.contains(&"10".to_string()));
     assert!(res_update.success_ids.contains(&"20".to_string()));
 
-    let db_store = sqlx::query!("SELECT name FROM stores WHERE id = $1", 10)
+    let db_store = sqlx::query!("SELECT name FROM stores WHERE id = $1", "10")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(db_store.name, "Updated Supermarket");
 
-    let db_cat = sqlx::query!("SELECT name FROM categories WHERE id = $1", 20)
+    let db_cat = sqlx::query!("SELECT name FROM categories WHERE id = $1", "20")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -728,13 +728,13 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         grocery_list_changes: vec![],
         grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
-            id: 10,
+            id: "10".to_string(),
             operation_type: OperationType::Delete,
             version: 3,
             data: None,
         }],
         category_changes: vec![CategoryChangeDelta {
-            id: 20,
+            id: "20".to_string(),
             operation_type: OperationType::Delete,
             version: 3,
             data: None,
@@ -754,13 +754,13 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     assert!(res_delete.success_ids.contains(&"10".to_string()));
     assert!(res_delete.success_ids.contains(&"20".to_string()));
 
-    let db_store = sqlx::query!("SELECT is_deleted FROM stores WHERE id = $1", 10)
+    let db_store = sqlx::query!("SELECT is_deleted FROM stores WHERE id = $1", "10")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert!(db_store.is_deleted);
 
-    let db_cat = sqlx::query!("SELECT is_deleted FROM categories WHERE id = $1", 20)
+    let db_cat = sqlx::query!("SELECT is_deleted FROM categories WHERE id = $1", "20")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -795,7 +795,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
 
     sqlx::query!(
         "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        100, "Test Store", 1, true, "user-1", 1_i32, false, "SYNCED"
+        "100", "Test Store", 1, true, "user-1", 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -803,7 +803,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
 
     // 1. Test Insert
     let item_data = GroceryItemData {
-        id: 50,
+        id: "50".to_string(),
         name: "Apples".to_string(),
         quantity: "5".to_string(),
         is_bought: false,
@@ -822,8 +822,8 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     };
 
     let store_info = GroceryItemStoreInfoData {
-        grocery_item_id: 50,
-        store_id: 100,
+        grocery_item_id: "50".to_string(),
+        store_id: "100".to_string(),
         price: Some(1.99),
         is_available: true,
         user_id: None,
@@ -843,14 +843,14 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         store_changes: vec![],
         category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
-            id: 50,
+            id: "50".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&item_data).unwrap()),
         }],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
-            grocery_item_id: 50,
-            store_id: 100,
+            grocery_item_id: "50".to_string(),
+            store_id: "100".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&store_info).unwrap()),
@@ -870,7 +870,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
 
     // 2. Test Update
     let updated_item = GroceryItemData {
-        id: 50,
+        id: "50".to_string(),
         name: "Green Apples".to_string(),
         quantity: "10".to_string(),
         is_bought: true,
@@ -889,8 +889,8 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     };
 
     let updated_store_info = GroceryItemStoreInfoData {
-        grocery_item_id: 50,
-        store_id: 100,
+        grocery_item_id: "50".to_string(),
+        store_id: "100".to_string(),
         price: Some(2.49),
         is_available: true,
         user_id: None,
@@ -910,14 +910,14 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         store_changes: vec![],
         category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
-            id: 50,
+            id: "50".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&updated_item).unwrap()),
         }],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
-            grocery_item_id: 50,
-            store_id: 100,
+            grocery_item_id: "50".to_string(),
+            store_id: "100".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&updated_store_info).unwrap()),
@@ -937,7 +937,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
 
     let db_item = sqlx::query!(
         "SELECT name, quantity, \"isBought\" as is_bought FROM grocery_items WHERE id = $1",
-        50
+        "50"
     )
     .fetch_one(&pool)
     .await
@@ -946,7 +946,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     assert_eq!(db_item.quantity, "10");
     assert!(db_item.is_bought);
 
-    let db_info = sqlx::query!("SELECT price FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2", 50, 100)
+    let db_info = sqlx::query!("SELECT price FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2", "50", "100")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -964,14 +964,14 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         store_changes: vec![],
         category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
-            id: 50,
+            id: "50".to_string(),
             operation_type: OperationType::Delete,
             version: 3,
             data: None,
         }],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
-            grocery_item_id: 50,
-            store_id: 100,
+            grocery_item_id: "50".to_string(),
+            store_id: "100".to_string(),
             operation_type: OperationType::Delete,
             version: 3,
             data: None,
@@ -990,14 +990,14 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     assert!(res_delete.success_ids.contains(&"50-100".to_string()));
 
     // Grocery item is soft-deleted, so is_deleted should be true
-    let db_deleted_item = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", 50)
+    let db_deleted_item = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", "50")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert!(db_deleted_item.is_deleted);
 
     // Store info is soft-deleted, so is_deleted should be true
-    let db_deleted_info = sqlx::query!("SELECT is_deleted FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2", 50, 100)
+    let db_deleted_info = sqlx::query!("SELECT is_deleted FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2", "50", "100")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -1100,7 +1100,7 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO stores (id, name, position, "isDefaultSupported", "userId", version, updated_at, updated_by_client, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
-        1001,
+        "1001",
         "Remote Store",
         1,
         true,
@@ -1118,7 +1118,7 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO categories (id, name, position, "userId", icon, version, updated_at, updated_by_client, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
-        2001,
+        "2001",
         "Remote Category",
         1,
         "user-1",
@@ -1136,13 +1136,13 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO grocery_items (id, name, quantity, "isBought", "createdAt", position, "categoryId", "timesBought", "userId", "isActive", "listId", unit, notes, version, is_deleted, updated_at, updated_by_client, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16, $17)"#,
-        3001,
+        "3001",
         "Remote Grocery Item",
         "1",
         false,
         0_i64,
         1_i32,
-        Some(2001),
+        Some("2001".to_string()),
         0_i32,
         "user-1",
         true,
@@ -1162,8 +1162,8 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO grocery_item_store_info ("groceryItemId", "storeId", price, "isAvailable", "userId", version, updated_at, updated_by_client, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
-        3001,
-        1001,
+        "3001",
+        "1001",
         2.99,
         true,
         "user-1",
@@ -1192,12 +1192,12 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     assert!(grocery_list_members
         .iter()
         .any(|d| d.id == "member-remote-1"));
-    assert!(stores.iter().any(|d| d.id == 1001));
-    assert!(categories.iter().any(|d| d.id == 2001));
-    assert!(grocery_items.iter().any(|d| d.id == 3001));
+    assert!(stores.iter().any(|d| d.id == "1001"));
+    assert!(categories.iter().any(|d| d.id == "2001"));
+    assert!(grocery_items.iter().any(|d| d.id == "3001"));
     assert!(grocery_item_store_infos
         .iter()
-        .any(|d| d.grocery_item_id == 3001 && d.store_id == 1001));
+        .any(|d| d.grocery_item_id == "3001" && d.store_id == "1001"));
 
     tx.rollback().await.unwrap();
 }
@@ -1297,7 +1297,7 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO stores (id, name, position, "isDefaultSupported", "userId", version, updated_at, updated_by_client, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
-        1002,
+        "1002",
         "Echo Store",
         1,
         true,
@@ -1315,7 +1315,7 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO categories (id, name, position, "userId", icon, version, updated_at, updated_by_client, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
-        2002,
+        "2002",
         "Echo Category",
         1,
         "user-1",
@@ -1333,13 +1333,13 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO grocery_items (id, name, quantity, "isBought", "createdAt", position, "categoryId", "timesBought", "userId", "isActive", "listId", unit, notes, version, is_deleted, updated_at, updated_by_client, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16, $17)"#,
-        3002,
+        "3002",
         "Echo Grocery Item",
         "1",
         false,
         0_i64,
         1_i32,
-        Some(2002),
+        Some("2002".to_string()),
         0_i32,
         "user-1",
         true,
@@ -1359,8 +1359,8 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     sqlx::query!(
         r#"INSERT INTO grocery_item_store_info ("groceryItemId", "storeId", price, "isAvailable", "userId", version, updated_at, updated_by_client, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
-        3002,
-        1002,
+        "3002",
+        "1002",
         2.99,
         true,
         "user-1",
@@ -1387,12 +1387,12 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
 
     assert!(!grocery_lists.iter().any(|d| d.id == "grocerylist-echo-1"));
     assert!(!grocery_list_members.iter().any(|d| d.id == "member-echo-1"));
-    assert!(!stores.iter().any(|d| d.id == 1002));
-    assert!(!categories.iter().any(|d| d.id == 2002));
-    assert!(!grocery_items.iter().any(|d| d.id == 3002));
+    assert!(!stores.iter().any(|d| d.id == "1002"));
+    assert!(!categories.iter().any(|d| d.id == "2002"));
+    assert!(!grocery_items.iter().any(|d| d.id == "3002"));
     assert!(!grocery_item_store_infos
         .iter()
-        .any(|d| d.grocery_item_id == 3002 && d.store_id == 1002));
+        .any(|d| d.grocery_item_id == "3002" && d.store_id == "1002"));
 
     tx.rollback().await.unwrap();
 }
@@ -1887,7 +1887,7 @@ async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
 
     // Now, let's call sync_handler (which uses claims for user-1) trying to insert an item for glist-forbidden-2
     let item_data = GroceryItemData {
-        id: 999,
+        id: "999".to_string(),
         name: "Forbidden Item".to_string(),
         quantity: "1".to_string(),
         is_bought: false,
@@ -1916,7 +1916,7 @@ async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
         store_changes: vec![],
         category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
-            id: 999,
+            id: "999".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&item_data).unwrap()),
@@ -1976,7 +1976,7 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
     // 3. Create a store owned by user-1
     sqlx::query!(
         "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        500, "Store Omega", 1, true, "user-1", 1_i32, false, "SYNCED"
+        "500", "Store Omega", 1, true, "user-1", 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -1986,7 +1986,7 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
     sqlx::query!(
         "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, sync_state)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
-        600, "Milk", "1", false, 0_i64, 1_i32, None::<i32>, 0_i32, "user-1", true, Some("list-alpha".to_string()), None::<String>, None::<String>, 1_i32, false, "SYNCED"
+        "600", "Milk", "1", false, 0_i64, 1_i32, None::<String>, 0_i32, "user-1", true, Some("list-alpha".to_string()), None::<String>, None::<String>, 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -1995,7 +1995,7 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
     sqlx::query!(
         "INSERT INTO grocery_item_store_info (\"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_by_client)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-        600, 500, 2.99, true, "user-1", 1_i32, false, "SYNCED", "client-1"
+        "600", "500", 2.99, true, "user-1", 1_i32, false, "SYNCED", "client-1"
     )
     .execute(&pool)
     .await
@@ -2003,7 +2003,7 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
 
     // 5. Sync-upload a new item "milk" (lowercase, exact match case-insensitive) in list-beta
     let item_data = GroceryItemData {
-        id: 700,
+        id: "700".to_string(),
         name: "milk".to_string(),
         quantity: "2".to_string(),
         is_bought: false,
@@ -2032,7 +2032,7 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
         store_changes: vec![],
         category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
-            id: 700,
+            id: "700".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&item_data).unwrap()),
@@ -2056,8 +2056,8 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
         "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id, price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, updated_by_client
          FROM grocery_item_store_info
          WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2",
-        700,
-        500
+        "700",
+        "500"
     )
     .fetch_one(&pool)
     .await
@@ -2080,7 +2080,7 @@ async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
     sqlx::query!(
         "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, updated_by_client, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, $14, $15, NOW())",
-        801, "No List Item 1", "1", false, 0_i64, 1_i32, None::<i32>, 0_i32, "user-1", true, None::<String>, None::<String>, 1_i32, false, "other-client"
+        "801", "No List Item 1", "1", false, 0_i64, 1_i32, None::<String>, 0_i32, "user-1", true, None::<String>, None::<String>, 1_i32, false, "other-client"
     )
     .execute(&pool)
     .await
@@ -2090,7 +2090,7 @@ async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
     sqlx::query!(
         "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, updated_by_client, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, $14, $15, NOW())",
-        802, "No List Item 2", "1", false, 0_i64, 1_i32, None::<i32>, 0_i32, "user-2", true, None::<String>, None::<String>, 1_i32, false, "other-client"
+        "802", "No List Item 2", "1", false, 0_i64, 1_i32, None::<String>, 0_i32, "user-2", true, None::<String>, None::<String>, 1_i32, false, "other-client"
     )
     .execute(&pool)
     .await
@@ -2121,9 +2121,9 @@ async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
         .0;
 
     // 4. Verify user-1 receives item-1 but NOT item-2
-    let received_ids: Vec<i32> = res.remote_grocery_changes.iter().map(|c| c.id).collect();
-    assert!(received_ids.contains(&801));
-    assert!(!received_ids.contains(&802));
+    let received_ids: Vec<String> = res.remote_grocery_changes.iter().map(|c| c.id.clone()).collect();
+    assert!(received_ids.contains(&"801".to_string()));
+    assert!(!received_ids.contains(&"802".to_string()));
 }
 
 #[sqlx::test]
@@ -2729,7 +2729,7 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     // Store tied to list
     sqlx::query!(
         "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-        500, "Shared Store", 1, true, "user-1", Some("collab-list".to_string()), 1_i32, false, "SYNCED"
+        "500", "Shared Store", 1, true, "user-1", Some("collab-list".to_string()), 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -2738,7 +2738,7 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     // Category tied to list
     sqlx::query!(
         "INSERT INTO categories (id, name, position, \"userId\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        600, "Shared Category", 1, "user-1", Some("collab-list".to_string()), 1_i32, false, "SYNCED"
+        "600", "Shared Category", 1, "user-1", Some("collab-list".to_string()), 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -2747,7 +2747,7 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     // Grocery Item tied to list
     sqlx::query!(
         "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-        700, "Shared Apples", "5", false, 0_i64, 1, 0, "user-1", true, Some("collab-list".to_string()), 1_i32, false, "SYNCED"
+        "700", "Shared Apples", "5", false, 0_i64, 1, 0, "user-1", true, Some("collab-list".to_string()), 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -2756,7 +2756,7 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     // Grocery item store info mapping
     sqlx::query!(
         "INSERT INTO grocery_item_store_info (\"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, 1, false, 'SYNCED')",
-        700, 500, Some(2.99), true, "user-1"
+        "700", "500", Some(2.99), true, "user-1"
     )
     .execute(&pool)
     .await
@@ -2822,16 +2822,16 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
 
     // Verify User-2 now receives the collaborative stores, categories, and items
     assert_eq!(res_member.remote_store_changes.len(), 1);
-    assert_eq!(res_member.remote_store_changes[0].id, 500);
+    assert_eq!(res_member.remote_store_changes[0].id, "500");
 
     assert_eq!(res_member.remote_category_changes.len(), 1);
-    assert_eq!(res_member.remote_category_changes[0].id, 600);
+    assert_eq!(res_member.remote_category_changes[0].id, "600");
 
     assert_eq!(res_member.remote_grocery_changes.len(), 1);
-    assert_eq!(res_member.remote_grocery_changes[0].id, 700);
+    assert_eq!(res_member.remote_grocery_changes[0].id, "700");
 
     assert_eq!(res_member.remote_grocery_item_store_info_changes.len(), 1);
-    assert_eq!(res_member.remote_grocery_item_store_info_changes[0].grocery_item_id, 700);
+    assert_eq!(res_member.remote_grocery_item_store_info_changes[0].grocery_item_id, "700");
 }
 
 #[sqlx::test]
@@ -2857,7 +2857,7 @@ async fn test_grocery_list_delete_cascade(pool: PgPool) {
 
     sqlx::query!(
         "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-        800, "Apples", "5", false, 0_i64, 1, 0, "user-1", true, Some("glist-cascade".to_string()), 1_i32, false, "SYNCED"
+        "800", "Apples", "5", false, 0_i64, 1, 0, "user-1", true, Some("glist-cascade".to_string()), 1_i32, false, "SYNCED"
     )
     .execute(&pool)
     .await
@@ -2915,7 +2915,7 @@ async fn test_grocery_list_delete_cascade(pool: PgPool) {
     assert!(list_db.is_deleted);
 
     // Verify associated items are soft-deleted
-    let item_db = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", 800)
+    let item_db = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", "800")
         .fetch_one(&pool)
         .await
         .unwrap();

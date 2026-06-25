@@ -11,6 +11,7 @@ pub async fn fetch_remote_todo_mutations(
     let mut remote_todo_list_changes = Vec::new();
     let mut remote_todo_changes = Vec::new();
 
+    let is_initial_sync = last_synced_at.is_none();
     let last_synced_at = last_synced_at.unwrap_or_else(|| {
         DateTime::<Utc>::from_timestamp(0, 0).unwrap()
     });
@@ -21,10 +22,11 @@ pub async fn fetch_remote_todo_mutations(
             id, name, "colorHex" as color_hex, "userId" as user_id, "createdAt" as created_at, sync_state, version, is_deleted
            FROM todo_lists
            WHERE "userId" = $1
-             AND updated_at > $2 AND (updated_by_client != $3 OR updated_by_client IS NULL)"#,
+             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -63,10 +65,11 @@ pub async fn fetch_remote_todo_mutations(
             "dueDate" as due_date, description, "listId" as list_id, priority, icon, sync_state, version, is_deleted
            FROM todo_items
            WHERE "userId" = $1
-             AND updated_at > $2 AND (updated_by_client != $3 OR updated_by_client IS NULL)"#,
+             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;

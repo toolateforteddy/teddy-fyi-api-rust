@@ -25,6 +25,7 @@ pub async fn fetch_remote_grocery_mutations(
     let mut remote_grocery_changes = Vec::new();
     let mut remote_grocery_item_store_info_changes = Vec::new();
 
+    let is_initial_sync = last_synced_at.is_none();
     let last_synced_at = last_synced_at.unwrap_or_else(|| {
         DateTime::<Utc>::from_timestamp(0, 0).unwrap()
     });
@@ -36,10 +37,11 @@ pub async fn fetch_remote_grocery_mutations(
            LEFT JOIN grocery_list_members glm ON gl.id = glm."listId" AND glm.is_deleted = FALSE
            WHERE (gl."ownerId" = $1 OR glm."userId" = $1)
              AND gl.updated_at > $2
-             AND (gl.updated_by_client != $3 OR gl.updated_by_client IS NULL)"#,
+             AND ($4 OR gl.updated_by_client != $3 OR gl.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -70,10 +72,11 @@ pub async fn fetch_remote_grocery_mutations(
            JOIN grocery_list_members my_glm ON glm."listId" = my_glm."listId" AND my_glm.is_deleted = FALSE
            WHERE my_glm."userId" = $1
              AND glm.updated_at > $2
-             AND (glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)"#,
+             AND ($4 OR glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -105,10 +108,11 @@ pub async fn fetch_remote_grocery_mutations(
            LEFT JOIN grocery_list_members glm ON s."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (s."userId" = $1 OR glm.id IS NOT NULL)
              AND s.updated_at > $2
-             AND (s.updated_by_client != $3 OR s.updated_by_client IS NULL)"#,
+             AND ($4 OR s.updated_by_client != $3 OR s.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -142,10 +146,11 @@ pub async fn fetch_remote_grocery_mutations(
            LEFT JOIN grocery_list_members glm ON c."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (c."userId" = $1 OR glm.id IS NOT NULL)
              AND c.updated_at > $2
-             AND (c.updated_by_client != $3 OR c.updated_by_client IS NULL)"#,
+             AND ($4 OR c.updated_by_client != $3 OR c.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -181,10 +186,11 @@ pub async fn fetch_remote_grocery_mutations(
            LEFT JOIN grocery_list_members glm ON gi."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (glm.id IS NOT NULL OR (gi."listId" IS NULL AND gi."userId" = $1))
              AND gi.updated_at > $2
-             AND (gi.updated_by_client != $3 OR gi.updated_by_client IS NULL)"#,
+             AND ($4 OR gi.updated_by_client != $3 OR gi.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -232,10 +238,11 @@ pub async fn fetch_remote_grocery_mutations(
            LEFT JOIN grocery_list_members glm ON gi."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (gsi."userId" = $1 OR gi."userId" = $1 OR glm.id IS NOT NULL)
              AND gsi.updated_at > $2
-             AND (gsi.updated_by_client != $3 OR gsi.updated_by_client IS NULL)"#,
+             AND ($4 OR gsi.updated_by_client != $3 OR gsi.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;

@@ -1212,7 +1212,6 @@ async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
     let mut tx = pool.begin().await.unwrap();
 
     let client_id = "test-client";
-    let other_client = "other-client";
     let last_synced_at = None;
 
     // --- todo_lists ---
@@ -1227,7 +1226,7 @@ async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
         "SYNCED",
         1_i32,
         false,
-        other_client
+        client_id
     )
     .execute(&mut *tx)
     .await
@@ -1249,7 +1248,7 @@ async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
         "owner-1",
         0_i64,
         1_i32,
-        other_client,
+        client_id,
         false,
         "SYNCED"
     )
@@ -1267,7 +1266,7 @@ async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
         "MEMBER",
         0_i64,
         1_i32,
-        other_client,
+        client_id,
         false,
         "SYNCED"
     )

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n            id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date,\n            \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"userId\" as user_id, \"parentId\" as parent_id, \"isDaily\" as is_daily,\n            \"dueDate\" as due_date, description, \"listId\" as list_id, priority, icon, sync_state, version, is_deleted\n           FROM todo_items\n           WHERE \"userId\" = $1\n             AND updated_at > $2 AND (updated_by_client != $3 OR updated_by_client IS NULL)",
+  "query": "SELECT\n            id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date,\n            \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"userId\" as user_id, \"parentId\" as parent_id, \"isDaily\" as is_daily,\n            \"dueDate\" as due_date, description, \"listId\" as list_id, priority, icon, sync_state, version, is_deleted\n           FROM todo_items\n           WHERE \"userId\" = $1\n             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -103,7 +103,8 @@
       "Left": [
         "Text",
         "Timestamptz",
-        "Text"
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -128,5 +129,5 @@
       false
     ]
   },
-  "hash": "13b5b57cae2eee1a6a9a4a052ca14aad12a2bec016cf4b4fe526d8bfe31c0d99"
+  "hash": "8f134910456983a55b3821e511d931030ddb8c512694696627142caa20544d48"
 }

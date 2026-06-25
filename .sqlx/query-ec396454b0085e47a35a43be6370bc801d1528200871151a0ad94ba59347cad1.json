@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT glm.id, glm.\"listId\" as list_id, glm.\"userId\" as user_id, glm.role, glm.\"joinedAt\" as joined_at, glm.version, glm.is_deleted, glm.sync_state\n           FROM grocery_list_members glm\n           JOIN grocery_list_members my_glm ON glm.\"listId\" = my_glm.\"listId\" AND my_glm.is_deleted = FALSE\n           WHERE my_glm.\"userId\" = $1\n             AND glm.updated_at > $2\n             AND (glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT glm.id, glm.\"listId\" as list_id, glm.\"userId\" as user_id, glm.role, glm.\"joinedAt\" as joined_at, glm.version, glm.is_deleted, glm.sync_state\n           FROM grocery_list_members glm\n           JOIN grocery_list_members my_glm ON glm.\"listId\" = my_glm.\"listId\" AND my_glm.is_deleted = FALSE\n           WHERE my_glm.\"userId\" = $1\n             AND glm.updated_at > $2\n             AND ($4 OR glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -48,7 +48,8 @@
       "Left": [
         "Text",
         "Timestamptz",
-        "Text"
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -62,5 +63,5 @@
       false
     ]
   },
-  "hash": "ff1876968ce7124c500e032c20cbe785aeaf9e2869b2ba7cd8a3eece37567c28"
+  "hash": "ec396454b0085e47a35a43be6370bc801d1528200871151a0ad94ba59347cad1"
 }

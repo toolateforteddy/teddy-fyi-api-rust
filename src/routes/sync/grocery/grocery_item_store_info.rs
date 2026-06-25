@@ -187,26 +187,49 @@ pub async fn process_grocery_item_store_info_changes(
                 }
             }
             OperationType::Delete => {
+                let existing_info = sqlx::query!(
+                    r#"SELECT is_deleted, version FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
+                    change.grocery_item_id,
+                    change.store_id
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
+
+                if let Some(ref info) = existing_info {
+                    if info.is_deleted {
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: info.version,
+                            sync_state: "SYNCED".to_string(),
+                        });
+                        success_ids.push(string_id);
+                        continue;
+                    }
+                }
+
                 let parent_item = sqlx::query!(
-                    r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                    r#"SELECT "userId" as user_id, "listId" as list_id, is_deleted FROM grocery_items WHERE id = $1"#,
                     change.grocery_item_id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
                 if let Some(parent) = parent_item {
-                    let mut authorized = parent.user_id.as_deref() == Some(user_id);
+                    let mut authorized = parent.is_deleted;
                     if !authorized {
-                        if let Some(ref list_id) = parent.list_id {
-                            let is_member = sqlx::query!(
-                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                list_id,
-                                user_id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?
-                            .is_some();
-                            if is_member {
-                                authorized = true;
+                        authorized = parent.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = parent.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
                             }
                         }
                     }

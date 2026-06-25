@@ -260,13 +260,23 @@ pub async fn process_grocery_changes(
             }
             OperationType::Delete => {
                 let existing_item = sqlx::query!(
-                    r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                    r#"SELECT "userId" as user_id, "listId" as list_id, is_deleted, version FROM grocery_items WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
 
                 if let Some(ref row) = existing_item {
+                    if row.is_deleted {
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: row.version,
+                            sync_state: "SYNCED".to_string(),
+                        });
+                        success_ids.push(string_id);
+                        continue;
+                    }
+
                     if let Some(ref list_id) = row.list_id {
                         let is_member = sqlx::query!(
                             r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,

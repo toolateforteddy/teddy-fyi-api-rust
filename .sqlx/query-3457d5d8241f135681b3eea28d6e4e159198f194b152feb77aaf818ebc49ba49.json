@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \"userId\" as user_id, \"listId\" as list_id, is_deleted FROM grocery_items WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "list_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "3457d5d8241f135681b3eea28d6e4e159198f194b152feb77aaf818ebc49ba49"
+}

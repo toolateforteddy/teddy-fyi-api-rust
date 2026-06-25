@@ -174,12 +174,21 @@ pub async fn process_todo_changes(
             }
             OperationType::Delete => {
                 let owner = sqlx::query!(
-                    r#"SELECT "userId" as user_id FROM todo_items WHERE id = $1"#,
+                    r#"SELECT "userId" as user_id, is_deleted, version FROM todo_items WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
                 if let Some(row) = owner {
+                    if row.is_deleted {
+                        upload_status.push(SuccessResult {
+                            id: change.id.clone(),
+                            version: row.version,
+                            sync_state: "SYNCED".to_string(),
+                        });
+                        success_ids.push(change.id.clone());
+                        continue;
+                    }
                     if row.user_id.as_deref() != Some(user_id) {
                         return Err(AppError::Forbidden(format!("User is not authorized to delete todo item {}", change.id)));
                     }

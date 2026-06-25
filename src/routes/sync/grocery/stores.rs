@@ -184,12 +184,22 @@ pub async fn process_store_changes(
             }
             OperationType::Delete => {
                 let existing = sqlx::query!(
-                    r#"SELECT "userId" as user_id, "listId" as list_id FROM stores WHERE id = $1"#,
+                    r#"SELECT "userId" as user_id, "listId" as list_id, is_deleted, version FROM stores WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
                 if let Some(row) = existing {
+                    if row.is_deleted {
+                        upload_status.push(SuccessResult {
+                            id: string_id.clone(),
+                            version: row.version,
+                            sync_state: "SYNCED".to_string(),
+                        });
+                        success_ids.push(string_id);
+                        continue;
+                    }
+
                     let mut authorized = row.user_id.as_deref() == Some(user_id);
                     if !authorized {
                         if let Some(ref list_id) = row.list_id {

@@ -3154,5 +3154,168 @@ async fn test_grocery_list_delete_cascade(pool: PgPool) {
     assert_eq!(invites_count, 0);
 }
 
+#[sqlx::test]
+async fn test_grocery_list_cascade_delete_conflict(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // Pre-insert grocery list and associated records
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "glist-cascade-conflict", "Cascade Conflict List", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "cascade-conflict-member", "glist-cascade-conflict", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO categories (id, name, position, \"userId\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "cat-cascade-conflict", "Fruit", 1, "user-1", Some("glist-cascade-conflict".to_string()), 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "store-cascade-conflict", "Store A", 1, true, "user-1", Some("glist-cascade-conflict".to_string()), 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", \"categoryId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        "item-cascade-conflict", "Apples", "5", false, 0_i64, 1, 0, "user-1", true, Some("glist-cascade-conflict".to_string()), Some("cat-cascade-conflict".to_string()), 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_item_store_info (\"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "item-cascade-conflict", "store-cascade-conflict", 1.99, true, "user-1", 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Deleting all of them in the same request
+    let claims = Claims {
+        sub: "user-1".to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10000000000,
+    };
+    let req_delete = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        scope: Some(SyncScope::Grocery),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![GroceryListChangeDelta {
+            id: "glist-cascade-conflict".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
+            id: "cascade-conflict-member".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        store_changes: vec![StoreChangeDelta {
+            id: "store-cascade-conflict".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        category_changes: vec![CategoryChangeDelta {
+            id: "cat-cascade-conflict".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        grocery_changes: vec![GroceryChangeDelta {
+            id: "item-cascade-conflict".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
+            id: "item-cascade-conflict-store-cascade-conflict".to_string(),
+            grocery_item_id: "item-cascade-conflict".to_string(),
+            store_id: "store-cascade-conflict".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = super::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
+        .await
+        .expect("Delete sync transaction should succeed even with cascade delete conflict")
+        .0;
+
+    assert!(res.success_ids.contains(&"glist-cascade-conflict".to_string()));
+    assert!(res.success_ids.contains(&"cascade-conflict-member".to_string()));
+    assert!(res.success_ids.contains(&"store-cascade-conflict".to_string()));
+    assert!(res.success_ids.contains(&"cat-cascade-conflict".to_string()));
+    assert!(res.success_ids.contains(&"item-cascade-conflict".to_string()));
+    assert!(res.success_ids.contains(&"item-cascade-conflict-store-cascade-conflict".to_string()));
+
+    // Verify all are marked as soft-deleted in the DB
+    let list_db = sqlx::query!("SELECT is_deleted FROM grocery_lists WHERE id = $1", "glist-cascade-conflict")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(list_db.is_deleted);
+
+    let member_db = sqlx::query!("SELECT is_deleted FROM grocery_list_members WHERE id = $1", "cascade-conflict-member")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(member_db.is_deleted);
+
+    let store_db = sqlx::query!("SELECT is_deleted FROM stores WHERE id = $1", "store-cascade-conflict")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(store_db.is_deleted);
+
+    let cat_db = sqlx::query!("SELECT is_deleted FROM categories WHERE id = $1", "cat-cascade-conflict")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(cat_db.is_deleted);
+
+    let item_db = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", "item-cascade-conflict")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(item_db.is_deleted);
+
+    let info_db = sqlx::query!(
+        "SELECT is_deleted FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2",
+        "item-cascade-conflict",
+        "store-cascade-conflict"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(info_db.is_deleted);
+}
+
 
 

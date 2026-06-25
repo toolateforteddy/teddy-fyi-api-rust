@@ -305,11 +305,11 @@ where
 pub struct TodoListData {
     pub id: String,
     pub name: String,
-    #[serde(alias = "color_hex", rename = "colorHex")]
+    #[serde(alias = "color_hex")]
     pub color_hex: String,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "user_id")]
     pub user_id: Option<String>,
-    #[serde(alias = "created_at", rename = "createdAt")]
+    #[serde(alias = "created_at")]
     pub created_at: i64,
     #[serde(alias = "sync_state")]
     pub sync_state: String,
@@ -322,27 +322,27 @@ pub struct TodoListData {
 pub struct TodoItemData {
     pub id: String,
     pub title: String,
-    #[serde(alias = "is_completed", rename = "isCompleted")]
+    #[serde(alias = "is_completed")]
     pub is_completed: bool,
-    #[serde(alias = "created_at", rename = "createdAt")]
+    #[serde(alias = "created_at")]
     pub created_at: i64,
     pub position: i32,
-    #[serde(alias = "scheduled_date", rename = "scheduledDate")]
+    #[serde(alias = "scheduled_date")]
     pub scheduled_date: Option<String>,
-    #[serde(alias = "recurrence_rule", rename = "recurrenceRule")]
+    #[serde(alias = "recurrence_rule")]
     pub recurrence_rule: Option<String>,
-    #[serde(alias = "scheduled_at", rename = "scheduledAt")]
+    #[serde(alias = "scheduled_at")]
     pub scheduled_at: i64,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "user_id")]
     pub user_id: Option<String>,
-    #[serde(alias = "parent_id", rename = "parentId")]
+    #[serde(alias = "parent_id")]
     pub parent_id: Option<String>,
-    #[serde(alias = "is_daily", rename = "isDaily")]
+    #[serde(alias = "is_daily")]
     pub is_daily: bool,
-    #[serde(alias = "due_date", rename = "dueDate")]
+    #[serde(alias = "due_date")]
     pub due_date: Option<i64>,
     pub description: Option<String>,
-    #[serde(alias = "list_id", rename = "listId")]
+    #[serde(alias = "list_id")]
     pub list_id: Option<String>,
     pub priority: i32,
     pub icon: Option<String>,
@@ -357,9 +357,9 @@ pub struct TodoItemData {
 pub struct GroceryListData {
     pub id: String,
     pub name: String,
-    #[serde(alias = "owner_id", rename = "ownerId")]
+    #[serde(alias = "owner_id")]
     pub owner_id: Option<String>,
-    #[serde(alias = "created_at", rename = "createdAt")]
+    #[serde(alias = "created_at")]
     pub created_at: i64,
     #[serde(alias = "sync_state", default = "default_sync_state")]
     pub sync_state: String,
@@ -375,12 +375,12 @@ fn default_sync_state() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryListMemberData {
     pub id: String,
-    #[serde(alias = "list_id", rename = "listId")]
+    #[serde(alias = "list_id")]
     pub list_id: String,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "user_id")]
     pub user_id: String,
     pub role: String,
-    #[serde(alias = "joined_at", rename = "joinedAt")]
+    #[serde(alias = "joined_at")]
     pub joined_at: i64,
     #[serde(alias = "sync_state", default = "default_sync_state")]
     pub sync_state: String,
@@ -395,9 +395,9 @@ pub struct StoreData {
     pub name: String,
     #[serde(default)]
     pub position: i32,
-    #[serde(alias = "is_default_supported", rename = "isDefaultSupported")]
+    #[serde(alias = "is_default_supported")]
     pub is_default_supported: bool,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "user_id")]
     pub user_id: Option<String>,
     #[serde(alias = "sync_state", default = "default_sync_state")]
     pub sync_state: String,
@@ -414,7 +414,7 @@ pub struct CategoryData {
     pub name: String,
     #[serde(default)]
     pub position: i32,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "user_id")]
     pub user_id: Option<String>,
     pub icon: Option<String>,
     #[serde(alias = "sync_state", default = "default_sync_state")]
@@ -431,20 +431,20 @@ pub struct GroceryItemData {
     pub id: String,
     pub name: String,
     pub quantity: String,
-    #[serde(alias = "is_bought", rename = "isBought")]
+    #[serde(alias = "is_bought")]
     pub is_bought: bool,
-    #[serde(alias = "created_at", rename = "createdAt")]
+    #[serde(alias = "created_at")]
     pub created_at: i64,
     pub position: i32,
-    #[serde(alias = "category_id", rename = "categoryId", default)]
+    #[serde(alias = "category_id", default)]
     pub category_id: Option<String>,
-    #[serde(alias = "times_bought", rename = "timesBought")]
+    #[serde(alias = "times_bought")]
     pub times_bought: i32,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "user_id")]
     pub user_id: Option<String>,
-    #[serde(alias = "is_active", rename = "isActive")]
+    #[serde(alias = "is_active")]
     pub is_active: bool,
-    #[serde(alias = "list_id", rename = "listId")]
+    #[serde(alias = "list_id")]
     pub list_id: Option<String>,
     pub unit: Option<String>,
     pub notes: Option<String>,

@@ -241,17 +241,68 @@ pub async fn sync_handler(
         vec![]
     };
 
+    let has_grocery = !payload.grocery_list_changes.is_empty()
+        || !payload.grocery_list_member_changes.is_empty()
+        || !payload.store_changes.is_empty()
+        || !payload.category_changes.is_empty()
+        || !payload.grocery_changes.is_empty()
+        || !payload.grocery_item_store_info_changes.is_empty();
+
+    let mut affected_grocery_users = Vec::new();
+    if has_grocery {
+        let rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT "userId" as user_id FROM (
+                -- Users who are members of the updated lists
+                SELECT glm."userId"
+                FROM grocery_list_members glm
+                WHERE glm."listId" IN (
+                    SELECT DISTINCT "listId" FROM (
+                        SELECT id as "listId" FROM grocery_lists WHERE updated_at = $1
+                        UNION ALL
+                        SELECT "listId" FROM grocery_list_members WHERE updated_at = $1 AND "listId" IS NOT NULL
+                        UNION ALL
+                        SELECT "listId" FROM stores WHERE updated_at = $1 AND "listId" IS NOT NULL
+                        UNION ALL
+                        SELECT "listId" FROM categories WHERE updated_at = $1 AND "listId" IS NOT NULL
+                        UNION ALL
+                        SELECT "listId" FROM grocery_items WHERE updated_at = $1 AND "listId" IS NOT NULL
+                        UNION ALL
+                        SELECT s."listId" FROM grocery_item_store_info gsi
+                        JOIN stores s ON gsi."storeId" = s.id
+                        WHERE gsi.updated_at = $1 AND s."listId" IS NOT NULL
+                    ) sub_lists
+                )
+                UNION ALL
+                -- Owners of updated lists
+                SELECT "ownerId" as "userId" FROM grocery_lists WHERE updated_at = $1 AND "ownerId" IS NOT NULL
+                UNION ALL
+                -- Users who own updated items/stores/categories with no list
+                SELECT "userId" FROM grocery_items WHERE updated_at = $1 AND "listId" IS NULL AND "userId" IS NOT NULL
+                UNION ALL
+                SELECT "userId" FROM stores WHERE updated_at = $1 AND "listId" IS NULL AND "userId" IS NOT NULL
+                UNION ALL
+                SELECT "userId" FROM categories WHERE updated_at = $1 AND "listId" IS NULL AND "userId" IS NOT NULL
+            ) all_users
+            "#,
+            server_timestamp
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        for r in rows {
+            if let Some(uid) = r.user_id {
+                affected_grocery_users.push(uid);
+            }
+        }
+    }
+
     // Commit transaction
     tx.commit().await?;
 
     let has_mutations = !payload.todo_list_changes.is_empty()
         || !payload.todo_changes.is_empty()
-        || !payload.grocery_list_changes.is_empty()
-        || !payload.grocery_list_member_changes.is_empty()
-        || !payload.store_changes.is_empty()
-        || !payload.category_changes.is_empty()
-        || !payload.grocery_changes.is_empty()
-        || !payload.grocery_item_store_info_changes.is_empty()
+        || has_grocery
         || !payload.config_changes.is_empty()
         || !payload.drawing_changes.is_empty()
         || !payload.configs.is_empty()
@@ -261,25 +312,27 @@ pub async fn sync_handler(
         if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
             let ts_str = server_timestamp.to_rfc3339();
             
-            // Update ALL scope
+            // Update All scope for the requesting user
             let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:All", claims.sub), &ts_str, 86400).await;
 
-            // Update specific scopes
+            // Invalidate/update caches for all members/collaborators of the updated grocery lists
+            if has_grocery {
+                if !affected_grocery_users.contains(&claims.sub) {
+                    affected_grocery_users.push(claims.sub.clone());
+                }
+                for user_id in &affected_grocery_users {
+                    let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Grocery", user_id), &ts_str, 86400).await;
+                    let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:All", user_id), &ts_str, 86400).await;
+                }
+            }
+
+            // Update specific scopes for the requesting user
             let has_todo = !payload.todo_list_changes.is_empty() || !payload.todo_changes.is_empty();
-            let has_grocery = !payload.grocery_list_changes.is_empty()
-                || !payload.grocery_list_member_changes.is_empty()
-                || !payload.store_changes.is_empty()
-                || !payload.category_changes.is_empty()
-                || !payload.grocery_changes.is_empty()
-                || !payload.grocery_item_store_info_changes.is_empty();
             let has_scribble_box = !payload.drawing_changes.is_empty() || !payload.drawings.is_empty();
             let has_scribble_keep = !payload.config_changes.is_empty() || !payload.configs.is_empty();
 
             if has_todo {
                 let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Todo", claims.sub), &ts_str, 86400).await;
-            }
-            if has_grocery {
-                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Grocery", claims.sub), &ts_str, 86400).await;
             }
             if has_scribble_box {
                 let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleBox", claims.sub), &ts_str, 86400).await;

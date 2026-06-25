@@ -1854,6 +1854,130 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_sync_handler_updates_redis_cache_collaborative(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_a = "user-A";
+    let user_b = "user-B";
+    let list_id = "grocerylist-collab-1";
+
+    // Setup list and members in Postgres sandbox
+    sqlx::query!(
+        r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)"#,
+        list_id,
+        "Collab List",
+        user_a,
+        0_i64,
+        1_i32,
+        "client-a",
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())",
+        "member-a-1", list_id, user_a, "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())",
+        "member-b-1", list_id, user_b, "MEMBER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Clear any existing cache for user_a and user_b
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", user_a)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Grocery", user_a)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", user_b)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Grocery", user_b)).await.unwrap_or(0);
+    }
+
+    let item_data = GroceryItemData {
+        id: "grocery-item-collab-1".to_string(),
+        name: "Apples".to_string(),
+        quantity: "5".to_string(),
+        is_bought: false,
+        created_at: 0,
+        position: 1,
+        category_id: None,
+        times_bought: 0,
+        user_id: None,
+        is_active: true,
+        list_id: Some(list_id.to_string()),
+        unit: None,
+        notes: None,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-a".to_string(),
+        scope: Some(SyncScope::Grocery),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![GroceryChangeDelta {
+            id: "grocery-item-collab-1".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&item_data).unwrap()),
+        }],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let claims = Claims {
+        sub: user_a.to_string(),
+        client_uuid: "client-a".to_string(),
+        exp: 10000000000,
+    };
+
+    let res = super::sync_handler(State(state.clone()), Extension(claims.clone()), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert_eq!(res.success_ids, vec!["grocery-item-collab-1"]);
+
+    // Verify Redis has keys updated for both user_a and user_b
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        let all_ts_a: Option<String> = conn.get(&format!("user:{}:last_update:All", user_a)).await.unwrap_or(None);
+        let grocery_ts_a: Option<String> = conn.get(&format!("user:{}:last_update:Grocery", user_a)).await.unwrap_or(None);
+        
+        let all_ts_b: Option<String> = conn.get(&format!("user:{}:last_update:All", user_b)).await.unwrap_or(None);
+        let grocery_ts_b: Option<String> = conn.get(&format!("user:{}:last_update:Grocery", user_b)).await.unwrap_or(None);
+
+        assert!(all_ts_a.is_some(), "User A All cache key should be updated");
+        assert!(grocery_ts_a.is_some(), "User A Grocery cache key should be updated");
+        assert!(all_ts_b.is_some(), "User B All cache key should be updated");
+        assert!(grocery_ts_b.is_some(), "User B Grocery cache key should be updated");
+
+        // Clean up
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", user_a)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Grocery", user_a)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:All", user_b)).await.unwrap_or(0);
+        let _: i32 = conn.del(&format!("user:{}:last_update:Grocery", user_b)).await.unwrap_or(0);
+    }
+}
+
+#[sqlx::test]
 async fn test_login_upserts_user(pool: PgPool) {
     let mut state = setup_state(pool.clone());
     state.cookie_domain = "".to_string(); // bypass Google OAuth validation via dev/mock token

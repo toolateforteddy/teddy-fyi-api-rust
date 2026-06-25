@@ -234,9 +234,9 @@ pub async fn fetch_remote_grocery_mutations(
     let updated_store_infos = sqlx::query!(
         r#"SELECT DISTINCT gsi."groceryItemId" as grocery_item_id, gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available, gsi."userId" as user_id, gsi.version, gsi.is_deleted, gsi.sync_state
            FROM grocery_item_store_info gsi
-           JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
-           LEFT JOIN grocery_list_members glm ON gi."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
-           WHERE (gsi."userId" = $1 OR gi."userId" = $1 OR glm.id IS NOT NULL)
+           JOIN stores s ON gsi."storeId" = s.id
+           LEFT JOIN grocery_list_members glm ON s."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
+           WHERE (s."userId" = $1 OR glm.id IS NOT NULL)
              AND gsi.updated_at > $2
              AND ($4 OR gsi.updated_by_client != $3 OR gsi.updated_by_client IS NULL)"#,
         user_id,

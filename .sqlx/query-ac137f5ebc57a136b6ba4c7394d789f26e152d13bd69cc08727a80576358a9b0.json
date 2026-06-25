@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT gsi.\"groceryItemId\" as grocery_item_id, gsi.\"storeId\" as store_id, gsi.price, gsi.\"isAvailable\" as is_available, gsi.\"userId\" as user_id, gsi.version, gsi.is_deleted, gsi.sync_state\n           FROM grocery_item_store_info gsi\n           JOIN grocery_items gi ON gsi.\"groceryItemId\" = gi.id\n           LEFT JOIN grocery_list_members glm ON gi.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (gsi.\"userId\" = $1 OR gi.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND gsi.updated_at > $2\n             AND ($4 OR gsi.updated_by_client != $3 OR gsi.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT gsi.\"groceryItemId\" as grocery_item_id, gsi.\"storeId\" as store_id, gsi.price, gsi.\"isAvailable\" as is_available, gsi.\"userId\" as user_id, gsi.version, gsi.is_deleted, gsi.sync_state\n           FROM grocery_item_store_info gsi\n           JOIN stores s ON gsi.\"storeId\" = s.id\n           LEFT JOIN grocery_list_members glm ON s.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (s.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND gsi.updated_at > $2\n             AND ($4 OR gsi.updated_by_client != $3 OR gsi.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -63,5 +63,5 @@
       false
     ]
   },
-  "hash": "0b9e39b7d24ca53b065cefbc7b8e148ff69769500855e3f120ac085b84926ff9"
+  "hash": "ac137f5ebc57a136b6ba4c7394d789f26e152d13bd69cc08727a80576358a9b0"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT c.id, c.name, c.position, c.\"userId\" as user_id, c.icon, c.version, c.is_deleted, c.sync_state, c.\"listId\" as list_id\n               FROM categories c\n               LEFT JOIN grocery_list_members glm ON c.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n               WHERE (c.\"userId\" = $1 OR glm.id IS NOT NULL)\n                 AND c.updated_at > $2\n                 AND (c.updated_by_client != $3 OR c.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT c.id, c.name, c.position, c.\"userId\" as user_id, c.icon, c.version, c.is_deleted, c.sync_state, c.\"listId\" as list_id\n           FROM categories c\n           LEFT JOIN grocery_list_members glm ON c.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (c.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND c.updated_at > $2\n             AND (c.updated_by_client != $3 OR c.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -68,5 +68,5 @@
       true
     ]
   },
-  "hash": "4e7d8464d35e48f1d472349ba94508c195e592ecd734d599955b93e998294355"
+  "hash": "15483a46a1c6aaf51cd43fe7284f4fbd8cfd3dce2ed5b9f9cb866fa028143d24"
 }

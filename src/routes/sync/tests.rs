@@ -1208,6 +1208,92 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
+    let mut tx = pool.begin().await.unwrap();
+
+    let client_id = "test-client";
+    let other_client = "other-client";
+    let last_synced_at = None;
+
+    // --- todo_lists ---
+    sqlx::query!(
+        r#"INSERT INTO todo_lists (id, name, "colorHex", "userId", "createdAt", sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)"#,
+        "todolist-initial-1",
+        "Initial List",
+        "#FF0000",
+        "user-1",
+        0_i64,
+        "SYNCED",
+        1_i32,
+        false,
+        other_client
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Verify TODO mutations with last_synced_at = None
+    let (todo_lists, _) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
+        .await
+        .unwrap();
+
+    assert!(todo_lists.iter().any(|d| d.id == "todolist-initial-1"));
+
+    // --- grocery_lists ---
+    sqlx::query!(
+        r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)"#,
+        "grocerylist-initial-1",
+        "Initial Grocery List",
+        "owner-1",
+        0_i64,
+        1_i32,
+        other_client,
+        false,
+        "SYNCED"
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // --- grocery_list_members ---
+    sqlx::query!(
+        r#"INSERT INTO grocery_list_members (id, "listId", "userId", role, "joinedAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
+        "member-initial-1",
+        "grocerylist-initial-1",
+        "user-1",
+        "MEMBER",
+        0_i64,
+        1_i32,
+        other_client,
+        false,
+        "SYNCED"
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Verify Grocery mutations with last_synced_at = None
+    let (
+        grocery_lists,
+        grocery_list_members,
+        _,
+        _,
+        _,
+        _,
+    ) = fetch_remote_grocery_mutations(&mut tx, "user-1", client_id, last_synced_at)
+        .await
+        .unwrap();
+
+    assert!(grocery_lists.iter().any(|d| d.id == "grocerylist-initial-1"));
+    assert!(grocery_list_members.iter().any(|d| d.id == "member-initial-1"));
+
+    tx.rollback().await.unwrap();
+}
+
+#[sqlx::test]
 async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     let mut tx = pool.begin().await.unwrap();
 

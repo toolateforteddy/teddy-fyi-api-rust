@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT\n                gi.id, gi.name, gi.quantity, gi.\"isBought\" as is_bought, gi.\"createdAt\" as created_at, gi.position, gi.\"categoryId\" as category_id,\n                gi.\"timesBought\" as times_bought, gi.\"userId\" as user_id, gi.\"isActive\" as is_active, gi.\"listId\" as list_id, gi.unit, gi.notes, gi.version, gi.is_deleted, gi.sync_state\n               FROM grocery_items gi\n               LEFT JOIN grocery_list_members glm ON gi.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n               WHERE (glm.id IS NOT NULL OR (gi.\"listId\" IS NULL AND gi.\"userId\" = $1))\n                 AND gi.updated_at > $2\n                 AND (gi.updated_by_client != $3 OR gi.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT\n            gi.id, gi.name, gi.quantity, gi.\"isBought\" as is_bought, gi.\"createdAt\" as created_at, gi.position, gi.\"categoryId\" as category_id,\n            gi.\"timesBought\" as times_bought, gi.\"userId\" as user_id, gi.\"isActive\" as is_active, gi.\"listId\" as list_id, gi.unit, gi.notes, gi.version, gi.is_deleted, gi.sync_state\n           FROM grocery_items gi\n           LEFT JOIN grocery_list_members glm ON gi.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (glm.id IS NOT NULL OR (gi.\"listId\" IS NULL AND gi.\"userId\" = $1))\n             AND gi.updated_at > $2\n             AND (gi.updated_by_client != $3 OR gi.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -110,5 +110,5 @@
       false
     ]
   },
-  "hash": "0307041511226022593a2871747f02d09c0dab2cc17f4802c3fe659f95cbc401"
+  "hash": "a4e38f57e95e0c658384dd1b9b75da77e22194d68454dc8308baf844516ae136"
 }

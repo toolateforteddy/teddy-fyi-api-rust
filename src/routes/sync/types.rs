@@ -78,9 +78,11 @@ pub struct GroceryChangeDelta {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemStoreInfoChangeDelta {
-    #[serde(alias = "grocery_item_id", rename = "groceryItemId")]
+    #[serde(default)]
+    pub id: String,
+    #[serde(alias = "groceryItemId")]
     pub grocery_item_id: String,
-    #[serde(alias = "store_id", rename = "storeId")]
+    #[serde(alias = "storeId")]
     pub store_id: String,
     #[serde(rename = "type")]
     pub operation_type: OperationType,
@@ -454,19 +456,21 @@ pub struct GroceryItemData {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GroceryItemStoreInfoData {
-    #[serde(alias = "grocery_item_id", rename = "groceryItemId")]
+    #[serde(default)]
+    pub id: String,
+    #[serde(alias = "groceryItemId")]
     pub grocery_item_id: String,
-    #[serde(alias = "store_id", rename = "storeId")]
+    #[serde(alias = "storeId")]
     pub store_id: String,
     pub price: Option<f64>,
-    #[serde(alias = "is_available", rename = "isAvailable")]
+    #[serde(alias = "isAvailable")]
     pub is_available: bool,
-    #[serde(alias = "user_id", rename = "userId")]
+    #[serde(alias = "userId")]
     pub user_id: Option<String>,
-    #[serde(alias = "sync_state", default = "default_sync_state")]
+    #[serde(alias = "syncState", default = "default_sync_state")]
     pub sync_state: String,
     pub version: i32,
-    #[serde(alias = "is_deleted", default)]
+    #[serde(alias = "isDeleted", default)]
     pub is_deleted: bool,
 }
 

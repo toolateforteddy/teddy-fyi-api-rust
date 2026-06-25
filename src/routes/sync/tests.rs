@@ -822,6 +822,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     };
 
     let store_info = GroceryItemStoreInfoData {
+        id: "50-100".to_string(),
         grocery_item_id: "50".to_string(),
         store_id: "100".to_string(),
         price: Some(1.99),
@@ -849,6 +850,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
             data: Some(serde_json::to_value(&item_data).unwrap()),
         }],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
+            id: "50-100".to_string(),
             grocery_item_id: "50".to_string(),
             store_id: "100".to_string(),
             operation_type: OperationType::Insert,
@@ -889,6 +891,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     };
 
     let updated_store_info = GroceryItemStoreInfoData {
+        id: "50-100".to_string(),
         grocery_item_id: "50".to_string(),
         store_id: "100".to_string(),
         price: Some(2.49),
@@ -916,6 +919,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
             data: Some(serde_json::to_value(&updated_item).unwrap()),
         }],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
+            id: "50-100".to_string(),
             grocery_item_id: "50".to_string(),
             store_id: "100".to_string(),
             operation_type: OperationType::Update,
@@ -970,6 +974,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
             data: None,
         }],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
+            id: "50-100".to_string(),
             grocery_item_id: "50".to_string(),
             store_id: "100".to_string(),
             operation_type: OperationType::Delete,
@@ -1197,7 +1202,7 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     assert!(grocery_items.iter().any(|d| d.id == "3001"));
     assert!(grocery_item_store_infos
         .iter()
-        .any(|d| d.grocery_item_id == "3001" && d.store_id == "1001"));
+        .any(|d| d.id == "3001-1001" && d.grocery_item_id == "3001" && d.store_id == "1001"));
 
     tx.rollback().await.unwrap();
 }
@@ -2831,7 +2836,9 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     assert_eq!(res_member.remote_grocery_changes[0].id, "700");
 
     assert_eq!(res_member.remote_grocery_item_store_info_changes.len(), 1);
+    assert_eq!(res_member.remote_grocery_item_store_info_changes[0].id, "700-500");
     assert_eq!(res_member.remote_grocery_item_store_info_changes[0].grocery_item_id, "700");
+    assert_eq!(res_member.remote_grocery_item_store_info_changes[0].store_id, "500");
 }
 
 #[sqlx::test]

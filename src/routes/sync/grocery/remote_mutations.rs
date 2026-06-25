@@ -241,6 +241,7 @@ pub async fn fetch_remote_grocery_mutations(
             let item_id = row.grocery_item_id.clone();
             let store_id = row.store_id.clone();
             let item_data = GroceryItemStoreInfoData {
+                id: format!("{}-{}", row.grocery_item_id, row.store_id),
                 grocery_item_id: row.grocery_item_id,
                 store_id: row.store_id,
                 price: row.price,
@@ -254,6 +255,7 @@ pub async fn fetch_remote_grocery_mutations(
             let data_val = serde_json::to_value(&item_data)?;
 
             remote_grocery_item_store_info_changes.push(GroceryItemStoreInfoChangeDelta {
+                id: format!("{}-{}", item_id, store_id),
                 grocery_item_id: item_id,
                 store_id: store_id,
                 operation_type: if row.is_deleted { OperationType::Delete } else { OperationType::Update },

@@ -22,8 +22,8 @@ pub async fn process_todo_changes(
                         Ok(mut item) => {
                             let mut current_updated_by = client_id.to_string();
 
-                            // Auto-assign icon if missing
-                            if item.icon.as_deref().unwrap_or("").is_empty() {
+                            // Auto-assign icon if missing and fewer than 3 items are being synced in this batch
+                            if changes.len() < 3 && item.icon.as_deref().unwrap_or("").is_empty() {
                                 if let Ok(icon) = assign_todo_icon(gemini_api_key, &item.title).await {
                                     item.icon = Some(icon);
                                     // Change updated_by_client so it is returned to the caller as a remote mutation

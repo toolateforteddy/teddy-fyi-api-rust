@@ -100,7 +100,7 @@ pub async fn process_config_changes(
                             success_ids.push(change_id.to_string());
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize ConfigData for config {}: {:?}", change_id, err);
+                            tracing::error!("Failed to deserialize ConfigData for config {}: {:?}. Data: {:?}", change_id, err, data);
                             return Err(AppError::Serialization(err));
                         }
                     }

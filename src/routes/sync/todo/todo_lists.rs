@@ -88,9 +88,10 @@ pub async fn process_todo_list_changes(
                         }
                         Err(err) => {
                             tracing::error!(
-                                "Failed to deserialize TodoListData for todo list {}: {:?}",
+                                "Failed to deserialize TodoListData for todo list {}: {:?}. Data: {:?}",
                                 change.id,
-                                err
+                                err,
+                                data
                             );
                             return Err(AppError::Serialization(err));
                         }

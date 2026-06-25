@@ -98,7 +98,7 @@ pub async fn process_drawing_changes(
                             success_ids.push(change_id.to_string());
                         }
                         Err(err) => {
-                            tracing::error!("Failed to deserialize DrawingData for drawing {}: {:?}", change_id, err);
+                            tracing::error!("Failed to deserialize DrawingData for drawing {}: {:?}. Data: {:?}", change_id, err, data);
                             return Err(AppError::Serialization(err));
                         }
                     }

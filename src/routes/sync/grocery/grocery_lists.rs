@@ -113,9 +113,10 @@ pub async fn process_grocery_list_changes(
                         }
                         Err(err) => {
                             tracing::error!(
-                                "Failed to deserialize GroceryListData for grocery list {}: {:?}",
+                                "Failed to deserialize GroceryListData for grocery list {}: {:?}. Data: {:?}",
                                 change.id,
-                                err
+                                err,
+                                data
                             );
                             return Err(AppError::Serialization(err));
                         }

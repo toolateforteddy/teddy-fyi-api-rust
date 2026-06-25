@@ -119,9 +119,10 @@ pub async fn process_store_changes(
                         }
                         Err(err) => {
                             tracing::error!(
-                                "Failed to deserialize StoreData for store {}: {:?}",
+                                "Failed to deserialize StoreData for store {}: {:?}. Data: {:?}",
                                 change.id,
-                                err
+                                err,
+                                data
                             );
                             return Err(AppError::Serialization(err));
                         }

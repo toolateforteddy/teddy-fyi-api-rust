@@ -121,9 +121,10 @@ pub async fn process_category_changes(
                         }
                         Err(err) => {
                             tracing::error!(
-                                "Failed to deserialize CategoryData for category {}: {:?}",
+                                "Failed to deserialize CategoryData for category {}: {:?}. Data: {:?}",
                                 change.id,
-                                err
+                                err,
+                                data
                             );
                             return Err(AppError::Serialization(err));
                         }

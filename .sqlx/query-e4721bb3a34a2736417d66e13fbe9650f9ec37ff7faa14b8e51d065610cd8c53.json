@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE grocery_list_members \n                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 \n                           WHERE id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4721bb3a34a2736417d66e13fbe9650f9ec37ff7faa14b8e51d065610cd8c53"
+}

@@ -304,7 +304,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     let list_data = GroceryListData {
         id: "glist-1".to_string(),
         name: "My Grocery List".to_string(),
-        owner_id: Some("owner-1".to_string()),
+        owner_id: Some("user-1".to_string()),
         created_at: 123456789,
         version: 1,
         is_deleted: false,
@@ -343,7 +343,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     let updated_list_data = GroceryListData {
         id: "glist-1".to_string(),
         name: "Updated Grocery List".to_string(),
-        owner_id: Some("owner-1".to_string()),
+        owner_id: Some("user-1".to_string()),
         created_at: 123456789,
         version: 2,
         is_deleted: false,
@@ -3315,6 +3315,111 @@ async fn test_grocery_list_cascade_delete_conflict(pool: PgPool) {
     .await
     .unwrap();
     assert!(info_db.is_deleted);
+}
+
+#[sqlx::test]
+async fn test_grocery_list_delete_member_stop_collaborating(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // Pre-insert grocery list with owner "owner-1"
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"ownerId\", \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "glist-stop-collab", "Collaborative List", "owner-1", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Owner member
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "owner-member-row", "glist-stop-collab", "owner-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Collaborator member (user-2)
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "user2-member-row", "glist-stop-collab", "user-2", "MEMBER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Associated item
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "item-stop-collab", "Apples", "5", false, 0_i64, 1, 0, "owner-1", true, Some("glist-stop-collab".to_string()), 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Perform sync request as user-2 trying to delete glist-stop-collab
+    let claims = Claims {
+        sub: "user-2".to_string(),
+        client_uuid: "client-2".to_string(),
+        exp: 10000000000,
+    };
+    let req_delete = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-2".to_string(),
+        scope: Some(SyncScope::Grocery),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![GroceryListChangeDelta {
+            id: "glist-stop-collab".to_string(),
+            operation_type: OperationType::Delete,
+            version: 1,
+            data: None,
+        }],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = super::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
+        .await
+        .expect("Stop collaborating delete action should succeed")
+        .0;
+
+    assert!(res.success_ids.contains(&"glist-stop-collab".to_string()));
+
+    // Verify grocery list is NOT soft-deleted
+    let list_db = sqlx::query!("SELECT is_deleted FROM grocery_lists WHERE id = $1", "glist-stop-collab")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!list_db.is_deleted);
+
+    // Verify collaborator's member record IS soft-deleted
+    let user2_member_db = sqlx::query!("SELECT is_deleted FROM grocery_list_members WHERE id = $1", "user2-member-row")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(user2_member_db.is_deleted);
+
+    // Verify owner's member record is NOT soft-deleted
+    let owner_member_db = sqlx::query!("SELECT is_deleted FROM grocery_list_members WHERE id = $1", "owner-member-row")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!owner_member_db.is_deleted);
+
+    // Verify associated item is NOT soft-deleted
+    let item_db = sqlx::query!("SELECT is_deleted FROM grocery_items WHERE id = $1", "item-stop-collab")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!item_db.is_deleted);
 }
 
 

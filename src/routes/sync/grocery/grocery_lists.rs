@@ -161,106 +161,151 @@ pub async fn process_grocery_list_changes(
             }
             OperationType::Delete => {
                 let existing_list = sqlx::query!(
-                    "SELECT version, is_deleted FROM grocery_lists WHERE id = $1",
+                    r#"SELECT "ownerId" as owner_id, version, is_deleted FROM grocery_lists WHERE id = $1"#,
                     change.id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
 
-                if let Some(row) = existing_list {
-                    if row.is_deleted {
-                        upload_status.push(SuccessResult {
-                            id: change.id.clone(),
-                            version: row.version,
-                            sync_state: "SYNCED".to_string(),
-                        });
-                        success_ids.push(change.id.clone());
-                        continue;
+                let list_version = match &existing_list {
+                    Some(row) => {
+                        if row.is_deleted {
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: row.version,
+                                sync_state: "SYNCED".to_string(),
+                            });
+                            success_ids.push(change.id.clone());
+                            continue;
+                        }
+                        row.version
                     }
-                }
+                    None => {
+                        return Err(AppError::Forbidden(format!("Grocery list {} not found", change.id)));
+                    }
+                };
 
-                let is_member = sqlx::query!(
-                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                let member_rec = sqlx::query!(
+                    r#"SELECT id, role, is_deleted FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2"#,
                     change.id,
                     user_id
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
-                if is_member.is_none() {
-                    return Err(AppError::Forbidden(format!("User is not a member of grocery list {}", change.id)));
+
+                let member_row = match member_rec {
+                    Some(row) => {
+                        if row.is_deleted {
+                            upload_status.push(SuccessResult {
+                                id: change.id.clone(),
+                                version: list_version,
+                                sync_state: "SYNCED".to_string(),
+                            });
+                            success_ids.push(change.id.clone());
+                            continue;
+                        }
+                        row
+                    }
+                    None => {
+                        return Err(AppError::Forbidden(format!("User is not a member of grocery list {}", change.id)));
+                    }
+                };
+
+                let is_owner = existing_list.as_ref().and_then(|l| l.owner_id.as_deref()) == Some(user_id)
+                    || member_row.role == "OWNER";
+
+                if is_owner {
+                    let row = sqlx::query!(
+                        "UPDATE grocery_lists SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
+                        server_timestamp,
+                        client_id,
+                        change.id
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?;
+
+                    // Soft delete associated grocery items
+                    sqlx::query!(
+                        r#"UPDATE grocery_items 
+                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
+                           WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                        server_timestamp,
+                        client_id,
+                        change.id
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+
+                    // Soft delete associated grocery list members
+                    sqlx::query!(
+                        r#"UPDATE grocery_list_members 
+                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
+                           WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                        server_timestamp,
+                        client_id,
+                        change.id
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+
+                    // Soft delete associated stores tied to this list
+                    sqlx::query!(
+                        r#"UPDATE stores
+                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2
+                           WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                        server_timestamp,
+                        client_id,
+                        change.id
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+
+                    // Soft delete associated categories tied to this list
+                    sqlx::query!(
+                        r#"UPDATE categories
+                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2
+                           WHERE "listId" = $3 AND is_deleted = FALSE"#,
+                        server_timestamp,
+                        client_id,
+                        change.id
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+
+                    // Hard delete associated list invites
+                    sqlx::query!(
+                        r#"DELETE FROM list_invites WHERE "listId" = $1"#,
+                        change.id
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+
+                    upload_status.push(SuccessResult {
+                        id: change.id.clone(),
+                        version: row.version,
+                        sync_state: "SYNCED".to_string(),
+                    });
+                    success_ids.push(change.id.clone());
+                } else {
+                    // Non-owner member deleting list: only soft-delete their own membership
+                    sqlx::query!(
+                        r#"UPDATE grocery_list_members 
+                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
+                           WHERE id = $3"#,
+                        server_timestamp,
+                        client_id,
+                        member_row.id
+                    )
+                    .execute(&mut **tx)
+                    .await?;
+
+                    upload_status.push(SuccessResult {
+                        id: change.id.clone(),
+                        version: list_version,
+                        sync_state: "SYNCED".to_string(),
+                    });
+                    success_ids.push(change.id.clone());
                 }
-
-                let row = sqlx::query!(
-                    "UPDATE grocery_lists SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
-                    server_timestamp,
-                    client_id,
-                    change.id
-                )
-                .fetch_one(&mut **tx)
-                .await?;
-
-                // Soft delete associated grocery items
-                sqlx::query!(
-                    r#"UPDATE grocery_items 
-                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
-                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
-                    server_timestamp,
-                    client_id,
-                    change.id
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                // Soft delete associated grocery list members
-                sqlx::query!(
-                    r#"UPDATE grocery_list_members 
-                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 
-                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
-                    server_timestamp,
-                    client_id,
-                    change.id
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                // Soft delete associated stores tied to this list
-                sqlx::query!(
-                    r#"UPDATE stores
-                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2
-                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
-                    server_timestamp,
-                    client_id,
-                    change.id
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                // Soft delete associated categories tied to this list
-                sqlx::query!(
-                    r#"UPDATE categories
-                       SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2
-                       WHERE "listId" = $3 AND is_deleted = FALSE"#,
-                    server_timestamp,
-                    client_id,
-                    change.id
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                // Hard delete associated list invites
-                sqlx::query!(
-                    r#"DELETE FROM list_invites WHERE "listId" = $1"#,
-                    change.id
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                upload_status.push(SuccessResult {
-                    id: change.id.clone(),
-                    version: row.version,
-                    sync_state: "SYNCED".to_string(),
-                });
-                success_ids.push(change.id.clone());
             }
         }
     }

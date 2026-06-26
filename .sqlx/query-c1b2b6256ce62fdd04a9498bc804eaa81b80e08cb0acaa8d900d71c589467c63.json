@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE stores\n                           SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2\n                           WHERE \"listId\" = $3 AND is_deleted = FALSE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c1b2b6256ce62fdd04a9498bc804eaa81b80e08cb0acaa8d900d71c589467c63"
+}

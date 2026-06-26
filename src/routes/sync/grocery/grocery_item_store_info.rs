@@ -12,7 +12,11 @@ pub async fn process_grocery_item_store_info_changes(
     upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     for change in changes {
-        let string_id = format!("{}-{}", change.grocery_item_id, change.store_id);
+        let string_id = if !change.id.is_empty() {
+            change.id.clone()
+        } else {
+            format!("{}-{}", change.grocery_item_id, change.store_id)
+        };
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!(

@@ -3422,5 +3422,95 @@ async fn test_grocery_list_delete_member_stop_collaborating(pool: PgPool) {
     assert!(!item_db.is_deleted);
 }
 
+#[sqlx::test]
+async fn test_sync_grocery_item_store_info_custom_change_id(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // Pre-create grocery list and store
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "glist-custom-id",
+        "Test List Custom ID",
+        0_i64,
+        1_i32,
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-custom-id-member", "glist-custom-id", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "store-custom-id", "Test Store Custom ID", 1, true, "user-1", 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "item-custom-id", "Banana", "1", false, 0_i64, 1, 0, "user-1", true, Some("glist-custom-id".to_string()), 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let store_info = GroceryItemStoreInfoData {
+        id: "banana-store-mapping-uuid".to_string(),
+        grocery_item_id: "item-custom-id".to_string(),
+        store_id: "store-custom-id".to_string(),
+        price: Some(0.99),
+        is_available: true,
+        user_id: None,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
+            id: "custom-change-uuid-12345".to_string(),
+            grocery_item_id: "item-custom-id".to_string(),
+            store_id: "store-custom-id".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&store_info).unwrap()),
+        }],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert!(res.success_ids.contains(&"custom-change-uuid-12345".to_string()));
+    let status_found = res.upload_status.iter().find(|s| s.id == "custom-change-uuid-12345");
+    assert!(status_found.is_some(), "Should find custom change ID in upload_status");
+    assert_eq!(status_found.unwrap().version, 1);
+}
+
 
 

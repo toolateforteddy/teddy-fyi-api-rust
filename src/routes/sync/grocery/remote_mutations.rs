@@ -34,9 +34,9 @@ pub async fn fetch_remote_grocery_mutations(
     let updated_lists = sqlx::query!(
         r#"SELECT DISTINCT gl.id, gl.name, gl."ownerId" as owner_id, gl."createdAt" as created_at, gl.version, gl.is_deleted, gl.sync_state
            FROM grocery_lists gl
-           LEFT JOIN grocery_list_members glm ON gl.id = glm."listId" AND glm.is_deleted = FALSE
-           WHERE (gl."ownerId" = $1 OR glm."userId" = $1)
-             AND gl.updated_at > $2
+           LEFT JOIN grocery_list_members glm ON gl.id = glm."listId" AND glm.is_deleted = FALSE AND glm."userId" = $1
+           WHERE (gl."ownerId" = $1 OR glm.id IS NOT NULL)
+             AND (gl.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))
              AND ($4 OR gl.updated_by_client != $3 OR gl.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
@@ -71,7 +71,7 @@ pub async fn fetch_remote_grocery_mutations(
            FROM grocery_list_members glm
            JOIN grocery_list_members my_glm ON glm."listId" = my_glm."listId" AND my_glm.is_deleted = FALSE
            WHERE my_glm."userId" = $1
-             AND glm.updated_at > $2
+             AND (glm.updated_at > $2 OR my_glm.updated_at > $2)
              AND ($4 OR glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
@@ -107,7 +107,7 @@ pub async fn fetch_remote_grocery_mutations(
            FROM stores s
            LEFT JOIN grocery_list_members glm ON s."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (s."userId" = $1 OR glm.id IS NOT NULL)
-             AND s.updated_at > $2
+             AND (s.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))
              AND ($4 OR s.updated_by_client != $3 OR s.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
@@ -145,7 +145,7 @@ pub async fn fetch_remote_grocery_mutations(
            FROM categories c
            LEFT JOIN grocery_list_members glm ON c."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (c."userId" = $1 OR glm.id IS NOT NULL)
-             AND c.updated_at > $2
+             AND (c.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))
              AND ($4 OR c.updated_by_client != $3 OR c.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
@@ -185,7 +185,7 @@ pub async fn fetch_remote_grocery_mutations(
            FROM grocery_items gi
            LEFT JOIN grocery_list_members glm ON gi."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (glm.id IS NOT NULL OR (gi."listId" IS NULL AND gi."userId" = $1))
-             AND gi.updated_at > $2
+             AND (gi.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))
              AND ($4 OR gi.updated_by_client != $3 OR gi.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,
@@ -237,7 +237,7 @@ pub async fn fetch_remote_grocery_mutations(
            JOIN stores s ON gsi."storeId" = s.id
            LEFT JOIN grocery_list_members glm ON s."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
            WHERE (s."userId" = $1 OR glm.id IS NOT NULL)
-             AND gsi.updated_at > $2
+             AND (gsi.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))
              AND ($4 OR gsi.updated_by_client != $3 OR gsi.updated_by_client IS NULL)"#,
         user_id,
         last_synced_at,

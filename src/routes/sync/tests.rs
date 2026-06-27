@@ -3512,5 +3512,113 @@ async fn test_sync_grocery_item_store_info_custom_change_id(pool: PgPool) {
     assert_eq!(status_found.unwrap().version, 1);
 }
 
+#[sqlx::test]
+async fn test_collaborator_sync_pulls_existing_items(pool: PgPool) {
+    let state = setup_state(pool.clone());
 
+    let past_time = Utc::now() - chrono::Duration::hours(1);
+    let last_sync_time = Utc::now() - chrono::Duration::minutes(30);
 
+    // Insert list
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, 1, false, 'SYNCED', $4, $5)",
+        "collab-list-existing", "Shared List", 0_i64, past_time, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Owner member
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, 1, false, 'SYNCED', $6, $7)",
+        "collab-owner-existing", "collab-list-existing", "user-1", "OWNER", 0_i64, past_time, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Category
+    sqlx::query!(
+        "INSERT INTO categories (id, name, position, \"userId\", \"listId\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, 1, false, 'SYNCED', $6, $7)",
+        "cat-existing", "Produce", 1, "user-1", Some("collab-list-existing".to_string()), past_time, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Store
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", \"listId\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, $6, 1, false, 'SYNCED', $7, $8)",
+        "store-existing", "Supermarket", 1, true, "user-1", Some("collab-list-existing".to_string()), past_time, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Item
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, false, 'SYNCED', $11, $12)",
+        "item-existing", "Oranges", "10", false, 0_i64, 1, 0, "user-1", true, Some("collab-list-existing".to_string()), past_time, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Store info
+    sqlx::query!(
+        "INSERT INTO grocery_item_store_info (\"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, 1, false, 'SYNCED', $6, $7)",
+        "item-existing", "store-existing", Some(3.49), true, "user-1", past_time, "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // User-2 joins the list now
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, 1, false, 'SYNCED', $6, $7)",
+        "collab-user2-member", "collab-list-existing", "user-2", "MEMBER", 0_i64, Utc::now(), "client-2"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let claims_user2 = Claims {
+        sub: "user-2".to_string(),
+        client_uuid: "client-2".to_string(),
+        exp: 10000000000,
+    };
+    let req = SyncRequest {
+        last_synced_at: Some(last_sync_time),
+        client_id: "client-2".to_string(),
+        scope: Some(SyncScope::Grocery),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = super::sync_handler(
+        State(state.clone()),
+        Extension(claims_user2),
+        AppJson(req),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    // Verify user-2 receives the list, members, stores, categories, and items because their membership is newer than last_sync_time
+    assert!(res.remote_grocery_list_changes.iter().any(|d| d.id == "collab-list-existing"));
+    assert!(res.remote_grocery_list_member_changes.iter().any(|d| d.id == "collab-owner-existing"));
+    assert!(res.remote_store_changes.iter().any(|d| d.id == "store-existing"));
+    assert!(res.remote_category_changes.iter().any(|d| d.id == "cat-existing"));
+    assert!(res.remote_grocery_changes.iter().any(|d| d.id == "item-existing"));
+    assert!(res.remote_grocery_item_store_info_changes.iter().any(|d| d.grocery_item_id == "item-existing"));
+}

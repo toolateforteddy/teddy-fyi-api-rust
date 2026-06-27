@@ -10,9 +10,12 @@ fi
 
 echo "User detected: ${USER_NAME}"
 
+# Define a quiet wrapper for running neonctl via npx
+NEONCTL="npx --yes --loglevel silent neonctl"
+
 # 1. Fetch project ID
 echo "Fetching Neon project ID..."
-PROJECT_ID=$(npx neonctl branches list -o json | jq -r '.[0].project_id')
+PROJECT_ID=$($NEONCTL branches list -o json | jq -r '.[0].project_id')
 if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
   echo "Error: Could not retrieve Neon project ID. Make sure you are authenticated with 'npx neonctl auth'."
   exit 1
@@ -21,12 +24,12 @@ echo "Project ID detected: ${PROJECT_ID}"
 
 # 2. Find and delete orphaned branches matching dev-${USER_NAME}-*
 echo "Scanning for orphaned dev branches for user ${USER_NAME}..."
-ORPHANED_BRANCHES=$(npx neonctl branches list --project-id "$PROJECT_ID" -o json | jq -r --arg prefix "dev-${USER_NAME}-" '.[] | select(.name | startswith($prefix)) | .id')
+ORPHANED_BRANCHES=$($NEONCTL branches list --project-id "$PROJECT_ID" -o json | jq -r --arg prefix "dev-${USER_NAME}-" '.[] | select(.name | startswith($prefix)) | .id')
 
 if [ -n "$ORPHANED_BRANCHES" ]; then
   for BRANCH_ID in $ORPHANED_BRANCHES; do
     echo "Deleting orphaned branch: ${BRANCH_ID}"
-    npx neonctl branches delete "$BRANCH_ID" --project-id "$PROJECT_ID"
+    $NEONCTL branches delete "$BRANCH_ID" --project-id "$PROJECT_ID"
   done
 else
   echo "No orphaned dev branches found for user ${USER_NAME}."
@@ -44,11 +47,11 @@ else
 fi
 
 echo "Creating new dev branch: ${NEW_BRANCH_NAME} (expires at ${EXPIRY_DATE})..."
-npx neonctl branches create --project-id "$PROJECT_ID" --name "$NEW_BRANCH_NAME" --parent "production" --expires-at "$EXPIRY_DATE"
+$NEONCTL branches create --project-id "$PROJECT_ID" --name "$NEW_BRANCH_NAME" --parent "production" --expires-at "$EXPIRY_DATE"
 
 # 4. Retrieve connection string for the new branch
 echo "Fetching connection string..."
-CONN_STR=$(npx neonctl connection-string "$NEW_BRANCH_NAME" --project-id "$PROJECT_ID")
+CONN_STR=$($NEONCTL connection-string "$NEW_BRANCH_NAME" --project-id "$PROJECT_ID")
 if [ -z "$CONN_STR" ]; then
   echo "Error: Could not retrieve connection string for branch ${NEW_BRANCH_NAME}."
   exit 1

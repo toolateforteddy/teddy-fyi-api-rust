@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state, updated_at, updated_by_client) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, false, 'SYNCED', $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Int8",
+        "Int4",
+        "Int4",
+        "Text",
+        "Bool",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f4cdbb34c1838283618357fec912b1104ef23c3c6b7eb1b01389443b745ffdf1"
+}

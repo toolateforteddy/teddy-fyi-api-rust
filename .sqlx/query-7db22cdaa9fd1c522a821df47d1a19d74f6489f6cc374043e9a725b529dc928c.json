@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT c.id, c.name, c.position, c.\"userId\" as user_id, c.icon, c.version, c.is_deleted, c.sync_state, c.\"listId\" as list_id\n           FROM categories c\n           LEFT JOIN grocery_list_members glm ON c.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (c.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND c.updated_at > $2\n             AND ($4 OR c.updated_by_client != $3 OR c.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT s.id, s.name, s.position, s.\"isDefaultSupported\" as is_default_supported, s.\"userId\" as user_id, s.version, s.is_deleted, s.sync_state, s.\"listId\" as list_id\n           FROM stores s\n           LEFT JOIN grocery_list_members glm ON s.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (s.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND (s.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))\n             AND ($4 OR s.updated_by_client != $3 OR s.updated_by_client IS NULL)",
   "describe": {
     "columns": [
       {
@@ -20,12 +20,12 @@
       },
       {
         "ordinal": 3,
-        "name": "user_id",
-        "type_info": "Text"
+        "name": "is_default_supported",
+        "type_info": "Bool"
       },
       {
         "ordinal": 4,
-        "name": "icon",
+        "name": "user_id",
         "type_info": "Text"
       },
       {
@@ -61,7 +61,7 @@
       false,
       false,
       false,
-      true,
+      false,
       true,
       false,
       false,
@@ -69,5 +69,5 @@
       true
     ]
   },
-  "hash": "810bdddda69e83e088fe079cd8131a5ec0e6e91a780fa6435c8cde7a4880c322"
+  "hash": "7db22cdaa9fd1c522a821df47d1a19d74f6489f6cc374043e9a725b529dc928c"
 }

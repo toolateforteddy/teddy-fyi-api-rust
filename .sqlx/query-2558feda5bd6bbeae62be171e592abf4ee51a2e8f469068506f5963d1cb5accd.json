@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(MAX(max_updated), '1970-01-01 00:00:00+00'::timestamptz) as \"max_updated!\"\n                   FROM (\n                       SELECT MAX(gl.updated_at) as max_updated FROM grocery_lists gl LEFT JOIN grocery_list_members glm ON gl.id = glm.\"listId\" AND glm.is_deleted = FALSE AND glm.\"userId\" = $1 WHERE (gl.\"ownerId\" = $1 OR glm.id IS NOT NULL)\n                       UNION ALL\n                       SELECT MAX(glm.updated_at) as max_updated FROM grocery_list_members glm JOIN grocery_list_members my_glm ON glm.\"listId\" = my_glm.\"listId\" AND my_glm.is_deleted = FALSE WHERE my_glm.\"userId\" = $1\n                       UNION ALL\n                       SELECT MAX(s.updated_at) as max_updated FROM stores s LEFT JOIN grocery_list_members glm ON s.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE WHERE (s.\"userId\" = $1 OR glm.id IS NOT NULL)\n                       UNION ALL\n                       SELECT MAX(c.updated_at) as max_updated FROM categories c LEFT JOIN grocery_list_members glm ON c.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE WHERE (c.\"userId\" = $1 OR glm.id IS NOT NULL)\n                       UNION ALL\n                       SELECT MAX(gi.updated_at) as max_updated FROM grocery_items gi LEFT JOIN grocery_list_members glm ON gi.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE WHERE (glm.id IS NOT NULL OR (gi.\"listId\" IS NULL AND gi.\"userId\" = $1))\n                       UNION ALL\n                       SELECT MAX(gsi.updated_at) as max_updated FROM grocery_item_store_info gsi JOIN stores s ON gsi.\"storeId\" = s.id LEFT JOIN grocery_list_members glm ON s.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE WHERE (s.\"userId\" = $1 OR glm.id IS NOT NULL)\n                   ) subquery",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max_updated!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2558feda5bd6bbeae62be171e592abf4ee51a2e8f469068506f5963d1cb5accd"
+}

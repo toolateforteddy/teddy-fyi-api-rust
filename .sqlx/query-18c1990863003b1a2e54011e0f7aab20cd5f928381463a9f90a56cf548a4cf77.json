@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3 AND ($4 = FALSE OR is_deleted = FALSE)",
+  "query": "SELECT id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4))",
   "describe": {
     "columns": [
       {
@@ -10,41 +10,31 @@
       },
       {
         "ordinal": 1,
-        "name": "user_id",
-        "type_info": "Uuid"
-      },
-      {
-        "ordinal": 2,
-        "name": "client_uuid",
-        "type_info": "Uuid"
-      },
-      {
-        "ordinal": 3,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 4,
+        "ordinal": 2,
         "name": "is_deleted",
         "type_info": "Bool"
       },
       {
-        "ordinal": 5,
+        "ordinal": 3,
         "name": "last_modified",
         "type_info": "Int8"
       },
       {
-        "ordinal": 6,
+        "ordinal": 4,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 5,
         "name": "key",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 6,
         "name": "value",
         "type_info": "Text"
       }
@@ -54,12 +44,11 @@
         "Uuid",
         "Int8",
         "Uuid",
+        "UuidArray",
         "Bool"
       ]
     },
     "nullable": [
-      false,
-      false,
       false,
       false,
       false,
@@ -69,5 +58,5 @@
       false
     ]
   },
-  "hash": "570c228928f483da71df9782fb9a183d4ca0b45685d7bbd055bf4980da47c3d6"
+  "hash": "18c1990863003b1a2e54011e0f7aab20cd5f928381463a9f90a56cf548a4cf77"
 }

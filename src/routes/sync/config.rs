@@ -177,13 +177,13 @@ pub async fn fetch_remote_config_mutations(
     last_synced_at: Option<DateTime<Utc>>,
 ) -> Result<Vec<ConfigChangeDelta>, AppError> {
     let mut remote_changes = Vec::new();
-    let is_initial_sync = last_synced_at.is_none();
+    let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     let rows = sqlx::query!(
         "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
          FROM configs \
-         WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3 AND ($4 = FALSE OR is_deleted = FALSE)",
+         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE)",
         user_id,
         last_synced_ms,
         client_id,
@@ -335,16 +335,18 @@ pub async fn fetch_configs_for_response(
     last_synced_at: Option<DateTime<Utc>>,
     success_uuids: &[Uuid],
 ) -> Result<Vec<ConfigSyncItem>, AppError> {
+    let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     let rows = sqlx::query!(
         "SELECT id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
          FROM configs \
-         WHERE user_id = $1 AND ((last_modified > $2 AND client_uuid != $3) OR id = ANY($4))",
+         WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4))",
         user_id,
         last_synced_ms,
         client_id,
-        success_uuids
+        success_uuids,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;

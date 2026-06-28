@@ -1293,6 +1293,142 @@ async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_fetch_remote_mutations_initial_sync_epoch(pool: PgPool) {
+    let mut tx = pool.begin().await.unwrap();
+
+    let client_id = "test-client";
+    let last_synced_at = Some(chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap());
+
+    // --- todo_lists ---
+    sqlx::query!(
+        r#"INSERT INTO todo_lists (id, name, "colorHex", "userId", "createdAt", sync_state, version, is_deleted, updated_at, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)"#,
+        "todolist-epoch-1",
+        "Epoch List",
+        "#FF0000",
+        "user-1",
+        0_i64,
+        "SYNCED",
+        1_i32,
+        false,
+        client_id
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Verify TODO mutations with last_synced_at = Epoch
+    let (todo_lists, _) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
+        .await
+        .unwrap();
+
+    assert!(todo_lists.iter().any(|d| d.id == "todolist-epoch-1"));
+
+    // --- grocery_lists ---
+    sqlx::query!(
+        r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8)"#,
+        "grocerylist-epoch-1",
+        "Epoch Grocery List",
+        "owner-1",
+        0_i64,
+        1_i32,
+        client_id,
+        false,
+        "SYNCED"
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // --- grocery_list_members ---
+    sqlx::query!(
+        r#"INSERT INTO grocery_list_members (id, "listId", "userId", role, "joinedAt", version, updated_at, updated_by_client, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)"#,
+        "member-epoch-1",
+        "grocerylist-epoch-1",
+        "user-1",
+        "MEMBER",
+        0_i64,
+        1_i32,
+        client_id,
+        false,
+        "SYNCED"
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Verify Grocery mutations with last_synced_at = Epoch
+    let (
+        grocery_lists,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = fetch_remote_grocery_mutations(&mut tx, "user-1", client_id, last_synced_at)
+        .await
+        .unwrap();
+
+    assert!(grocery_lists.iter().any(|d| d.id == "grocerylist-epoch-1"));
+
+    tx.rollback().await.unwrap();
+}
+
+#[sqlx::test]
+async fn test_sync_handler_epoch_initial_sync_bypasses_echo(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_id = "client-1";
+    let client_uuid = parse_or_hash_uuid(client_id);
+    let user_uuid = parse_or_hash_uuid("user-1");
+
+    // 1. Insert a config updated by client-1
+    sqlx::query!(
+        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        uuid::Uuid::new_v4(),
+        user_uuid,
+        client_uuid,
+        1_i32,
+        false,
+        Utc::now().timestamp_millis(),
+        "theme",
+        "dark"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Prepare request with last_synced_at = Epoch
+    let req = SyncRequest {
+        last_synced_at: Some(chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap()),
+        client_id: client_id.to_string(),
+        scope: Some(SyncScope::ScribbleKeep),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    // Verify config is returned despite being updated by client-1
+    assert_eq!(res.configs.len(), 1);
+}
+
+#[sqlx::test]
 async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     let mut tx = pool.begin().await.unwrap();
 

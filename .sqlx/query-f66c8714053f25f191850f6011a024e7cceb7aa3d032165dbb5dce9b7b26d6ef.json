@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3 AND ($4 = FALSE OR is_deleted = FALSE)",
+  "query": "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE)",
   "describe": {
     "columns": [
       {
@@ -40,13 +40,13 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
-        "type_info": "Int8"
+        "name": "key",
+        "type_info": "Text"
       },
       {
         "ordinal": 8,
-        "name": "data",
-        "type_info": "Jsonb"
+        "name": "value",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -69,5 +69,5 @@
       false
     ]
   },
-  "hash": "065fd8f0060988c09125fab931225936b058bea0fbf61acd3425e89f76ef68dc"
+  "hash": "f66c8714053f25f191850f6011a024e7cceb7aa3d032165dbb5dce9b7b26d6ef"
 }

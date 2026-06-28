@@ -25,7 +25,7 @@ pub async fn fetch_remote_grocery_mutations(
     let mut remote_grocery_changes = Vec::new();
     let mut remote_grocery_item_store_info_changes = Vec::new();
 
-    let is_initial_sync = last_synced_at.is_none();
+    let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
     let last_synced_at = last_synced_at.unwrap_or_else(|| {
         DateTime::<Utc>::from_timestamp(0, 0).unwrap()
     });

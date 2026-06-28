@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND ((last_modified > $2 AND client_uuid != $3) OR id = ANY($4))",
+  "query": "SELECT id, user_id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4))",
   "describe": {
     "columns": [
       {
@@ -49,7 +49,8 @@
         "Uuid",
         "Int8",
         "Uuid",
-        "UuidArray"
+        "UuidArray",
+        "Bool"
       ]
     },
     "nullable": [
@@ -63,5 +64,5 @@
       false
     ]
   },
-  "hash": "6f0dfad8848cfc1367b6e164ac6d3f60c3116fa2e5aaadcaba2c51f2d4f65ac1"
+  "hash": "fdd1caae952542b8f668200f8b6f0d1eba7fc9d92fa57263a0a40b84ae718c55"
 }

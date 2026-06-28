@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT version, updated_by_client FROM grocery_items WHERE id = 'need-item-1'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "updated_by_client",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "850ced2136c0153a3afc89378ecbf853ddd3682d2dd0b56f5f5e6288c34f120f"
+}

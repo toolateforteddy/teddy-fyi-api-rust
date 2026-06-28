@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, sync_state FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "price",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 1,
+        "name": "is_available",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "sync_state",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0b517622913522496be75f416c4beab3fefe52933a137194a8026d5836d67201"
+}

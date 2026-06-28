@@ -22,7 +22,8 @@ pub async fn fetch_remote_todo_mutations(
             id, name, "colorHex" as color_hex, "userId" as user_id, "createdAt" as created_at, sync_state, version, is_deleted
            FROM todo_lists
            WHERE "userId" = $1
-             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)"#,
+             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)
+             AND ($4 = FALSE OR is_deleted = FALSE)"#,
         user_id,
         last_synced_at,
         client_id,
@@ -65,7 +66,8 @@ pub async fn fetch_remote_todo_mutations(
             "dueDate" as due_date, description, "listId" as list_id, priority, icon, sync_state, version, is_deleted
            FROM todo_items
            WHERE "userId" = $1
-             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)"#,
+             AND updated_at > $2 AND ($4 OR updated_by_client != $3 OR updated_by_client IS NULL)
+             AND ($4 = FALSE OR is_deleted = FALSE)"#,
         user_id,
         last_synced_at,
         client_id,

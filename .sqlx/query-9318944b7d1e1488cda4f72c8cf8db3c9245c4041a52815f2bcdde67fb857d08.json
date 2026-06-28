@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT s.id, s.name, s.position, s.\"isDefaultSupported\" as is_default_supported, s.\"userId\" as user_id, s.version, s.is_deleted, s.sync_state, s.\"listId\" as list_id\n           FROM stores s\n           LEFT JOIN grocery_list_members glm ON s.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (s.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND (s.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))\n             AND ($4 OR s.updated_by_client != $3 OR s.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT c.id, c.name, c.position, c.\"userId\" as user_id, c.icon, c.version, c.is_deleted, c.sync_state, c.\"listId\" as list_id\n           FROM categories c\n           LEFT JOIN grocery_list_members glm ON c.\"listId\" = glm.\"listId\" AND glm.\"userId\" = $1 AND glm.is_deleted = FALSE\n           WHERE (c.\"userId\" = $1 OR glm.id IS NOT NULL)\n             AND (c.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))\n             AND ($4 OR c.updated_by_client != $3 OR c.updated_by_client IS NULL)\n             AND ($4 = FALSE OR c.is_deleted = FALSE)",
   "describe": {
     "columns": [
       {
@@ -20,12 +20,12 @@
       },
       {
         "ordinal": 3,
-        "name": "is_default_supported",
-        "type_info": "Bool"
+        "name": "user_id",
+        "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "user_id",
+        "name": "icon",
         "type_info": "Text"
       },
       {
@@ -61,7 +61,7 @@
       false,
       false,
       false,
-      false,
+      true,
       true,
       false,
       false,
@@ -69,5 +69,5 @@
       true
     ]
   },
-  "hash": "7db22cdaa9fd1c522a821df47d1a19d74f6489f6cc374043e9a725b529dc928c"
+  "hash": "9318944b7d1e1488cda4f72c8cf8db3c9245c4041a52815f2bcdde67fb857d08"
 }

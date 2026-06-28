@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT glm.id, glm.\"listId\" as list_id, glm.\"userId\" as user_id, glm.role, glm.\"joinedAt\" as joined_at, glm.version, glm.is_deleted, glm.sync_state\n           FROM grocery_list_members glm\n           JOIN grocery_list_members my_glm ON glm.\"listId\" = my_glm.\"listId\" AND my_glm.is_deleted = FALSE\n           WHERE my_glm.\"userId\" = $1\n             AND (glm.updated_at > $2 OR my_glm.updated_at > $2)\n             AND ($4 OR glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)",
+  "query": "SELECT DISTINCT glm.id, glm.\"listId\" as list_id, glm.\"userId\" as user_id, glm.role, glm.\"joinedAt\" as joined_at, glm.version, glm.is_deleted, glm.sync_state\n           FROM grocery_list_members glm\n           JOIN grocery_list_members my_glm ON glm.\"listId\" = my_glm.\"listId\" AND my_glm.is_deleted = FALSE\n           WHERE my_glm.\"userId\" = $1\n             AND (glm.updated_at > $2 OR my_glm.updated_at > $2)\n             AND ($4 OR glm.updated_by_client != $3 OR glm.updated_by_client IS NULL)\n             AND ($4 = FALSE OR glm.is_deleted = FALSE)",
   "describe": {
     "columns": [
       {
@@ -63,5 +63,5 @@
       false
     ]
   },
-  "hash": "562b3a2cc788d2abe60252ae3436ebd78ad80a2a667519019b9cf867072eea1c"
+  "hash": "a11cf070cbb3fb0cc16329c59ed6d6c686703fb42870967eac70bcaf5451aea9"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3",
+  "query": "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3 AND ($4 = FALSE OR is_deleted = FALSE)",
   "describe": {
     "columns": [
       {
@@ -53,7 +53,8 @@
       "Left": [
         "Uuid",
         "Int8",
-        "Uuid"
+        "Uuid",
+        "Bool"
       ]
     },
     "nullable": [
@@ -68,5 +69,5 @@
       false
     ]
   },
-  "hash": "ed7c804ce86647700a973a073dc99a0efb038bb2a6d9a41f94d987f8f6b0a530"
+  "hash": "570c228928f483da71df9782fb9a183d4ca0b45685d7bbd055bf4980da47c3d6"
 }

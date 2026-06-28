@@ -175,15 +175,17 @@ pub async fn fetch_remote_drawing_mutations(
     last_synced_at: Option<DateTime<Utc>>,
 ) -> Result<Vec<DrawingChangeDelta>, AppError> {
     let mut remote_changes = Vec::new();
+    let is_initial_sync = last_synced_at.is_none();
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     let rows = sqlx::query!(
         "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
          FROM drawings \
-         WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3",
+         WHERE user_id = $1 AND last_modified > $2 AND client_uuid != $3 AND ($4 = FALSE OR is_deleted = FALSE)",
         user_id,
         last_synced_ms,
-        client_id
+        client_id,
+        is_initial_sync
     )
     .fetch_all(&mut **tx)
     .await?;

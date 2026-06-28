@@ -10,6 +10,7 @@ pub async fn process_config_changes(
     changes: &[ConfigChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<ConfigChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         let change_id = &change.id;
@@ -17,6 +18,43 @@ pub async fn process_config_changes(
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing config {}", change_id);
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let existing = sqlx::query!(
+                        "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE id = $1 AND user_id = $2",
+                        change_uuid,
+                        user_id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        let item_data = ConfigData {
+                            id: row.id,
+                            user_id: row.user_id.to_string(),
+                            client_uuid: row.client_uuid.to_string(),
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                            last_modified: row.last_modified,
+                            sync_state: row.sync_state.clone().unwrap_or_else(|| "SYNCED".to_string()),
+                            key: row.key,
+                            value: row.value,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(ConfigChangeDelta {
+                            id: change_id.to_string(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(change_id.to_string());
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<ConfigData>(data.clone()) {
                         Ok(item) => {

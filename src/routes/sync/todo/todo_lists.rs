@@ -10,11 +10,51 @@ pub async fn process_todo_list_changes(
     changes: &[TodoListChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<TodoListChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing todo list {}", change.id);
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let existing = sqlx::query!(
+                        r#"SELECT "userId" as user_id, name, "colorHex" as color_hex, "createdAt" as created_at, sync_state, version, is_deleted FROM todo_lists WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update todo list {}", change.id)));
+                        }
+
+                        let item_data = TodoListData {
+                            id: change.id.clone(),
+                            name: row.name,
+                            color_hex: row.color_hex,
+                            user_id: row.user_id,
+                            created_at: row.created_at,
+                            sync_state: row.sync_state,
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(TodoListChangeDelta {
+                            id: change.id.clone(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(change.id.clone());
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoListData>(data.clone()) {
                         Ok(item) => {

@@ -10,12 +10,69 @@ pub async fn process_store_changes(
     changes: &[StoreChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<StoreChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = change.id.clone();
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing store {}", change.id);
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let existing = sqlx::query!(
+                        r#"SELECT name, position, "isDefaultSupported" as is_default_supported, "userId" as user_id, version, is_deleted, sync_state, "listId" as list_id FROM stores WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        let mut authorized = row.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = row.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
+                            }
+                        }
+                        if !authorized {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update store {}", change.id)));
+                        }
+
+                        let item_data = StoreData {
+                            id: change.id.clone(),
+                            name: row.name,
+                            position: row.position,
+                            is_default_supported: row.is_default_supported,
+                            user_id: row.user_id,
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                            sync_state: row.sync_state,
+                            list_id: row.list_id,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(StoreChangeDelta {
+                            id: change.id.clone(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(change.id.clone());
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<StoreData>(data.clone()) {
                         Ok(item) => {

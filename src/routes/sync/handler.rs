@@ -21,6 +21,16 @@ pub async fn sync_handler(
 ) -> Result<Json<SyncResponse>, AppError> {
     let mut tx: Transaction<'_, Postgres> = state.db_pool.begin().await?;
     let server_timestamp = Utc::now();
+    let mut remote_todo_list_changes = Vec::new();
+    let mut remote_todo_changes = Vec::new();
+    let mut remote_grocery_list_changes = Vec::new();
+    let mut remote_grocery_list_member_changes = Vec::new();
+    let mut remote_store_changes = Vec::new();
+    let mut remote_category_changes = Vec::new();
+    let mut remote_grocery_changes = Vec::new();
+    let mut remote_grocery_item_store_info_changes = Vec::new();
+    let mut remote_config_changes = Vec::new();
+    let mut remote_drawing_changes = Vec::new();
     let mut success_ids = Vec::new();
     let mut upload_status = Vec::new();
     let mut success_config_uuids = Vec::new();
@@ -66,6 +76,7 @@ pub async fn sync_handler(
                     &payload.drawing_changes,
                     &mut success_ids,
                     &mut upload_status,
+                    &mut remote_drawing_changes,
                 )
                 .await?;
             }
@@ -95,6 +106,7 @@ pub async fn sync_handler(
                     &payload.config_changes,
                     &mut success_ids,
                     &mut upload_status,
+                    &mut remote_config_changes,
                 )
                 .await?;
             }
@@ -109,6 +121,7 @@ pub async fn sync_handler(
                 &payload.todo_list_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_todo_list_changes,
             )
             .await?;
             process_todo_changes(
@@ -120,6 +133,7 @@ pub async fn sync_handler(
                 &payload.todo_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_todo_changes,
             )
             .await?;
 
@@ -132,6 +146,7 @@ pub async fn sync_handler(
                 &payload.grocery_list_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_grocery_list_changes,
             )
             .await?;
             process_grocery_list_member_changes(
@@ -142,6 +157,7 @@ pub async fn sync_handler(
                 &payload.grocery_list_member_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_grocery_list_member_changes,
             )
             .await?;
             process_store_changes(
@@ -152,6 +168,7 @@ pub async fn sync_handler(
                 &payload.store_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_store_changes,
             )
             .await?;
             process_category_changes(
@@ -162,6 +179,7 @@ pub async fn sync_handler(
                 &payload.category_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_category_changes,
             )
             .await?;
             process_grocery_changes(
@@ -172,6 +190,7 @@ pub async fn sync_handler(
                 &payload.grocery_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_grocery_changes,
             )
             .await?;
             process_grocery_item_store_info_changes(
@@ -182,6 +201,7 @@ pub async fn sync_handler(
                 &payload.grocery_item_store_info_changes,
                 &mut success_ids,
                 &mut upload_status,
+                &mut remote_grocery_item_store_info_changes,
             )
             .await?;
         }
@@ -189,16 +209,16 @@ pub async fn sync_handler(
 
     // Fetch remote mutations
     let (
-        remote_todo_list_changes,
-        remote_todo_changes,
-        remote_grocery_list_changes,
-        remote_grocery_list_member_changes,
-        remote_store_changes,
-        remote_category_changes,
-        remote_grocery_changes,
-        remote_grocery_item_store_info_changes,
-        remote_config_changes,
-        remote_drawing_changes,
+        fetched_todo_list,
+        fetched_todo,
+        fetched_grocery_list,
+        fetched_grocery_list_member,
+        fetched_store,
+        fetched_category,
+        fetched_grocery,
+        fetched_grocery_item_store_info,
+        fetched_config,
+        fetched_drawing,
     ) = fetch_remote_mutations(
         &mut tx,
         &claims.sub,
@@ -207,6 +227,40 @@ pub async fn sync_handler(
         scope,
     )
     .await?;
+
+    {
+        use std::collections::HashSet;
+        
+        let existing_todo_list_ids: HashSet<String> = remote_todo_list_changes.iter().map(|c| c.id.clone()).collect();
+        remote_todo_list_changes.extend(fetched_todo_list.into_iter().filter(|c| !existing_todo_list_ids.contains(&c.id)));
+
+        let existing_todo_ids: HashSet<String> = remote_todo_changes.iter().map(|c| c.id.clone()).collect();
+        remote_todo_changes.extend(fetched_todo.into_iter().filter(|c| !existing_todo_ids.contains(&c.id)));
+
+        let existing_grocery_list_ids: HashSet<String> = remote_grocery_list_changes.iter().map(|c| c.id.clone()).collect();
+        remote_grocery_list_changes.extend(fetched_grocery_list.into_iter().filter(|c| !existing_grocery_list_ids.contains(&c.id)));
+
+        let existing_grocery_list_member_ids: HashSet<String> = remote_grocery_list_member_changes.iter().map(|c| c.id.clone()).collect();
+        remote_grocery_list_member_changes.extend(fetched_grocery_list_member.into_iter().filter(|c| !existing_grocery_list_member_ids.contains(&c.id)));
+
+        let existing_store_ids: HashSet<String> = remote_store_changes.iter().map(|c| c.id.clone()).collect();
+        remote_store_changes.extend(fetched_store.into_iter().filter(|c| !existing_store_ids.contains(&c.id)));
+
+        let existing_category_ids: HashSet<String> = remote_category_changes.iter().map(|c| c.id.clone()).collect();
+        remote_category_changes.extend(fetched_category.into_iter().filter(|c| !existing_category_ids.contains(&c.id)));
+
+        let existing_grocery_ids: HashSet<String> = remote_grocery_changes.iter().map(|c| c.id.clone()).collect();
+        remote_grocery_changes.extend(fetched_grocery.into_iter().filter(|c| !existing_grocery_ids.contains(&c.id)));
+
+        let existing_grocery_item_store_info_ids: HashSet<String> = remote_grocery_item_store_info_changes.iter().map(|c| c.id.clone()).collect();
+        remote_grocery_item_store_info_changes.extend(fetched_grocery_item_store_info.into_iter().filter(|c| !existing_grocery_item_store_info_ids.contains(&c.id)));
+
+        let existing_config_ids: HashSet<String> = remote_config_changes.iter().map(|c| c.id.clone()).collect();
+        remote_config_changes.extend(fetched_config.into_iter().filter(|c| !existing_config_ids.contains(&c.id)));
+
+        let existing_drawing_ids: HashSet<String> = remote_drawing_changes.iter().map(|c| c.id.clone()).collect();
+        remote_drawing_changes.extend(fetched_drawing.into_iter().filter(|c| !existing_drawing_ids.contains(&c.id)));
+    }
 
     let user_uuid = parse_or_hash_uuid(&claims.sub);
     let client_uuid = parse_or_hash_uuid(&payload.client_id);

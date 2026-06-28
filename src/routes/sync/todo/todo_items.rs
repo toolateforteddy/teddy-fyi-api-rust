@@ -12,11 +12,62 @@ pub async fn process_todo_changes(
     changes: &[TodoChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<TodoChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing todo {}", change.id);
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let existing = sqlx::query!(
+                        r#"SELECT "userId" as user_id, title, "isCompleted" as is_completed, "createdAt" as created_at, position, "scheduledDate" as scheduled_date, "recurrenceRule" as recurrence_rule, "scheduledAt" as scheduled_at, "parentId" as parent_id, "isDaily" as is_daily, "dueDate" as due_date, description, "listId" as list_id, priority, icon, sync_state, version, is_deleted FROM todo_items WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        if row.user_id.as_deref() != Some(user_id) {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update todo item {}", change.id)));
+                        }
+
+                        let item_data = TodoItemData {
+                            id: change.id.clone(),
+                            title: row.title,
+                            is_completed: row.is_completed,
+                            created_at: row.created_at,
+                            position: row.position,
+                            scheduled_date: row.scheduled_date,
+                            recurrence_rule: row.recurrence_rule,
+                            scheduled_at: row.scheduled_at,
+                            user_id: row.user_id,
+                            parent_id: row.parent_id,
+                            is_daily: row.is_daily,
+                            due_date: row.due_date,
+                            description: row.description,
+                            list_id: row.list_id,
+                            priority: row.priority,
+                            icon: row.icon,
+                            sync_state: row.sync_state,
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(TodoChangeDelta {
+                            id: change.id.clone(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(change.id.clone());
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoItemData>(data.clone()) {
                         Ok(mut item) => {

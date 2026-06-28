@@ -10,11 +10,69 @@ pub async fn process_grocery_list_member_changes(
     changes: &[GroceryListMemberChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<GroceryListMemberChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing grocery list member {}", change.id);
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let existing = sqlx::query!(
+                        r#"SELECT "listId" as list_id, "userId" as user_id, role, "joinedAt" as joined_at, version, is_deleted, sync_state FROM grocery_list_members WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        let is_self = row.user_id == user_id;
+                        let mut authorized = is_self;
+                        if !authorized {
+                            let is_member = sqlx::query!(
+                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                row.list_id,
+                                user_id
+                            )
+                            .fetch_optional(&mut **tx)
+                            .await?
+                            .is_some();
+                            if is_member {
+                                authorized = true;
+                            }
+                        }
+                        if !authorized {
+                            return Err(AppError::Forbidden(format!(
+                                "User is not authorized to update membership {}",
+                                change.id
+                            )));
+                        }
+
+                        let item_data = GroceryListMemberData {
+                            id: change.id.clone(),
+                            list_id: row.list_id,
+                            user_id: row.user_id,
+                            role: row.role,
+                            joined_at: row.joined_at,
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                            sync_state: row.sync_state,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(GroceryListMemberChangeDelta {
+                            id: change.id.clone(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(change.id.clone());
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryListMemberData>(data.clone()) {
                         Ok(item) => {

@@ -10,6 +10,7 @@ pub async fn process_grocery_item_store_info_changes(
     changes: &[GroceryItemStoreInfoChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<GroceryItemStoreInfoChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = if !change.id.is_empty() {
@@ -24,6 +25,79 @@ pub async fn process_grocery_item_store_info_changes(
                     change.grocery_item_id,
                     change.store_id
                 );
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let parent_item = sqlx::query!(
+                        r#"SELECT "userId" as user_id, "listId" as list_id FROM grocery_items WHERE id = $1"#,
+                        change.grocery_item_id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(parent) = parent_item {
+                        let mut authorized = parent.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = parent.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
+                            }
+                        }
+                        if !authorized {
+                            return Err(AppError::Forbidden(format!(
+                                "User is not authorized to update store info for item {} store {}",
+                                change.grocery_item_id, change.store_id
+                            )));
+                        }
+                    } else {
+                        return Err(AppError::Forbidden(format!("Parent grocery item not found: {}", change.grocery_item_id)));
+                    }
+
+                    let existing = sqlx::query!(
+                        r#"SELECT price, "isAvailable" as is_available, "userId" as user_id, version, is_deleted, sync_state FROM grocery_item_store_info WHERE "groceryItemId" = $1 AND "storeId" = $2"#,
+                        change.grocery_item_id,
+                        change.store_id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        let item_data = GroceryItemStoreInfoData {
+                            id: string_id.clone(),
+                            grocery_item_id: change.grocery_item_id.clone(),
+                            store_id: change.store_id.clone(),
+                            price: row.price,
+                            is_available: row.is_available,
+                            user_id: row.user_id,
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                            sync_state: row.sync_state,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(GroceryItemStoreInfoChangeDelta {
+                            id: string_id.clone(),
+                            grocery_item_id: change.grocery_item_id.clone(),
+                            store_id: change.store_id.clone(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(string_id);
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryItemStoreInfoData>(data.clone()) {
                         Ok(item) => {

@@ -10,12 +10,69 @@ pub async fn process_category_changes(
     changes: &[CategoryChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
+    remote_changes: &mut Vec<CategoryChangeDelta>,
 ) -> Result<(), AppError> {
     for change in changes {
         let string_id = change.id.clone();
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing category {}", change.id);
+
+                let is_need_update = matches!(change.operation_type, OperationType::Update)
+                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+
+                if is_need_update {
+                    let existing = sqlx::query!(
+                        r#"SELECT name, position, "userId" as user_id, icon, version, is_deleted, sync_state, "listId" as list_id FROM categories WHERE id = $1"#,
+                        change.id
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(row) = existing {
+                        let mut authorized = row.user_id.as_deref() == Some(user_id);
+                        if !authorized {
+                            if let Some(ref list_id) = row.list_id {
+                                let is_member = sqlx::query!(
+                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
+                                    list_id,
+                                    user_id
+                                )
+                                .fetch_optional(&mut **tx)
+                                .await?
+                                .is_some();
+                                if is_member {
+                                    authorized = true;
+                                }
+                            }
+                        }
+                        if !authorized {
+                            return Err(AppError::Forbidden(format!("User is not authorized to update category {}", change.id)));
+                        }
+
+                        let item_data = CategoryData {
+                            id: change.id.clone(),
+                            name: row.name,
+                            position: row.position,
+                            user_id: row.user_id,
+                            icon: row.icon,
+                            version: row.version,
+                            is_deleted: row.is_deleted,
+                            sync_state: row.sync_state,
+                            list_id: row.list_id,
+                        };
+                        let data_val = serde_json::to_value(&item_data)?;
+                        remote_changes.push(CategoryChangeDelta {
+                            id: change.id.clone(),
+                            operation_type: OperationType::Update,
+                            version: row.version,
+                            data: Some(data_val),
+                        });
+                        success_ids.push(change.id.clone());
+                    }
+                    continue;
+                }
+
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<CategoryData>(data.clone()) {
                         Ok(item) => {

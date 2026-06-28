@@ -177,6 +177,16 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
         .0;
     assert_eq!(res.success_ids, vec!["todo-2"]);
 
+    // The remote changes list must now contain the full serialized record with version 1
+    assert_eq!(res.remote_todo_changes.len(), 1);
+    let remote_todo = &res.remote_todo_changes[0];
+    assert_eq!(remote_todo.id, "todo-2");
+    assert_eq!(remote_todo.version, 1);
+    let data_val: TodoItemData = serde_json::from_value(remote_todo.data.as_ref().unwrap().clone()).unwrap();
+    assert_eq!(data_val.title, "Test Todo");
+    assert_eq!(data_val.version, 1);
+
+    // No-op on write: DB version and updated_by_client must not change
     let updated = sqlx::query!(
         "SELECT version, updated_by_client FROM todo_items WHERE id = $1",
         "todo-2"
@@ -185,8 +195,8 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
     .await
     .unwrap();
 
-    assert_eq!(updated.version, 2);
-    assert_eq!(updated.updated_by_client, Some("client-2".to_string()));
+    assert_eq!(updated.version, 1);
+    assert_eq!(updated.updated_by_client, Some("client-1".to_string()));
 }
 
 #[sqlx::test]
@@ -3757,4 +3767,131 @@ async fn test_collaborator_sync_pulls_existing_items(pool: PgPool) {
     assert!(res.remote_category_changes.iter().any(|d| d.id == "cat-existing"));
     assert!(res.remote_grocery_changes.iter().any(|d| d.id == "item-existing"));
     assert!(res.remote_grocery_item_store_info_changes.iter().any(|d| d.grocery_item_id == "item-existing"));
+}
+
+#[sqlx::test]
+async fn test_sync_handler_need_update_state_recovery(pool: PgPool) {
+    // 1. Setup grocery list, store, and item
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"ownerId\", \"createdAt\", version, is_deleted, sync_state, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "need-list-1", "Fetch List", Some("user-1"), 0_i64, 1_i32, false, "SYNCED", "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "need-member-1", "need-list-1", "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state, \"listId\", updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        "need-store-1", "Fetch Store", 1_i32, false, Some("user-1"), 1_i32, false, "SYNCED", Some("need-list-1"), "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, sync_state, updated_by_client)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+        "need-item-1", "Fetch Item", "1", false, 0_i64, 1_i32, 0_i32, Some("user-1"), true, Some("need-list-1"), None::<String>, None::<String>, 1_i32, false, "SYNCED", "client-1"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let state = setup_state(pool.clone());
+    let claims = Claims {
+        sub: "user-1".to_string(),
+        client_uuid: "client-2".to_string(),
+        exp: 10000000000,
+    };
+
+    // Client requests state recovery for all 3 using UPDATE with data: null/None
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-2".to_string(),
+        scope: Some(SyncScope::Grocery),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![GroceryListChangeDelta {
+            id: "need-list-1".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: None,
+        }],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![StoreChangeDelta {
+            id: "need-store-1".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: None,
+        }],
+        category_changes: vec![],
+        grocery_changes: vec![GroceryChangeDelta {
+            id: "need-item-1".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: None,
+        }],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = super::sync_handler(
+        State(state.clone()),
+        Extension(claims),
+        AppJson(req),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    // Verify all 3 succeeded
+    assert!(res.success_ids.contains(&"need-list-1".to_string()));
+    assert!(res.success_ids.contains(&"need-store-1".to_string()));
+    assert!(res.success_ids.contains(&"need-item-1".to_string()));
+
+    // Verify database was NOT modified (No-Op on Write)
+    let db_list = sqlx::query!("SELECT version, updated_by_client FROM grocery_lists WHERE id = 'need-list-1'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(db_list.version, 1);
+    assert_eq!(db_list.updated_by_client, Some("client-1".to_string()));
+
+    let db_store = sqlx::query!("SELECT version, updated_by_client FROM stores WHERE id = 'need-store-1'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(db_store.version, 1);
+    assert_eq!(db_store.updated_by_client, Some("client-1".to_string()));
+
+    let db_item = sqlx::query!("SELECT version, updated_by_client FROM grocery_items WHERE id = 'need-item-1'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(db_item.version, 1);
+    assert_eq!(db_item.updated_by_client, Some("client-1".to_string()));
+
+    // Verify Force Download: remote changes must return the full records with current version (1)
+    let remote_list = res.remote_grocery_list_changes.iter().find(|d| d.id == "need-list-1").unwrap();
+    assert_eq!(remote_list.version, 1);
+    let list_data: GroceryListData = serde_json::from_value(remote_list.data.as_ref().unwrap().clone()).unwrap();
+    assert_eq!(list_data.name, "Fetch List");
+
+    let remote_store = res.remote_store_changes.iter().find(|d| d.id == "need-store-1").unwrap();
+    assert_eq!(remote_store.version, 1);
+    let store_data: StoreData = serde_json::from_value(remote_store.data.as_ref().unwrap().clone()).unwrap();
+    assert_eq!(store_data.name, "Fetch Store");
+
+    let remote_item = res.remote_grocery_changes.iter().find(|d| d.id == "need-item-1").unwrap();
+    assert_eq!(remote_item.version, 1);
+    let item_data: GroceryItemData = serde_json::from_value(remote_item.data.as_ref().unwrap().clone()).unwrap();
+    assert_eq!(item_data.name, "Fetch Item");
 }

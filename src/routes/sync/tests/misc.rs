@@ -2,10 +2,10 @@ use sqlx::PgPool;
 use axum::extract::State;
 use axum::{Extension, Json};
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::setup_state;
 use crate::routes::sync::{
-    SyncRequest, SyncScope, GroceryListData, GroceryListChangeDelta, StoreData, StoreChangeDelta,
-    GroceryItemData, GroceryChangeDelta, OperationType, AppJson, parse_or_hash_uuid
+    SyncRequest, SyncScope, GroceryListChangeDelta, StoreChangeDelta,
+    GroceryChangeDelta, OperationType, AppJson
 };
 use crate::auth::tokens::Claims;
 

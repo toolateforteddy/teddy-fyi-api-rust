@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::Extension;
 use chrono::Utc;
 use redis::AsyncCommands;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::setup_state;
 use crate::routes::sync::{
     SyncRequest, SyncScope, TodoListData, TodoListChangeDelta, GroceryItemData, GroceryChangeDelta,
     OperationType, AppJson, SyncStatusQuery, sync_status_handler

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \"listId\" as list_id FROM grocery_list_members WHERE \"userId\" = $1 AND \"listId\" = ANY($2) AND is_deleted = FALSE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "list_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "00210ae16bd2ecee63a7b42dc937a26bf83708a25b2aea2fb94898964f25883c"
+}

@@ -1,46 +1,57 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, sync_state FROM grocery_item_store_info WHERE \"groceryItemId\" = $1 AND \"storeId\" = $2",
+  "query": "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id, price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, sync_state FROM grocery_item_store_info WHERE \"groceryItemId\" = ANY($1)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "grocery_item_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "store_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
         "name": "price",
         "type_info": "Float8"
       },
       {
-        "ordinal": 1,
+        "ordinal": 3,
         "name": "is_available",
         "type_info": "Bool"
       },
       {
-        "ordinal": 2,
+        "ordinal": 4,
         "name": "user_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "is_deleted",
         "type_info": "Bool"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "sync_state",
         "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
+      false,
+      false,
       true,
       false,
       true,
@@ -49,5 +60,5 @@
       false
     ]
   },
-  "hash": "0b517622913522496be75f416c4beab3fefe52933a137194a8026d5836d67201"
+  "hash": "271a5de3771c8c9cfdc1206189150723634d4773ed2bc52abe6e0c4c1bed16c8"
 }

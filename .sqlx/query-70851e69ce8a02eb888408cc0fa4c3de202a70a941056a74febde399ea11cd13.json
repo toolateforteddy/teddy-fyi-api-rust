@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                        SELECT DISTINCT \"userId\" as user_id FROM (\n                            -- Users who are members of the updated lists\n                            SELECT glm.\"userId\"\n                            FROM grocery_list_members glm\n                            WHERE glm.\"listId\" IN (\n                                SELECT DISTINCT \"listId\" FROM (\n                                    SELECT id as \"listId\" FROM grocery_lists WHERE updated_at = $1\n                                    UNION ALL\n                                    SELECT \"listId\" FROM grocery_list_members WHERE updated_at = $1 AND \"listId\" IS NOT NULL\n                                    UNION ALL\n                                    SELECT \"listId\" FROM stores WHERE updated_at = $1 AND \"listId\" IS NOT NULL\n                                    UNION ALL\n                                    SELECT \"listId\" FROM categories WHERE updated_at = $1 AND \"listId\" IS NOT NULL\n                                    UNION ALL\n                                    SELECT \"listId\" FROM grocery_items WHERE updated_at = $1 AND \"listId\" IS NOT NULL\n                                    UNION ALL\n                                    SELECT s.\"listId\" FROM grocery_item_store_info gsi\n                                    JOIN stores s ON gsi.\"storeId\" = s.id\n                                    WHERE gsi.updated_at = $1 AND s.\"listId\" IS NOT NULL\n                                ) sub_lists\n                            )\n                            UNION ALL\n                            -- Owners of updated lists\n                            SELECT \"ownerId\" as \"userId\" FROM grocery_lists WHERE updated_at = $1 AND \"ownerId\" IS NOT NULL\n                            UNION ALL\n                            -- Users who own updated items/stores/categories with no list\n                            SELECT \"userId\" FROM grocery_items WHERE updated_at = $1 AND \"listId\" IS NULL AND \"userId\" IS NOT NULL\n                            UNION ALL\n                            SELECT \"userId\" FROM stores WHERE updated_at = $1 AND \"listId\" IS NULL AND \"userId\" IS NOT NULL\n                            UNION ALL\n                            SELECT \"userId\" FROM categories WHERE updated_at = $1 AND \"listId\" IS NULL AND \"userId\" IS NOT NULL\n                        ) all_users\n                        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "70851e69ce8a02eb888408cc0fa4c3de202a70a941056a74febde399ea11cd13"
+}

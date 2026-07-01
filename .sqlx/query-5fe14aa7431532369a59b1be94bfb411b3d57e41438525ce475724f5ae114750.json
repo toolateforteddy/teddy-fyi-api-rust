@@ -1,50 +1,56 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"userId\" as user_id, name, \"colorHex\" as color_hex, \"createdAt\" as created_at, sync_state, version, is_deleted FROM todo_lists WHERE id = $1",
+  "query": "SELECT id, \"userId\" as user_id, name, \"colorHex\" as color_hex, \"createdAt\" as created_at, sync_state, version, is_deleted FROM todo_lists WHERE id = ANY($1)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "user_id",
+        "name": "id",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "name",
+        "name": "user_id",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "color_hex",
+        "name": "name",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
+        "name": "color_hex",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Int8"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "is_deleted",
         "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
+      false,
       true,
       false,
       false,
@@ -54,5 +60,5 @@
       false
     ]
   },
-  "hash": "88fa26ca746dc3a3edeb6c0a1137a91fc2785ca0eede4fa0742f9f10a3331962"
+  "hash": "5fe14aa7431532369a59b1be94bfb411b3d57e41438525ce475724f5ae114750"
 }

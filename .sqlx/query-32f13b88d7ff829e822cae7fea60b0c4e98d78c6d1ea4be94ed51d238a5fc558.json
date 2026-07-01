@@ -1,105 +1,111 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"userId\" as user_id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date, \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"parentId\" as parent_id, \"isDaily\" as is_daily, \"dueDate\" as due_date, description, \"listId\" as list_id, priority, icon, sync_state, version, is_deleted FROM todo_items WHERE id = $1",
+  "query": "SELECT id, \"userId\" as user_id, title, \"isCompleted\" as is_completed, \"createdAt\" as created_at, position, \"scheduledDate\" as scheduled_date, \"recurrenceRule\" as recurrence_rule, \"scheduledAt\" as scheduled_at, \"parentId\" as parent_id, \"isDaily\" as is_daily, \"dueDate\" as due_date, description, \"listId\" as list_id, priority, icon, sync_state, version, is_deleted FROM todo_items WHERE id = ANY($1)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "user_id",
+        "name": "id",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "title",
+        "name": "user_id",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
         "name": "is_completed",
         "type_info": "Bool"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Int8"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "position",
         "type_info": "Int4"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "scheduled_date",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "recurrence_rule",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "scheduled_at",
         "type_info": "Int8"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "parent_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "is_daily",
         "type_info": "Bool"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "due_date",
         "type_info": "Int8"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "description",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "list_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "priority",
         "type_info": "Int4"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "icon",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "is_deleted",
         "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
+      false,
       true,
       false,
       false,
@@ -120,5 +126,5 @@
       false
     ]
   },
-  "hash": "b5d0faf21a8341d2fb8a49a5bf6b2649b97f68a1d27245c83ecaafb77b514407"
+  "hash": "32f13b88d7ff829e822cae7fea60b0c4e98d78c6d1ea4be94ed51d238a5fc558"
 }

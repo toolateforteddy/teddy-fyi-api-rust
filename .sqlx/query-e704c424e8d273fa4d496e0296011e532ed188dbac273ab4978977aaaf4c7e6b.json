@@ -1,40 +1,40 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"userId\" as user_id, \"listId\" as list_id, is_deleted, version FROM stores WHERE id = $1",
+  "query": "SELECT id, \"userId\" as user_id, \"listId\" as list_id, is_deleted FROM grocery_items WHERE id = ANY($1)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "user_id",
+        "name": "id",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "list_id",
+        "name": "user_id",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "is_deleted",
-        "type_info": "Bool"
+        "name": "list_id",
+        "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "version",
-        "type_info": "Int4"
+        "name": "is_deleted",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
-      true,
-      true,
       false,
+      true,
+      true,
       false
     ]
   },
-  "hash": "f7cadbe4c74260c542201c9f1b2dbf012d38ea2107278d4e104c7df274d34f89"
+  "hash": "e704c424e8d273fa4d496e0296011e532ed188dbac273ab4978977aaaf4c7e6b"
 }

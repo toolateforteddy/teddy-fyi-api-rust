@@ -1,22 +1,22 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"listId\" as list_id, \"userId\" as user_id FROM grocery_list_members WHERE id = $1",
+  "query": "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id FROM grocery_item_store_info WHERE \"groceryItemId\" = ANY($1)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "list_id",
+        "name": "grocery_item_id",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "user_id",
+        "name": "store_id",
         "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "a4ce59a6ca16354dc3b888fedbf965c5368c418b1318938ac72bb642423d39c3"
+  "hash": "73a642f1986b45f6a1c30f4662af171ee5de4bd97e6d92edfcbc2960f62fcf0b"
 }

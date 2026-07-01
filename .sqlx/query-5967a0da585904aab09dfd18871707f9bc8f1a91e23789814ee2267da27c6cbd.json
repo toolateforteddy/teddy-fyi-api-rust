@@ -1,22 +1,22 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT name, position, \"isDefaultSupported\" as is_default_supported, \"userId\" as user_id, version, is_deleted, sync_state, \"listId\" as list_id FROM stores WHERE id = $1",
+  "query": "SELECT id, name, position, \"userId\" as user_id, icon, version, is_deleted, sync_state, \"listId\" as list_id FROM categories WHERE id = ANY($1)",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "name",
+        "name": "id",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
-        "name": "position",
-        "type_info": "Int4"
+        "name": "name",
+        "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "is_default_supported",
-        "type_info": "Bool"
+        "name": "position",
+        "type_info": "Int4"
       },
       {
         "ordinal": 3,
@@ -25,28 +25,33 @@
       },
       {
         "ordinal": 4,
+        "name": "icon",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "is_deleted",
         "type_info": "Bool"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "list_id",
         "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
@@ -54,11 +59,12 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       false,
       true
     ]
   },
-  "hash": "90b9bb579cdf4b060235688635e9dfdd7ed9007afc5e4e271f6f4fc133719a34"
+  "hash": "5967a0da585904aab09dfd18871707f9bc8f1a91e23789814ee2267da27c6cbd"
 }

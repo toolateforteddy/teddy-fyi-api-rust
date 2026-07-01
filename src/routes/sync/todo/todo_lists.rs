@@ -12,6 +12,19 @@ pub async fn process_todo_list_changes(
     upload_status: &mut Vec<SuccessResult>,
     remote_changes: &mut Vec<TodoListChangeDelta>,
 ) -> Result<(), AppError> {
+    let change_ids: Vec<String> = changes.iter().map(|c| c.id.clone()).collect();
+    let existing_records = sqlx::query!(
+        r#"SELECT id, "userId" as user_id, name, "colorHex" as color_hex, "createdAt" as created_at, sync_state, version, is_deleted FROM todo_lists WHERE id = ANY($1)"#,
+        &change_ids
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let existing_map: std::collections::HashMap<String, _> = existing_records
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+
     for change in changes {
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
@@ -21,25 +34,18 @@ pub async fn process_todo_list_changes(
                     && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
 
                 if is_need_update {
-                    let existing = sqlx::query!(
-                        r#"SELECT "userId" as user_id, name, "colorHex" as color_hex, "createdAt" as created_at, sync_state, version, is_deleted FROM todo_lists WHERE id = $1"#,
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    if let Some(row) = existing {
+                    if let Some(row) = existing_map.get(&change.id) {
                         if row.user_id.as_deref() != Some(user_id) {
                             return Err(AppError::Forbidden(format!("User is not authorized to update todo list {}", change.id)));
                         }
 
                         let item_data = TodoListData {
                             id: change.id.clone(),
-                            name: row.name,
-                            color_hex: row.color_hex,
-                            user_id: row.user_id,
+                            name: row.name.clone(),
+                            color_hex: row.color_hex.clone(),
+                            user_id: row.user_id.clone(),
                             created_at: row.created_at,
-                            sync_state: row.sync_state,
+                            sync_state: row.sync_state.clone(),
                             version: row.version,
                             is_deleted: row.is_deleted,
                         };
@@ -58,21 +64,10 @@ pub async fn process_todo_list_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<TodoListData>(data.clone()) {
                         Ok(item) => {
-                            let record = sqlx::query!(
-                                "SELECT version FROM todo_lists WHERE id = $1",
-                                change.id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                            let record = existing_map.get(&change.id);
 
-                            if record.is_some() {
-                                let owner = sqlx::query!(
-                                    r#"SELECT "userId" as user_id FROM todo_lists WHERE id = $1"#,
-                                    item.id
-                                )
-                                .fetch_one(&mut **tx)
-                                .await?;
-                                if owner.user_id.as_deref() != Some(user_id) {
+                            if let Some(row) = record {
+                                if row.user_id.as_deref() != Some(user_id) {
                                     return Err(AppError::Forbidden(format!("User is not authorized to update todo list {}", item.id)));
                                 }
                             }
@@ -137,24 +132,11 @@ pub async fn process_todo_list_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let owner = sqlx::query!(
-                        r#"SELECT "userId" as user_id FROM todo_lists WHERE id = $1"#,
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-                    if let Some(row) = owner {
+                    let record = existing_map.get(&change.id);
+                    if let Some(row) = record {
                         if row.user_id.as_deref() != Some(user_id) {
                             return Err(AppError::Forbidden(format!("User is not authorized to update todo list {}", change.id)));
                         }
-                    }
-
-                    let record =
-                        sqlx::query!("SELECT version FROM todo_lists WHERE id = $1", change.id)
-                            .fetch_optional(&mut **tx)
-                            .await?;
-
-                    if let Some(row) = record {
                         let next_version = row.version + 1;
                         sqlx::query!(
                             "UPDATE todo_lists SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
@@ -176,13 +158,8 @@ pub async fn process_todo_list_changes(
                 }
             }
             OperationType::Delete => {
-                let owner = sqlx::query!(
-                    r#"SELECT "userId" as user_id, is_deleted, version FROM todo_lists WHERE id = $1"#,
-                    change.id
-                )
-                .fetch_optional(&mut **tx)
-                .await?;
-                if let Some(row) = owner {
+                let record = existing_map.get(&change.id);
+                if let Some(row) = record {
                     if row.is_deleted {
                         upload_status.push(SuccessResult {
                             id: change.id.clone(),

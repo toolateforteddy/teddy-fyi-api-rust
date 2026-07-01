@@ -12,6 +12,49 @@ pub async fn process_store_changes(
     upload_status: &mut Vec<SuccessResult>,
     remote_changes: &mut Vec<StoreChangeDelta>,
 ) -> Result<(), AppError> {
+    let change_ids: Vec<String> = changes.iter().map(|c| c.id.clone()).collect();
+    let existing_records = sqlx::query!(
+        r#"SELECT id, name, position, "isDefaultSupported" as is_default_supported, "userId" as user_id, version, is_deleted, sync_state, "listId" as list_id FROM stores WHERE id = ANY($1)"#,
+        &change_ids
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let existing_map: std::collections::HashMap<String, _> = existing_records
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+
+    let mut list_ids = std::collections::HashSet::new();
+    for change in changes {
+        if let Some(ref data) = change.data {
+            if let Ok(item) = serde_json::from_value::<StoreData>(data.clone()) {
+                if let Some(ref list_id) = item.list_id {
+                    list_ids.insert(list_id.clone());
+                }
+            }
+        }
+        if let Some(row) = existing_map.get(&change.id) {
+            if let Some(ref list_id) = row.list_id {
+                list_ids.insert(list_id.clone());
+            }
+        }
+    }
+    let list_ids_vec: Vec<String> = list_ids.into_iter().collect();
+
+    let membership_records = sqlx::query!(
+        r#"SELECT "listId" as list_id FROM grocery_list_members WHERE "userId" = $1 AND "listId" = ANY($2) AND is_deleted = FALSE"#,
+        user_id,
+        &list_ids_vec
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let member_lists_set: std::collections::HashSet<String> = membership_records
+        .into_iter()
+        .map(|r| r.list_id)
+        .collect();
+
     for change in changes {
         let string_id = change.id.clone();
         match change.operation_type {
@@ -22,26 +65,11 @@ pub async fn process_store_changes(
                     && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
 
                 if is_need_update {
-                    let existing = sqlx::query!(
-                        r#"SELECT name, position, "isDefaultSupported" as is_default_supported, "userId" as user_id, version, is_deleted, sync_state, "listId" as list_id FROM stores WHERE id = $1"#,
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    if let Some(row) = existing {
+                    if let Some(row) = existing_map.get(&change.id) {
                         let mut authorized = row.user_id.as_deref() == Some(user_id);
                         if !authorized {
                             if let Some(ref list_id) = row.list_id {
-                                let is_member = sqlx::query!(
-                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                    list_id,
-                                    user_id
-                                )
-                                .fetch_optional(&mut **tx)
-                                .await?
-                                .is_some();
-                                if is_member {
+                                if member_lists_set.contains(list_id) {
                                     authorized = true;
                                 }
                             }
@@ -52,14 +80,14 @@ pub async fn process_store_changes(
 
                         let item_data = StoreData {
                             id: change.id.clone(),
-                            name: row.name,
+                            name: row.name.clone(),
                             position: row.position,
                             is_default_supported: row.is_default_supported,
-                            user_id: row.user_id,
+                            user_id: row.user_id.clone(),
                             version: row.version,
                             is_deleted: row.is_deleted,
-                            sync_state: row.sync_state,
-                            list_id: row.list_id,
+                            sync_state: row.sync_state.clone(),
+                            list_id: row.list_id.clone(),
                         };
                         let data_val = serde_json::to_value(&item_data)?;
                         remote_changes.push(StoreChangeDelta {
@@ -76,50 +104,27 @@ pub async fn process_store_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<StoreData>(data.clone()) {
                         Ok(item) => {
-                            let record =
-                                sqlx::query!("SELECT version FROM stores WHERE id = $1", item.id)
-                                    .fetch_optional(&mut **tx)
-                                    .await?;
+                            let record = existing_map.get(&change.id);
 
                             if let Some(ref list_id) = item.list_id {
-                                let is_member = sqlx::query!(
-                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                    list_id,
-                                    user_id
-                                )
-                                .fetch_optional(&mut **tx)
-                                .await?
-                                .is_some();
-                                if !is_member {
+                                if !member_lists_set.contains(list_id) {
                                     return Err(AppError::Forbidden(format!("User is not a member of list {}", list_id)));
                                 }
                             }
 
                             if record.is_some() {
-                                let existing = sqlx::query!(
-                                    r#"SELECT "userId" as user_id, "listId" as list_id FROM stores WHERE id = $1"#,
-                                    item.id
-                                )
-                                .fetch_one(&mut **tx)
-                                .await?;
-                                let mut authorized = existing.user_id.as_deref() == Some(user_id);
-                                if !authorized {
-                                    if let Some(ref list_id) = existing.list_id {
-                                        let is_member = sqlx::query!(
-                                            r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                            list_id,
-                                            user_id
-                                        )
-                                        .fetch_optional(&mut **tx)
-                                        .await?
-                                        .is_some();
-                                        if is_member {
-                                            authorized = true;
+                                if let Some(row) = record {
+                                    let mut authorized = row.user_id.as_deref() == Some(user_id);
+                                    if !authorized {
+                                        if let Some(ref list_id) = row.list_id {
+                                            if member_lists_set.contains(list_id) {
+                                                authorized = true;
+                                            }
                                         }
                                     }
-                                }
-                                if !authorized {
-                                    return Err(AppError::Forbidden(format!("User is not authorized to update store {}", item.id)));
+                                    if !authorized {
+                                        return Err(AppError::Forbidden(format!("User is not authorized to update store {}", item.id)));
+                                    }
                                 }
                             }
 
@@ -185,25 +190,12 @@ pub async fn process_store_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let existing = sqlx::query!(
-                        r#"SELECT "userId" as user_id, "listId" as list_id FROM stores WHERE id = $1"#,
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-                    if let Some(row) = existing {
+                    let record = existing_map.get(&change.id);
+                    if let Some(row) = record {
                         let mut authorized = row.user_id.as_deref() == Some(user_id);
                         if !authorized {
                             if let Some(ref list_id) = row.list_id {
-                                let is_member = sqlx::query!(
-                                    r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                    list_id,
-                                    user_id
-                                )
-                                .fetch_optional(&mut **tx)
-                                .await?
-                                .is_some();
-                                if is_member {
+                                if member_lists_set.contains(list_id) {
                                     authorized = true;
                                 }
                             }
@@ -211,14 +203,7 @@ pub async fn process_store_changes(
                         if !authorized {
                             return Err(AppError::Forbidden(format!("User is not authorized to update store {}", change.id)));
                         }
-                    }
 
-                    let record =
-                        sqlx::query!("SELECT version FROM stores WHERE id = $1", change.id)
-                            .fetch_optional(&mut **tx)
-                            .await?;
-
-                    if let Some(row) = record {
                         let next_version = row.version + 1;
                         sqlx::query!(
                             "UPDATE stores SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
@@ -240,13 +225,8 @@ pub async fn process_store_changes(
                 }
             }
             OperationType::Delete => {
-                let existing = sqlx::query!(
-                    r#"SELECT "userId" as user_id, "listId" as list_id, is_deleted, version FROM stores WHERE id = $1"#,
-                    change.id
-                )
-                .fetch_optional(&mut **tx)
-                .await?;
-                if let Some(row) = existing {
+                let record = existing_map.get(&change.id);
+                if let Some(row) = record {
                     if row.is_deleted {
                         upload_status.push(SuccessResult {
                             id: string_id.clone(),
@@ -260,15 +240,7 @@ pub async fn process_store_changes(
                     let mut authorized = row.user_id.as_deref() == Some(user_id);
                     if !authorized {
                         if let Some(ref list_id) = row.list_id {
-                            let is_member = sqlx::query!(
-                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                list_id,
-                                user_id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?
-                            .is_some();
-                            if is_member {
+                            if member_lists_set.contains(list_id) {
                                 authorized = true;
                             }
                         }

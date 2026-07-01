@@ -12,6 +12,45 @@ pub async fn process_grocery_list_member_changes(
     upload_status: &mut Vec<SuccessResult>,
     remote_changes: &mut Vec<GroceryListMemberChangeDelta>,
 ) -> Result<(), AppError> {
+    let change_ids: Vec<String> = changes.iter().map(|c| c.id.clone()).collect();
+    let existing_records = sqlx::query!(
+        r#"SELECT id, "listId" as list_id, "userId" as user_id, role, "joinedAt" as joined_at, version, is_deleted, sync_state FROM grocery_list_members WHERE id = ANY($1)"#,
+        &change_ids
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let existing_map: std::collections::HashMap<String, _> = existing_records
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+
+    let mut list_ids = std::collections::HashSet::new();
+    for change in changes {
+        if let Some(ref data) = change.data {
+            if let Ok(item) = serde_json::from_value::<GroceryListMemberData>(data.clone()) {
+                list_ids.insert(item.list_id);
+            }
+        }
+        if let Some(row) = existing_map.get(&change.id) {
+            list_ids.insert(row.list_id.clone());
+        }
+    }
+    let list_ids_vec: Vec<String> = list_ids.into_iter().collect();
+
+    let membership_records = sqlx::query!(
+        r#"SELECT "listId" as list_id FROM grocery_list_members WHERE "userId" = $1 AND "listId" = ANY($2) AND is_deleted = FALSE"#,
+        user_id,
+        &list_ids_vec
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let member_lists_set: std::collections::HashSet<String> = membership_records
+        .into_iter()
+        .map(|r| r.list_id)
+        .collect();
+
     for change in changes {
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
@@ -21,25 +60,11 @@ pub async fn process_grocery_list_member_changes(
                     && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
 
                 if is_need_update {
-                    let existing = sqlx::query!(
-                        r#"SELECT "listId" as list_id, "userId" as user_id, role, "joinedAt" as joined_at, version, is_deleted, sync_state FROM grocery_list_members WHERE id = $1"#,
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    if let Some(row) = existing {
+                    if let Some(row) = existing_map.get(&change.id) {
                         let is_self = row.user_id == user_id;
                         let mut authorized = is_self;
                         if !authorized {
-                            let is_member = sqlx::query!(
-                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                row.list_id,
-                                user_id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?
-                            .is_some();
+                            let is_member = member_lists_set.contains(&row.list_id);
                             if is_member {
                                 authorized = true;
                             }
@@ -53,13 +78,13 @@ pub async fn process_grocery_list_member_changes(
 
                         let item_data = GroceryListMemberData {
                             id: change.id.clone(),
-                            list_id: row.list_id,
-                            user_id: row.user_id,
-                            role: row.role,
+                            list_id: row.list_id.clone(),
+                            user_id: row.user_id.clone(),
+                            role: row.role.clone(),
                             joined_at: row.joined_at,
                             version: row.version,
                             is_deleted: row.is_deleted,
-                            sync_state: row.sync_state,
+                            sync_state: row.sync_state.clone(),
                         };
                         let data_val = serde_json::to_value(&item_data)?;
                         remote_changes.push(GroceryListMemberChangeDelta {
@@ -78,14 +103,7 @@ pub async fn process_grocery_list_member_changes(
                         Ok(item) => {
                             // Verify permission: User must either be joining themselves, or already be a member of the list
                             let is_joining_self = item.user_id == user_id;
-                            let is_already_member = sqlx::query!(
-                                r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                                item.list_id,
-                                user_id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?
-                            .is_some();
+                            let is_already_member = member_lists_set.contains(&item.list_id);
 
                             if !is_joining_self && !is_already_member {
                                 return Err(AppError::Forbidden(format!(
@@ -94,12 +112,7 @@ pub async fn process_grocery_list_member_changes(
                                 )));
                             }
 
-                            let record = sqlx::query!(
-                                "SELECT version FROM grocery_list_members WHERE id = $1",
-                                change.id
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                            let record = existing_map.get(&change.id);
 
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
@@ -160,23 +173,10 @@ pub async fn process_grocery_list_member_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let member_record = sqlx::query!(
-                        r#"SELECT "listId" as list_id, "userId" as user_id FROM grocery_list_members WHERE id = $1"#,
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    if let Some(member_rec) = member_record {
-                        let is_self = member_rec.user_id == user_id;
-                        let is_member = sqlx::query!(
-                            r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                            member_rec.list_id,
-                            user_id
-                        )
-                        .fetch_optional(&mut **tx)
-                        .await?
-                        .is_some();
+                    let record = existing_map.get(&change.id);
+                    if let Some(row) = record {
+                        let is_self = row.user_id == user_id;
+                        let is_member = member_lists_set.contains(&row.list_id);
 
                         if !is_self && !is_member {
                             return Err(AppError::Forbidden(format!(
@@ -184,16 +184,7 @@ pub async fn process_grocery_list_member_changes(
                                 change.id
                             )));
                         }
-                    }
 
-                    let record = sqlx::query!(
-                        "SELECT version FROM grocery_list_members WHERE id = $1",
-                        change.id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    if let Some(row) = record {
                         let next_version = row.version + 1;
                         sqlx::query!(
                             "UPDATE grocery_list_members SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
@@ -215,33 +206,21 @@ pub async fn process_grocery_list_member_changes(
                 }
             }
             OperationType::Delete => {
-                let member_record = sqlx::query!(
-                    r#"SELECT "listId" as list_id, "userId" as user_id, is_deleted, version FROM grocery_list_members WHERE id = $1"#,
-                    change.id
-                )
-                .fetch_optional(&mut **tx)
-                .await?;
+                let member_rec = existing_map.get(&change.id);
 
-                if let Some(member_rec) = member_record {
-                    if member_rec.is_deleted {
+                if let Some(row) = member_rec {
+                    if row.is_deleted {
                         upload_status.push(SuccessResult {
                             id: change.id.clone(),
-                            version: member_rec.version,
+                            version: row.version,
                             sync_state: "SYNCED".to_string(),
                         });
                         success_ids.push(change.id.clone());
                         continue;
                     }
 
-                    let is_self = member_rec.user_id == user_id;
-                    let is_member = sqlx::query!(
-                        r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
-                        member_rec.list_id,
-                        user_id
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .is_some();
+                    let is_self = row.user_id == user_id;
+                    let is_member = member_lists_set.contains(&row.list_id);
 
                     if !is_self && !is_member {
                         return Err(AppError::Forbidden(format!(

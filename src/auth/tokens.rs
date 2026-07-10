@@ -12,9 +12,26 @@ pub struct Claims {
     pub exp: usize,
 }
 
-pub fn create_access_token(user_id: &str, client_uuid: &str, secret: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_access_token(
+    user_id: &str,
+    client_uuid: &str,
+    secret: &[u8],
+    expires_in_secs: Option<i64>,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let max_duration = chrono::Duration::hours(24);
+    let duration = if let Some(secs) = expires_in_secs {
+        let requested = chrono::Duration::seconds(secs);
+        if requested > max_duration || requested <= chrono::Duration::zero() {
+            max_duration
+        } else {
+            requested
+        }
+    } else {
+        max_duration
+    };
+
     let expiration = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::hours(24))
+        .checked_add_signed(duration)
         .expect("valid timestamp")
         .timestamp() as usize;
 

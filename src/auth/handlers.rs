@@ -12,6 +12,7 @@ pub struct LoginRequest {
     #[serde(alias = "id_token")]
     pub google_auth_token: String,
     pub use_cookie: Option<bool>,
+    pub expires_in_secs: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -38,6 +39,7 @@ pub struct RefreshRequest {
     pub client_uuid: String,
     pub refresh_token: String,
     pub use_cookie: Option<bool>,
+    pub expires_in_secs: Option<i64>,
 }
 
 pub async fn login_handler(
@@ -63,9 +65,21 @@ pub async fn login_handler(
         (payload.user_id.clone(), google_payload.email.clone())
     };
 
+    let duration_secs = payload.expires_in_secs.unwrap_or(86400);
+    let duration_secs = if duration_secs <= 0 || duration_secs > 86400 {
+        86400
+    } else {
+        duration_secs
+    };
+
     // 2. Generate tokens
-    let access_token = create_access_token(&user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let access_token = create_access_token(
+        &user_id,
+        &payload.client_uuid,
+        state.jwt_secret.as_bytes(),
+        Some(duration_secs),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let refresh_token: String = rand::rng()
         .sample_iter(Alphanumeric)
@@ -93,14 +107,16 @@ pub async fn login_handler(
     let expiration = chrono::Utc::now() + chrono::Duration::days(7);
 
     sqlx::query!(
-        "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (user_id, client_uuid) DO UPDATE
-         SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at",
+         SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at, old_refresh_token_hash = EXCLUDED.old_refresh_token_hash, rotated_at = EXCLUDED.rotated_at",
         user_id,
         payload.client_uuid,
         refresh_token_hash,
-        expiration
+        expiration,
+        None::<String>,
+        None::<chrono::DateTime<chrono::Utc>>
     ).execute(&state.db_pool).await.map_err(|e| {
         tracing::error!("Failed to upsert session: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -109,13 +125,13 @@ pub async fn login_handler(
     if payload.use_cookie.unwrap_or(false) {
         let cookie_header_value = if state.cookie_domain.is_empty() {
             format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-                access_token
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
+                access_token, duration_secs
             )
         } else {
             format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age=86400",
-                access_token, state.cookie_domain
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age={}",
+                access_token, state.cookie_domain, duration_secs
             )
         };
 
@@ -152,8 +168,24 @@ pub async fn refresh_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // 2. Verify token
-    if !verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token) || session.expires_at < chrono::Utc::now() {
+    // 2. Verify token (with 30 seconds grace period for rotated refresh tokens)
+    let mut is_valid = false;
+    if verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token) {
+        if session.expires_at >= chrono::Utc::now() {
+            is_valid = true;
+        }
+    } else if let Some(ref old_hash) = session.old_refresh_token_hash {
+        if verify_refresh_token(old_hash, &payload.refresh_token) {
+            if let Some(rotated_at) = session.rotated_at {
+                let age = chrono::Utc::now() - rotated_at;
+                if age <= chrono::Duration::seconds(30) && session.expires_at >= chrono::Utc::now() {
+                    is_valid = true;
+                }
+            }
+        }
+    }
+
+    if !is_valid {
         // Breach mitigation: Delete all sessions
         tracing::warn!("Breach mitigation: invalidating all sessions for user {}", payload.user_id);
         sqlx::query!("DELETE FROM sessions WHERE user_id = $1", payload.user_id).execute(&state.db_pool).await.ok();
@@ -161,8 +193,20 @@ pub async fn refresh_handler(
     }
 
     // 3. Rotate tokens
-    let access_token = create_access_token(&payload.user_id, &payload.client_uuid, state.jwt_secret.as_bytes())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let duration_secs = payload.expires_in_secs.unwrap_or(86400);
+    let duration_secs = if duration_secs <= 0 || duration_secs > 86400 {
+        86400
+    } else {
+        duration_secs
+    };
+
+    let access_token = create_access_token(
+        &payload.user_id,
+        &payload.client_uuid,
+        state.jwt_secret.as_bytes(),
+        Some(duration_secs),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let new_refresh_token: String = rand::rng()
         .sample_iter(Alphanumeric)
@@ -172,8 +216,12 @@ pub async fn refresh_handler(
 
     let new_hash = hash_refresh_token(&new_refresh_token);
     sqlx::query!(
-        "UPDATE sessions SET refresh_token_hash = $1, expires_at = $2 WHERE user_id = $3 AND client_uuid = $4",
+        "UPDATE sessions
+         SET refresh_token_hash = $1, old_refresh_token_hash = $2, rotated_at = $3, expires_at = $4
+         WHERE user_id = $5 AND client_uuid = $6",
         new_hash,
+        session.refresh_token_hash,
+        chrono::Utc::now(),
         chrono::Utc::now() + chrono::Duration::days(7),
         payload.user_id,
         payload.client_uuid
@@ -185,13 +233,13 @@ pub async fn refresh_handler(
     if payload.use_cookie.unwrap_or(false) {
         let cookie_header_value = if state.cookie_domain.is_empty() {
             format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-                access_token
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
+                access_token, duration_secs
             )
         } else {
             format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age=86400",
-                access_token, state.cookie_domain
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age={}",
+                access_token, state.cookie_domain, duration_secs
             )
         };
         

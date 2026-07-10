@@ -19,6 +19,7 @@ async fn test_login_upserts_user(pool: PgPool) {
         client_uuid: "client-upsert".to_string(),
         google_auth_token: "mock.token".to_string(),
         use_cookie: Some(false),
+        expires_in_secs: None,
     };
 
     let response = crate::auth::handlers::login_handler(State(state.clone()), Json(payload))

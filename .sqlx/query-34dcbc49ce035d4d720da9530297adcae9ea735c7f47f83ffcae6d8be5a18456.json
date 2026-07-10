@@ -27,6 +27,16 @@
         "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "old_refresh_token_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "rotated_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -40,7 +50,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
   "hash": "34dcbc49ce035d4d720da9530297adcae9ea735c7f47f83ffcae6d8be5a18456"

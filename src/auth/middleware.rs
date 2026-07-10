@@ -13,6 +13,20 @@ pub async fn require_auth(
     req: Request,
     next: Next,
 ) -> Result<Response, Response> {
+    let client_uuid_header = match req.headers()
+        .get("X-Client-UUID")
+        .and_then(|h| h.to_str().ok())
+    {
+        Some(uuid) => uuid.to_string(),
+        None => {
+            tracing::warn!("Authentication failed: X-Client-UUID header is missing");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": "Missing X-Client-UUID header" })),
+            ).into_response());
+        }
+    };
+
     let auth_header = req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
@@ -33,26 +47,15 @@ pub async fn require_auth(
         {
             Some(token) => token.to_string(),
             None => {
-                tracing::warn!("Authentication failed: access token cookie or Bearer token is missing");
+                tracing::warn!(
+                    client_uuid = %client_uuid_header,
+                    "Authentication failed: access token cookie or Bearer token is missing"
+                );
                 return Err((
                     StatusCode::UNAUTHORIZED,
                     axum::Json(serde_json::json!({ "error": "Missing access token" })),
                 ).into_response());
             }
-        }
-    };
-
-    let client_uuid_header = match req.headers()
-        .get("X-Client-UUID")
-        .and_then(|h| h.to_str().ok())
-    {
-        Some(uuid) => uuid,
-        None => {
-            tracing::warn!("Authentication failed: X-Client-UUID header is missing");
-            return Err((
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({ "error": "Missing X-Client-UUID header" })),
-            ).into_response());
         }
     };
 
@@ -65,7 +68,11 @@ pub async fn require_auth(
     ) {
         Ok(data) => data,
         Err(err) => {
-            tracing::warn!("Authentication failed: invalid token: {:?}", err);
+            tracing::warn!(
+                client_uuid = %client_uuid_header,
+                "Authentication failed: invalid token: {:?}",
+                err
+            );
             return Err((
                 StatusCode::UNAUTHORIZED,
                 axum::Json(serde_json::json!({ "error": format!("Invalid token: {}", err) })),
@@ -75,9 +82,9 @@ pub async fn require_auth(
 
     if token_data.claims.client_uuid != client_uuid_header {
         tracing::warn!(
-            "Authentication failed: client UUID mismatch. Token claims: {}, X-Client-UUID header: {}",
-            token_data.claims.client_uuid,
-            client_uuid_header
+            client_uuid = %client_uuid_header,
+            token_client_uuid = %token_data.claims.client_uuid,
+            "Authentication failed: client UUID mismatch"
         );
         return Err((
             StatusCode::FORBIDDEN,

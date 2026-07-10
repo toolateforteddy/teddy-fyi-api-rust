@@ -265,4 +265,121 @@ mod tests {
             .unwrap();
         assert_eq!(count, 0, "All sessions for user should have been deleted");
     }
+
+    #[sqlx::test]
+    async fn test_refresh_handler_expired_session_isolated(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-expired-isolated-test";
+        let client_expired = "client-expired";
+        let client_active = "client-active";
+
+        // 1. Insert an EXPIRED session for device 1
+        let refresh_expired = "expired-token-123";
+        let hash_expired = hash_refresh_token(refresh_expired);
+        let expiration_past = chrono::Utc::now() - chrono::Duration::seconds(10);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_expired,
+            hash_expired,
+            expiration_past
+        ).execute(&pool).await.unwrap();
+
+        // 2. Insert an ACTIVE session for device 2
+        let refresh_active = "active-token-456";
+        let hash_active = hash_refresh_token(refresh_active);
+        let expiration_future = chrono::Utc::now() + chrono::Duration::days(1);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_active,
+            hash_active,
+            expiration_future
+        ).execute(&pool).await.unwrap();
+
+        // 3. Attempt to refresh the expired session
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_expired.to_string(),
+            refresh_token: refresh_expired.to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state.clone()), Json(payload)).await;
+        assert_eq!(response.unwrap_err(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // 4. Verify that the expired session was deleted
+        let expired_exists = sqlx::query!(
+            "SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_expired
+        ).fetch_one(&pool).await.unwrap().count.unwrap() > 0;
+        assert!(!expired_exists, "Expired session should be deleted");
+
+        // 5. Verify that the active session was NOT deleted (isolated deletion)
+        let active_exists = sqlx::query!(
+            "SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_active
+        ).fetch_one(&pool).await.unwrap().count.unwrap() > 0;
+        assert!(active_exists, "Active session should still exist");
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_handler_invalid_token_breach_mitigation(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-invalid-token-test";
+        let client_1 = "client-1";
+        let client_2 = "client-2";
+
+        // Insert session 1
+        let refresh_1 = "token-1";
+        let hash_1 = hash_refresh_token(refresh_1);
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_1,
+            hash_1,
+            expiration
+        ).execute(&pool).await.unwrap();
+
+        // Insert session 2
+        let refresh_2 = "token-2";
+        let hash_2 = hash_refresh_token(refresh_2);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_2,
+            hash_2,
+            expiration
+        ).execute(&pool).await.unwrap();
+
+        // Attempt refresh on session 1 with a completely invalid token
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_1.to_string(),
+            refresh_token: "wrong-token-abc".to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state.clone()), Json(payload)).await;
+        assert_eq!(response.unwrap_err(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Verify breach mitigation: ALL sessions for the user must be deleted from the database
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1", user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count
+            .unwrap();
+        assert_eq!(count, 0, "All sessions for user should have been deleted due to invalid token");
+    }
 }
+

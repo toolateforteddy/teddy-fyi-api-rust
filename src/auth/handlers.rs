@@ -157,38 +157,130 @@ pub async fn refresh_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshRequest>,
 ) -> Result<Response, StatusCode> {
-    // 1. Get session
+    let mut tx = state.db_pool.begin().await.map_err(|e| {
+        tracing::error!("Failed to start transaction: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // 1. Get session (locked)
     let session = sqlx::query_as!(
         crate::auth::models::Session,
-        "SELECT * FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+        "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at FROM sessions WHERE user_id = $1 AND client_uuid = $2 FOR UPDATE",
         payload.user_id,
         payload.client_uuid
-    ).fetch_optional(&state.db_pool).await.map_err(|e| {
+    ).fetch_optional(&mut *tx).await.map_err(|e| {
         tracing::error!("Database error during refresh: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
-    })?.ok_or(StatusCode::UNAUTHORIZED)?;
+    })?;
+
+    let session = match session {
+        Some(s) => s,
+        None => {
+            tracing::info!(
+                user_id = %payload.user_id,
+                client_uuid = %payload.client_uuid,
+                "Refresh failed: No active session found in database"
+            );
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    };
 
     // 2. Verify token (with 30 seconds grace period for rotated refresh tokens)
-    let mut is_valid = false;
-    if verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token) {
-        if session.expires_at >= chrono::Utc::now() {
-            is_valid = true;
-        }
-    } else if let Some(ref old_hash) = session.old_refresh_token_hash {
-        if verify_refresh_token(old_hash, &payload.refresh_token) {
-            if let Some(rotated_at) = session.rotated_at {
-                let age = chrono::Utc::now() - rotated_at;
-                if age <= chrono::Duration::seconds(30) && session.expires_at >= chrono::Utc::now() {
-                    is_valid = true;
-                }
-            }
-        }
-    }
+    let is_current = verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token);
+    let is_old = session.old_refresh_token_hash.as_ref()
+        .map(|old_hash| verify_refresh_token(old_hash, &payload.refresh_token))
+        .unwrap_or(false);
 
-    if !is_valid {
-        // Breach mitigation: Delete all sessions
-        tracing::warn!("Breach mitigation: invalidating all sessions for user {}", payload.user_id);
-        sqlx::query!("DELETE FROM sessions WHERE user_id = $1", payload.user_id).execute(&state.db_pool).await.ok();
+    if is_current {
+        if session.expires_at < chrono::Utc::now() {
+            tracing::info!(
+                user_id = %payload.user_id,
+                client_uuid = %payload.client_uuid,
+                expires_at = ?session.expires_at,
+                "Refresh failed: Session expired. Invalidating single session."
+            );
+            sqlx::query!(
+                "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+                payload.user_id,
+                payload.client_uuid
+            )
+            .execute(&mut *tx)
+            .await
+            .ok();
+            let _ = tx.commit().await;
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    } else if is_old {
+        if let Some(rotated_at) = session.rotated_at {
+            let age = chrono::Utc::now() - rotated_at;
+            let age_secs = age.num_seconds();
+            if age_secs > 30 {
+                tracing::warn!(
+                    user_id = %payload.user_id,
+                    client_uuid = %payload.client_uuid,
+                    rotated_at = ?rotated_at,
+                    age_seconds = age_secs,
+                    "Breach mitigation: Old refresh token reused outside of 30s grace period. Deleting all sessions."
+                );
+                sqlx::query!(
+                    "DELETE FROM sessions WHERE user_id = $1",
+                    payload.user_id
+                )
+                .execute(&mut *tx)
+                .await
+                .ok();
+                let _ = tx.commit().await;
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+
+            if session.expires_at < chrono::Utc::now() {
+                tracing::info!(
+                    user_id = %payload.user_id,
+                    client_uuid = %payload.client_uuid,
+                    expires_at = ?session.expires_at,
+                    "Refresh failed: Session expired during old token grace period. Invalidating single session."
+                );
+                sqlx::query!(
+                    "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+                    payload.user_id,
+                    payload.client_uuid
+                )
+                .execute(&mut *tx)
+                .await
+                .ok();
+                let _ = tx.commit().await;
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        } else {
+            tracing::warn!(
+                user_id = %payload.user_id,
+                client_uuid = %payload.client_uuid,
+                "Breach mitigation: Old refresh token matched but rotated_at is NULL. Deleting all sessions."
+            );
+            sqlx::query!(
+                "DELETE FROM sessions WHERE user_id = $1",
+                payload.user_id
+            )
+            .execute(&mut *tx)
+            .await
+            .ok();
+            let _ = tx.commit().await;
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    } else {
+        tracing::warn!(
+            user_id = %payload.user_id,
+            client_uuid = %payload.client_uuid,
+            "Breach mitigation: Provided refresh token does not match current or old hash. Deleting all sessions."
+        );
+        sqlx::query!(
+            "DELETE FROM sessions WHERE user_id = $1",
+            payload.user_id
+        )
+        .execute(&mut *tx)
+        .await
+        .ok();
+        let _ = tx.commit().await;
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -225,8 +317,13 @@ pub async fn refresh_handler(
         chrono::Utc::now() + chrono::Duration::days(7),
         payload.user_id,
         payload.client_uuid
-    ).execute(&state.db_pool).await.map_err(|e| {
+    ).execute(&mut *tx).await.map_err(|e| {
         tracing::error!("Failed to rotate token: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("Failed to commit transaction: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 

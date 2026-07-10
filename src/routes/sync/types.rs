@@ -197,21 +197,33 @@ pub struct SuccessResult {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SyncResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub success_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upload_status: Vec<SuccessResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_todo_list_changes: Vec<TodoListChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_todo_changes: Vec<TodoChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_grocery_list_changes: Vec<GroceryListChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_grocery_list_member_changes: Vec<GroceryListMemberChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_store_changes: Vec<StoreChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_category_changes: Vec<CategoryChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_grocery_changes: Vec<GroceryChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_grocery_item_store_info_changes: Vec<GroceryItemStoreInfoChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_config_changes: Vec<ConfigChangeDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_drawing_changes: Vec<DrawingChangeDelta>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub configs: Vec<ConfigSyncItem>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drawings: Vec<DrawingSyncItem>,
     pub server_timestamp: DateTime<Utc>,
 }

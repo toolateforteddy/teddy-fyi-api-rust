@@ -156,10 +156,19 @@ pub async fn login_handler(
 pub async fn refresh_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshRequest>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, Response> {
     let mut tx = state.db_pool.begin().await.map_err(|e| {
         tracing::error!("Failed to start transaction: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "database_error",
+                "message": "Failed to start database transaction",
+                "client_uuid": payload.client_uuid,
+                "user_id": payload.user_id,
+                "details": { "db_error": format!("{:?}", e) }
+            }))
+        ).into_response()
     })?;
 
     // 1. Get session (locked)
@@ -170,18 +179,47 @@ pub async fn refresh_handler(
         payload.client_uuid
     ).fetch_optional(&mut *tx).await.map_err(|e| {
         tracing::error!("Database error during refresh: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "database_error",
+                "message": "Database error during refresh",
+                "client_uuid": payload.client_uuid,
+                "user_id": payload.user_id,
+                "details": { "db_error": format!("{:?}", e) }
+            }))
+        ).into_response()
     })?;
 
     let session = match session {
         Some(s) => s,
         None => {
+            let active_clients = sqlx::query!(
+                "SELECT client_uuid FROM sessions WHERE user_id = $1",
+                payload.user_id
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
+            .unwrap_or_default();
+
             tracing::info!(
                 user_id = %payload.user_id,
                 client_uuid = %payload.client_uuid,
+                active_clients = ?active_clients,
                 "Refresh failed: No active session found in database"
             );
-            return Err(StatusCode::UNAUTHORIZED);
+            let _ = tx.rollback().await;
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "session_not_found",
+                    "message": "No active session found in database for this client",
+                    "client_uuid": payload.client_uuid,
+                    "user_id": payload.user_id,
+                    "details": { "active_clients": active_clients }
+                }))
+            ).into_response());
         }
     };
 
@@ -193,6 +231,15 @@ pub async fn refresh_handler(
 
     if is_current {
         if session.expires_at < chrono::Utc::now() {
+            let active_clients = sqlx::query!(
+                "SELECT client_uuid FROM sessions WHERE user_id = $1",
+                payload.user_id
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
+            .unwrap_or_default();
+
             tracing::info!(
                 user_id = %payload.user_id,
                 client_uuid = %payload.client_uuid,
@@ -208,32 +255,78 @@ pub async fn refresh_handler(
             .await
             .ok();
             let _ = tx.commit().await;
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "session_expired",
+                    "message": "Session expired",
+                    "client_uuid": payload.client_uuid,
+                    "user_id": payload.user_id,
+                    "details": {
+                        "expires_at": session.expires_at,
+                        "server_time": chrono::Utc::now(),
+                        "active_clients": active_clients
+                    }
+                }))
+            ).into_response());
         }
     } else if is_old {
         if let Some(rotated_at) = session.rotated_at {
             let age = chrono::Utc::now() - rotated_at;
             let age_secs = age.num_seconds();
             if age_secs > 30 {
+                let active_clients = sqlx::query!(
+                    "SELECT client_uuid FROM sessions WHERE user_id = $1",
+                    payload.user_id
+                )
+                .fetch_all(&mut *tx)
+                .await
+                .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
+                .unwrap_or_default();
+
                 tracing::warn!(
                     user_id = %payload.user_id,
                     client_uuid = %payload.client_uuid,
                     rotated_at = ?rotated_at,
                     age_seconds = age_secs,
-                    "Breach mitigation: Old refresh token reused outside of 30s grace period. Deleting all sessions."
+                    "Breach mitigation: Old refresh token reused outside of 30s grace period. Deleting single session."
                 );
                 sqlx::query!(
-                    "DELETE FROM sessions WHERE user_id = $1",
-                    payload.user_id
+                    "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+                    payload.user_id,
+                    payload.client_uuid
                 )
                 .execute(&mut *tx)
                 .await
                 .ok();
                 let _ = tx.commit().await;
-                return Err(StatusCode::UNAUTHORIZED);
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "grace_period_expired",
+                        "message": "Refresh token grace period expired (Breach mitigation triggered)",
+                        "client_uuid": payload.client_uuid,
+                        "user_id": payload.user_id,
+                        "details": {
+                            "rotated_at": rotated_at,
+                            "age_seconds": age_secs,
+                            "server_time": chrono::Utc::now(),
+                            "active_clients": active_clients
+                        }
+                    }))
+                ).into_response());
             }
 
             if session.expires_at < chrono::Utc::now() {
+                let active_clients = sqlx::query!(
+                    "SELECT client_uuid FROM sessions WHERE user_id = $1",
+                    payload.user_id
+                )
+                .fetch_all(&mut *tx)
+                .await
+                .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
+                .unwrap_or_default();
+
                 tracing::info!(
                     user_id = %payload.user_id,
                     client_uuid = %payload.client_uuid,
@@ -249,39 +342,97 @@ pub async fn refresh_handler(
                 .await
                 .ok();
                 let _ = tx.commit().await;
-                return Err(StatusCode::UNAUTHORIZED);
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "session_expired_grace_period",
+                        "message": "Session expired during old token grace period",
+                        "client_uuid": payload.client_uuid,
+                        "user_id": payload.user_id,
+                        "details": {
+                            "expires_at": session.expires_at,
+                            "rotated_at": rotated_at,
+                            "server_time": chrono::Utc::now(),
+                            "active_clients": active_clients
+                        }
+                    }))
+                ).into_response());
             }
         } else {
+            let active_clients = sqlx::query!(
+                "SELECT client_uuid FROM sessions WHERE user_id = $1",
+                payload.user_id
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
+            .unwrap_or_default();
+
             tracing::warn!(
                 user_id = %payload.user_id,
                 client_uuid = %payload.client_uuid,
-                "Breach mitigation: Old refresh token matched but rotated_at is NULL. Deleting all sessions."
+                "Breach mitigation: Old refresh token matched but rotated_at is NULL. Deleting single session."
             );
             sqlx::query!(
-                "DELETE FROM sessions WHERE user_id = $1",
-                payload.user_id
+                "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+                payload.user_id,
+                payload.client_uuid
             )
             .execute(&mut *tx)
             .await
             .ok();
             let _ = tx.commit().await;
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "rotated_at_null",
+                    "message": "Old refresh token matched but rotated_at is NULL (Breach mitigation triggered)",
+                    "client_uuid": payload.client_uuid,
+                    "user_id": payload.user_id,
+                    "details": { "active_clients": active_clients }
+                }))
+            ).into_response());
         }
     } else {
+        let active_clients = sqlx::query!(
+            "SELECT client_uuid FROM sessions WHERE user_id = $1",
+            payload.user_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
+        .unwrap_or_default();
+
         tracing::warn!(
             user_id = %payload.user_id,
             client_uuid = %payload.client_uuid,
-            "Breach mitigation: Provided refresh token does not match current or old hash. Deleting all sessions."
+            provided_token_length = payload.refresh_token.len(),
+            has_old_hash = session.old_refresh_token_hash.is_some(),
+            "Breach mitigation: Provided refresh token does not match current or old hash. Deleting single session."
         );
         sqlx::query!(
-            "DELETE FROM sessions WHERE user_id = $1",
-            payload.user_id
+            "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            payload.user_id,
+            payload.client_uuid
         )
         .execute(&mut *tx)
         .await
         .ok();
         let _ = tx.commit().await;
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": "token_mismatch",
+                "message": "Provided refresh token does not match current or old hash (Breach mitigation triggered)",
+                "client_uuid": payload.client_uuid,
+                "user_id": payload.user_id,
+                "details": {
+                    "provided_token_length": payload.refresh_token.len(),
+                    "has_old_refresh_token_hash": session.old_refresh_token_hash.is_some(),
+                    "active_clients": active_clients
+                }
+            }))
+        ).into_response());
     }
 
     // 3. Rotate tokens
@@ -298,7 +449,18 @@ pub async fn refresh_handler(
         state.jwt_secret.as_bytes(),
         Some(duration_secs),
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "token_generation_error",
+                "message": "Failed to generate access token",
+                "client_uuid": payload.client_uuid,
+                "user_id": payload.user_id,
+                "details": { "error": format!("{:?}", e) }
+            }))
+        ).into_response()
+    })?;
 
     let new_refresh_token: String = rand::rng()
         .sample_iter(Alphanumeric)
@@ -319,12 +481,30 @@ pub async fn refresh_handler(
         payload.client_uuid
     ).execute(&mut *tx).await.map_err(|e| {
         tracing::error!("Failed to rotate token: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "database_error",
+                "message": "Failed to rotate token",
+                "client_uuid": payload.client_uuid,
+                "user_id": payload.user_id,
+                "details": { "db_error": format!("{:?}", e) }
+            }))
+        ).into_response()
     })?;
 
     tx.commit().await.map_err(|e| {
         tracing::error!("Failed to commit transaction: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "database_error",
+                "message": "Failed to commit transaction",
+                "client_uuid": payload.client_uuid,
+                "user_id": payload.user_id,
+                "details": { "db_error": format!("{:?}", e) }
+            }))
+        ).into_response()
     })?;
 
     if payload.use_cookie.unwrap_or(false) {
@@ -348,7 +528,18 @@ pub async fn refresh_handler(
         response.headers_mut().insert(
             header::SET_COOKIE,
             header::HeaderValue::from_str(&cookie_header_value)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "cookie_header_error",
+                            "message": "Failed to set access token cookie header",
+                            "client_uuid": payload.client_uuid,
+                            "user_id": payload.user_id,
+                            "details": { "error": format!("{:?}", e) }
+                        }))
+                    ).into_response()
+                })?,
         );
         Ok(response)
     } else {

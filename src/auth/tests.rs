@@ -224,6 +224,7 @@ mod tests {
         let state = setup_state(pool.clone());
         let user_id = "user-breach-test";
         let client_uuid = "client-breach-test";
+        let other_client_uuid = "other-client-breach-test";
 
         // Insert session rotated 35 seconds ago (outside grace period)
         let old_refresh = "old-refresh-token-123";
@@ -244,6 +245,18 @@ mod tests {
             rotated_at
         ).execute(&pool).await.unwrap();
 
+        // Insert a second session for the same user (active client)
+        let active_refresh = "active-refresh-token-789";
+        let active_hash = hash_refresh_token(active_refresh);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            other_client_uuid,
+            active_hash,
+            expiration
+        ).execute(&pool).await.unwrap();
+
         // Refresh with the old refresh token AFTER the grace period expires
         let payload = RefreshRequest {
             user_id: user_id.to_string(),
@@ -254,16 +267,24 @@ mod tests {
         };
 
         let response = refresh_handler(State(state.clone()), Json(payload)).await;
-        assert_eq!(response.unwrap_err(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(response.unwrap_err().status(), axum::http::StatusCode::UNAUTHORIZED);
 
-        // Verify breach mitigation: all sessions for the user must be deleted from the database
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1", user_id)
+        // Verify breach mitigation: only the offending client's session must be deleted
+        let offending_exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client_uuid)
             .fetch_one(&pool)
             .await
             .unwrap()
             .count
-            .unwrap();
-        assert_eq!(count, 0, "All sessions for user should have been deleted");
+            .unwrap() > 0;
+        assert!(!offending_exists, "Offending client session should have been deleted");
+
+        let other_exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, other_client_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count
+            .unwrap() > 0;
+        assert!(other_exists, "Other client session should still exist");
     }
 
     #[sqlx::test]
@@ -309,7 +330,7 @@ mod tests {
         };
 
         let response = refresh_handler(State(state.clone()), Json(payload)).await;
-        assert_eq!(response.unwrap_err(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(response.unwrap_err().status(), axum::http::StatusCode::UNAUTHORIZED);
 
         // 4. Verify that the expired session was deleted
         let expired_exists = sqlx::query!(
@@ -370,16 +391,24 @@ mod tests {
         };
 
         let response = refresh_handler(State(state.clone()), Json(payload)).await;
-        assert_eq!(response.unwrap_err(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(response.unwrap_err().status(), axum::http::StatusCode::UNAUTHORIZED);
 
-        // Verify breach mitigation: ALL sessions for the user must be deleted from the database
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1", user_id)
+        // Verify breach mitigation: only the offending client's session must be deleted from the database
+        let client_1_exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client_1)
             .fetch_one(&pool)
             .await
             .unwrap()
             .count
-            .unwrap();
-        assert_eq!(count, 0, "All sessions for user should have been deleted due to invalid token");
+            .unwrap() > 0;
+        assert!(!client_1_exists, "Offending client session should have been deleted");
+
+        let client_2_exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client_2)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count
+            .unwrap() > 0;
+        assert!(client_2_exists, "Other client session should still exist");
     }
 }
 

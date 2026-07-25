@@ -1,0 +1,17 @@
+name: Code Janitor Sweep
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
+    with:
+      provider: 'google'
+      model: 'gemini-3.6-flash'
+      test_command: 'SQLX_OFFLINE=true cargo test'
+      lint_command: 'cargo clippy -- -D warnings'
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

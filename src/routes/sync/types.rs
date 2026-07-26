@@ -139,21 +139,16 @@ pub struct DrawingSyncItem {
     pub last_modified: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyncScope {
+    #[default]
     All,
     Grocery,
     Todo,
     ScribbleBox,
     ScribbleKeep,
     ScribbleKeepCloud,
-}
-
-impl Default for SyncScope {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

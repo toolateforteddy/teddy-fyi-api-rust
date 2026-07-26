@@ -2,6 +2,7 @@ use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_grocery_list_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &str,
@@ -138,7 +139,7 @@ pub async fn process_grocery_list_changes(
                             .await?;
 
                             // Automatically add the creator as an ADMIN member of the list if not already
-                            let member_exists = membership_map.get(&item.id).is_some();
+                            let member_exists = membership_map.contains_key(&item.id);
 
                             if !member_exists {
                                 let member_id = format!("{}-member-{}", item.id, user_id);

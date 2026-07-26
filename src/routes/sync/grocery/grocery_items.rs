@@ -2,6 +2,7 @@ use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_grocery_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &str,
@@ -275,7 +276,7 @@ pub async fn process_grocery_changes(
                 } else if matches!(change.operation_type, OperationType::Update) {
                     let record = existing_map.get(&change.id);
 
-                    if let Some(ref row) = record {
+                    if let Some(row) = record {
                         if let Some(ref list_id) = row.list_id {
                             if !member_lists_set.contains(list_id) {
                                 return Err(AppError::Forbidden(format!(
@@ -312,7 +313,7 @@ pub async fn process_grocery_changes(
             OperationType::Delete => {
                 let record = existing_map.get(&change.id);
 
-                if let Some(ref row) = record {
+                if let Some(row) = record {
                     if row.is_deleted {
                         upload_status.push(SuccessResult {
                             id: string_id.clone(),

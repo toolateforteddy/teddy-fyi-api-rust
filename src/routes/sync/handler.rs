@@ -38,7 +38,7 @@ pub async fn sync_handler(
         let state = state.clone();
         let claims = claims.clone();
         let payload = payload.clone();
-        let scope = scope.clone();
+        let scope = scope;
         async move {
             if scope == SyncScope::All || scope == SyncScope::Todo {
                 let mut tx = state.db_pool.begin().await?;
@@ -104,7 +104,7 @@ pub async fn sync_handler(
         let state = state.clone();
         let claims = claims.clone();
         let payload = payload.clone();
-        let scope = scope.clone();
+        let scope = scope;
         async move {
             if scope == SyncScope::All || scope == SyncScope::Grocery {
                 let mut tx = state.db_pool.begin().await?;
@@ -307,7 +307,7 @@ pub async fn sync_handler(
         let state = state.clone();
         let claims = claims.clone();
         let payload = payload.clone();
-        let scope = scope.clone();
+        let scope = scope;
         async move {
             if scope == SyncScope::ScribbleBox
                 || scope == SyncScope::ScribbleKeep

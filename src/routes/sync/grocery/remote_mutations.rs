@@ -273,7 +273,7 @@ pub async fn fetch_remote_grocery_mutations(
         remote_grocery_item_store_info_changes.push(GroceryItemStoreInfoChangeDelta {
             id: format!("{}-{}", item_id, store_id),
             grocery_item_id: item_id,
-            store_id: store_id,
+            store_id,
             operation_type: if row.is_deleted { OperationType::Delete } else { OperationType::Update },
             version: row.version,
             data: Some(data_val),

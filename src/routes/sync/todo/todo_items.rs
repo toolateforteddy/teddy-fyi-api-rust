@@ -3,6 +3,7 @@ use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_todo_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &str,

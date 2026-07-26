@@ -1,16 +1,19 @@
-name: Code Janitor (Rust)
+name: CI
 
 on:
-  schedule:
-    - cron: '0 3 * * *'
-  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
 
 jobs:
-  sweep:
+  test:
+    name: Run Lints and Tests
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
 
     # Database service for running integration tests
     services:
@@ -30,15 +33,9 @@ jobs:
         entrypoint: docker-entrypoint.sh
         command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
 
-    env:
-      SQLX_OFFLINE: "true"
-      DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
-
     steps:
-      - name: Checkout Target Repo
+      - name: Checkout Code
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       # Set up Rust toolchain for running tests
       - name: Set up Rust Toolchain
@@ -46,13 +43,12 @@ jobs:
         with:
           cache: true
 
-      - name: Run Code Janitor
-        uses: toolateforteddy/code-janitor@main
-        with:
-          provider: 'google'
-          model: 'gemini-3.6-flash'
-          lint_command: 'cargo clippy -- -D warnings'
-          test_command: 'SQLX_OFFLINE=true DATABASE_URL=postgres://postgres:password@localhost:5432/test_db cargo test'
-          max_line_diff: 80
-          draft_pr: false
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+      - name: Run Clippy
+        run: cargo clippy -- -D warnings
+
+      # Run Cargo tests (requires SQLx offline mode for query verification and a running Postgres instance)
+      - name: Run Tests
+        env:
+          SQLX_OFFLINE: true
+          DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
+        run: make test

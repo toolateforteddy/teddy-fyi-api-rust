@@ -1,4 +1,4 @@
-name: Code Janitor Sweep
+name: Code Janitor (Rust)
 
 on:
   schedule:
@@ -7,11 +7,23 @@ on:
 
 jobs:
   sweep:
-    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
-    with:
-      provider: 'google'
-      model: 'gemini-3.6-flash'
-      test_command: 'SQLX_OFFLINE=true cargo test'
-      lint_command: 'cargo clippy -- -D warnings'
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Code Janitor
+        uses: toolateforteddy/code-janitor@main
+        with:
+          provider: 'google'
+          model: 'gemini-3.6-flash'
+          lint_command: 'cargo clippy -- -D warnings'
+          test_command: 'SQLX_OFFLINE=true cargo test'
+          max_line_diff: 80
+          draft_pr: false
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}

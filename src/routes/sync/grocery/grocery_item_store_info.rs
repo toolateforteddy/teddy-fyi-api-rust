@@ -293,19 +293,21 @@ pub async fn process_grocery_item_store_info_changes(
                     return Err(AppError::Forbidden(format!("Parent grocery item not found: {}", change.grocery_item_id)));
                 }
 
-                let row = sqlx::query!(
+                let row_opt = sqlx::query!(
                     r#"UPDATE grocery_item_store_info SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE "groceryItemId" = $3 AND "storeId" = $4 RETURNING version"#,
                     server_timestamp,
                     client_id,
                     change.grocery_item_id,
                     change.store_id
                 )
-                .fetch_one(&mut **tx)
+                .fetch_optional(&mut **tx)
                 .await?;
+
+                let version = row_opt.map(|r| r.version).unwrap_or(1);
 
                 upload_status.push(SuccessResult {
                     id: string_id.clone(),
-                    version: row.version,
+                    version,
                     sync_state: "SYNCED".to_string(),
                 });
                 success_ids.push(string_id);

@@ -22,6 +22,13 @@ pub use config::*;
 pub mod drawing;
 pub use drawing::*;
 
+pub mod publisher;
+pub use publisher::*;
+
+pub mod stream;
+pub use stream::*;
+
 #[cfg(test)]
 pub mod tests;
+
 

@@ -22,4 +22,7 @@ reqwest = { version = "0.12", features = ["json"] }
 schemars = "0.8"
 tower-http = { version = "0.6.10", features = ["cors"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
+futures-util = "0.3"
+tokio-stream = "0.1"
+
 

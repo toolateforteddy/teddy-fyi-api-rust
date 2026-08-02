@@ -94,7 +94,10 @@ async fn main() {
     let api_routes = Router::new()
         .route("/sync", axum::routing::post(routes::sync::sync_handler))
         .route("/sync/status", axum::routing::get(routes::sync::status::sync_status_handler))
+        .route("/sync/stream", axum::routing::get(routes::sync::stream::sync_stream_handler))
+        .route("/v1/sync/stream", axum::routing::get(routes::sync::stream::sync_stream_handler))
         .route("/categorize", axum::routing::post(routes::ai::handlers::categorize_item_handler))
+
         .route("/assign-icon", axum::routing::post(routes::ai::handlers::assign_todo_icon_handler))
         .route("/lists/invite", axum::routing::post(routes::lists::invite_handler))
         .route("/lists/join", axum::routing::post(routes::lists::join_handler))

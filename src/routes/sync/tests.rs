@@ -7,4 +7,6 @@ mod grocery;
 mod misc;
 mod remote_mutations;
 mod scribble;
+mod stream;
 mod todo;
+

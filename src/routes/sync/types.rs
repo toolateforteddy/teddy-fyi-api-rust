@@ -230,6 +230,8 @@ pub enum AppError {
     Deserialization(String),
     Gemini(String),
     Forbidden(String),
+    Redis(redis::RedisError),
+    Internal(String),
 }
 
 impl IntoResponse for AppError {
@@ -255,6 +257,14 @@ impl IntoResponse for AppError {
                 tracing::error!("Forbidden error: {}", err);
                 (StatusCode::FORBIDDEN, err)
             }
+            AppError::Redis(err) => {
+                tracing::error!("Redis error: {:?}", err);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Redis pubsub error".to_string())
+            }
+            AppError::Internal(err) => {
+                tracing::error!("Internal error: {}", err);
+                (StatusCode::INTERNAL_SERVER_ERROR, err)
+            }
         };
 
         (
@@ -276,6 +286,13 @@ impl From<serde_json::Error> for AppError {
         AppError::Serialization(err)
     }
 }
+
+impl From<redis::RedisError> for AppError {
+    fn from(err: redis::RedisError) -> Self {
+        AppError::Redis(err)
+    }
+}
+
 
 pub struct AppJson<T>(pub T);
 

@@ -486,6 +486,13 @@ pub struct GroceryItemStoreInfoData {
     pub grocery_item_id: String,
     #[serde(alias = "storeId")]
     pub store_id: String,
+    /// Server-computed convenience field. Not a stored column: there is no `listId` on
+    /// `grocery_item_store_info`, and the list a row belongs to is always resolved from its
+    /// parent (the store on the download path, the grocery item on the echo path — the same
+    /// list, given an item and its stores share one). Populated on the way out; ignored on
+    /// the way in, so a client can round-trip it without ever making it authoritative.
+    #[serde(default, alias = "listId")]
+    pub list_id: Option<String>,
     pub price: Option<f64>,
     #[serde(alias = "isAvailable")]
     pub is_available: bool,

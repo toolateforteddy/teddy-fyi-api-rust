@@ -237,7 +237,7 @@ pub async fn fetch_remote_grocery_mutations(
 
     // Fetch grocery_item_store_info changed after last_synced_at by OTHER clients belonging to current user or collaborative lists
     let updated_store_infos = sqlx::query!(
-        r#"SELECT DISTINCT gsi."groceryItemId" as grocery_item_id, gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available, gsi."userId" as user_id, gsi.version, gsi.is_deleted, gsi.sync_state
+        r#"SELECT DISTINCT gsi."groceryItemId" as grocery_item_id, gsi."storeId" as store_id, s."listId" as list_id, gsi.price, gsi."isAvailable" as is_available, gsi."userId" as user_id, gsi.version, gsi.is_deleted, gsi.sync_state
            FROM grocery_item_store_info gsi
            JOIN stores s ON gsi."storeId" = s.id
            LEFT JOIN grocery_list_members glm ON s."listId" = glm."listId" AND glm."userId" = $1 AND glm.is_deleted = FALSE
@@ -260,6 +260,7 @@ pub async fn fetch_remote_grocery_mutations(
             id: format!("{}-{}", row.grocery_item_id, row.store_id),
             grocery_item_id: row.grocery_item_id,
             store_id: row.store_id,
+            list_id: row.list_id,
             price: row.price,
             is_available: row.is_available,
             user_id: row.user_id,

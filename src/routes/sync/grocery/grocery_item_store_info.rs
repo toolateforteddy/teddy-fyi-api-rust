@@ -104,6 +104,9 @@ pub async fn process_grocery_item_store_info_changes(
                             id: string_id.clone(),
                             grocery_item_id: change.grocery_item_id.clone(),
                             store_id: change.store_id.clone(),
+                            list_id: parent_items_map
+                                .get(&change.grocery_item_id)
+                                .and_then(|r| r.list_id.clone()),
                             price: row.price,
                             is_available: row.is_available,
                             user_id: row.user_id.clone(),

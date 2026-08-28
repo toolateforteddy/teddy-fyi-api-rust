@@ -257,9 +257,42 @@ the other:
    `cargo clippy -- -D warnings`. The `if` inside the match arm is now a match
    guard. Behaviour is identical: a failing guard falls through to `_ => {}`.
 
+A third failure was hiding behind those two — see below.
+
 Worth knowing that `CI.yml` runs on `pull_request` as well as `push`, so a PR
 is checked against its *merge* with `main` — a doc-only branch can go red for
 reasons that have nothing to do with it.
+
+### CI's Rust toolchain is unpinned, and that bites
+
+There is no `rust-toolchain.toml`, and `CI.yml` uses
+`actions-rust-lang/setup-rust-toolchain@v1` with no `toolchain:` key, so CI
+installs **whatever stable is current on the day**. It is on **1.98.0**.
+
+That is a real failure mode, not a footnote: `clippy::result_large_err` fires
+under 1.98 on `require_auth` and `refresh_handler` — both
+`-> Result<Response, Response>` — and does not fire under 1.95. **A new stable
+release can turn this repo red with no code change at all.**
+
+There is no boxing fix for those two: axum requires `IntoResponse` on *both*
+variants of the returned `Result`, and `Box<Response>` does not implement it. So
+they carry a narrow `#[allow(clippy::result_large_err)]` with a comment. A
+crate-wide `[lints.clippy]` entry in `Cargo.toml` would also work and would stop
+each new handler re-tripping it, at the cost of silencing the lint where it
+might be genuine.
+
+**If you are debugging a CI clippy failure you cannot reproduce, check your
+toolchain first.** Local stable here was 1.95.0 and reported the code clean.
+Reproduce CI exactly with:
+
+```bash
+rustup toolchain install 1.98.0 --component clippy --profile minimal
+SQLX_OFFLINE=true cargo +1.98.0 clippy -- -D warnings
+```
+
+Pinning CI (a `rust-toolchain.toml`, or a `toolchain:` key) would trade
+surprise breakage for explicit upgrades. That is a policy call, so it is
+flagged here rather than made.
 
 ---
 

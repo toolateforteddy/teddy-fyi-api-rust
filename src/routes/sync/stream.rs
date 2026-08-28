@@ -81,10 +81,10 @@ pub async fn sync_stream_handler(
                         if let Some(ref current_client) = client_id {
                             match &event {
                                 SyncSseEvent::DirectUpdate { sender_client_id, .. }
-                                | SyncSseEvent::Invalidate { sender_client_id, .. } => {
-                                    if sender_client_id.as_ref() == Some(current_client) {
-                                        continue;
-                                    }
+                                | SyncSseEvent::Invalidate { sender_client_id, .. }
+                                    if sender_client_id.as_ref() == Some(current_client) =>
+                                {
+                                    continue;
                                 }
                                 _ => {}
                             }

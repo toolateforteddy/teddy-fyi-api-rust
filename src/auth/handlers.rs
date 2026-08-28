@@ -153,6 +153,9 @@ pub async fn login_handler(
     }
 }
 
+// See the note on `require_auth`: the `Err` variant is an axum `Response` by contract,
+// so there is no boxing fix available here either.
+#[allow(clippy::result_large_err)]
 pub async fn refresh_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshRequest>,

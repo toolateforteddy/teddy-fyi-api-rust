@@ -8,6 +8,10 @@ use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 use crate::auth::tokens::Claims;
 use crate::state::AppState;
 
+// The `Err` variant is an axum `Response`, which is what `from_fn_with_state` requires
+// here — boxing it would drop the `IntoResponse` impl that `Result<T, E>` needs on both
+// variants, so this lint has no actionable fix at this call site.
+#[allow(clippy::result_large_err)]
 pub async fn require_auth(
     State(state): State<AppState>,
     req: Request,

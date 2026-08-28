@@ -38,7 +38,7 @@ pub async fn publish_user_event(
     let channel = get_channel_name(user_id);
 
     let mut conn = redis_client.get_multiplexed_async_connection().await?;
-    conn.publish::<_, _, ()>(channel, payload).await?;
+    conn.publish::<_, _, ()>(&channel, payload).await?;
     tracing::info!("Published Redis event to channel {}: {:?}", channel, event);
     Ok(())
 }

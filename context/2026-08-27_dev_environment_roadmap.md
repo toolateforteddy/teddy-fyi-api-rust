@@ -1,4 +1,4 @@
-# Dev Roadmap: teddy-fyi-api-rust (verified 2026-08-27)
+# Dev Roadmap: teddy-fyi-api-rust (verified 2026-08-28)
 
 Everything below was executed and verified on macOS (darwin 24.6.0), not inferred.
 Companion docs: [AGENTS.md](../AGENTS.md), [README.md](../README.md),
@@ -14,7 +14,8 @@ sqlx migrate run   # DATABASE_URL=postgresql://postgres:postgres@localhost:5432/
 make test
 ```
 
-`make test` passes: **55 tests, 0 failures, ~6s**.
+`make test` passes: **60 tests, 0 failures, ~8s**. `cargo clippy -- -D warnings`
+(the CI gate) is clean.
 
 You do **not** need Neon, `neonctl`, npm, or network access for the normal
 build/test loop. `make dev` (the Neon-branching path) is the *other* workflow — see §4.
@@ -134,7 +135,8 @@ Redis assertions in `if let Ok(mut conn)`. Verified by running the suite against
 a closed port — all 4 cache tests still report `ok` while asserting nothing.
 CI has no Redis service, so **the caching layer is effectively untested in CI**.
 Start `teddy-redis-dev` locally if you touch cache logic, or those tests are
-green theater.
+green theater. The SSE tests have the same blind spot for a different reason —
+they never touch Redis at all (§8).
 
 ---
 
@@ -151,6 +153,9 @@ auth/              middleware (require_auth), handlers (login/refresh/logout), t
 routes/sync/       handler.rs  ← the endpoint
                    types.rs    ← wire contract + AppError + AppJson extractor
                    status.rs   ← GET /api/sync/status
+                   stream.rs   ← GET /api/sync/stream (SSE)
+                   publisher.rs← Redis Pub/Sub fan-out behind the SSE stream
+                   models.rs   ← ORPHANED, never declared — see §8
                    grocery/    lists, members, stores, categories, items, item_store_info, remote_mutations
                    todo/       lists, items, remote_mutations
                    config.rs   } ScribbleKeep / ScribbleBox / ScribbleKeepCloud scopes
@@ -168,6 +173,7 @@ dao/, models/      Config/Drawing DAO + typed models — see "dead code" below
 | POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | none (self-authenticating) |
 | POST | `/api/sync` | required |
 | GET | `/api/sync/status` | required |
+| GET | `/api/sync/stream`, `/api/v1/sync/stream` | required |
 | POST | `/api/categorize`, `/api/assign-icon` | required |
 | POST | `/api/lists/invite`, `/api/lists/join` | required |
 | GET | `/api/hc`, `/api/ready` | required |
@@ -220,21 +226,40 @@ the echo path. Touches `types.rs`, `grocery/remote_mutations.rs`,
 `grocery/grocery_item_store_info.rs`, `tests/grocery.rs`.
 
 I regenerated `.sqlx` with `make prepare`, which restored the 68 files a bare
-`cargo sqlx prepare` had deleted. `.sqlx` is now internally consistent at 159
-files: one query deleted, one added, matching the diff. Uncommitted.
+`cargo sqlx prepare` had deleted. `.sqlx` is internally consistent at 159 files:
+one query deleted, one added, matching the diff.
 
-### Two unmerged `janitor/*` branches on origin
+Both remain **uncommitted and deliberately out of this branch** — splitting the
+`.sqlx` delta from the source change that motivates it would leave a query with
+no cache entry and break the offline build, and therefore the deploy.
 
-Both are stacked on ~6 commits that never landed on `main`, so they carry more
-than their titles suggest — including a `.github/workflows/CI.yml`, a
-`code-janitor.yml`, and a lint sweep. Rebase carefully; don't fast-forward.
+### Both `janitor/*` branches have since merged (PRs #1, #2)
 
-* `janitor/add-sync-scope-matching-helper-…` — adds `routes/sync/models.rs`
-  with a `SyncScope` matching helper, replacing the repeated `==` chains.
-* `janitor/fix-store-info-delete-row-not-found-…` — makes store-info DELETE
-  idempotent. Real bug: `grocery_item_store_info.rs` DELETE ends in
-  `... RETURNING version` + `.fetch_one()`, which errors `RowNotFound` and aborts
-  the whole grocery transaction if the row was already hard-deleted.
+They brought `.github/workflows/CI.yml`, `code-janitor.yml`, a lint sweep, and
+an idempotent store-info DELETE — the old `RETURNING version` + `.fetch_one()`
+that aborted the whole grocery transaction on an already-deleted row is fixed.
+
+One of the two didn't fully land: `routes/sync/models.rs` is on disk but **no
+`pub mod models;` declares it**, so it is not compiled — see §8.
+
+### `main` was red for 26 days
+
+`a5e8c2a "Implement the SSE endpoint"` (2026-08-02) was pushed straight to
+`main` and its CI run failed. Nothing ran on `main` afterwards except the
+scheduled Code Janitor, so it went unnoticed until the next pull request
+inherited the breakage through the PR merge commit. Two failures, one masking
+the other:
+
+1. `publisher.rs:41` — `E0382 borrow of moved value: channel`. `channel` was
+   moved into `conn.publish(...)` and then borrowed by the `tracing::info!`
+   on the next line. Fixed by passing `&channel`.
+2. `stream.rs:85` — `clippy::collapsible_match`, fatal under CI's
+   `cargo clippy -- -D warnings`. The `if` inside the match arm is now a match
+   guard. Behaviour is identical: a failing guard falls through to `_ => {}`.
+
+Worth knowing that `CI.yml` runs on `pull_request` as well as `push`, so a PR
+is checked against its *merge* with `main` — a doc-only branch can go red for
+reasons that have nothing to do with it.
 
 ---
 
@@ -258,6 +283,19 @@ than their titles suggest — including a `.github/workflows/CI.yml`, a
   an invalid refresh token deletes *all* the user's sessions; commit 3191de9
   ("Narrower breach mitigation") narrowed every path to deleting the single
   offending session.
+* **`routes/sync/models.rs` is an orphan.** Nothing declares `pub mod models;`,
+  so the file is never compiled: its `SyncScope::includes()` helper is
+  unreachable, the `==` chains in `handler.rs` it was meant to replace are still
+  there, and its own unit test never runs (`cargo test sync_scope` matches 0
+  tests). It also declares a **second, incompatible** `SyncScope` — variants
+  `Habit`/`ScribbleNote` where the live one in `types.rs` has
+  `ScribbleKeepCloud`, and `snake_case` serde where the live one is
+  `SCREAMING_SNAKE_CASE`. Wiring it in as-is would not be a no-op; reconcile the
+  two enums first.
+* **The SSE path has no behavioural test.** All 5 tests in `tests/stream.rs` are
+  pure serialization and header assertions — the Pub/Sub plumbing and the
+  echo-filtering guard in `stream.rs` are never exercised. Same shape of gap as
+  the cache tests above.
 * **Dead code**, invisible to rustc because the `pub use` glob re-exports in the
   module entry files suppress the lint: `dao::{ConfigDao, DrawingDao}` and
   `models::{Config, Drawing}` are referenced only by their own tests — the
@@ -266,14 +304,21 @@ than their titles suggest — including a `.github/workflows/CI.yml`, a
   superseded by `handler.rs` calling the per-domain fetchers directly.
 * **`categorize_item_handler` scopes categories to `"userId" = $1` only**, so a
   user gets no suggestions from categories owned by a shared list they belong to.
-* **Clippy is noisy but harmless**: 62 warnings, zero rustc warnings. Mostly
-  `needless_borrow` (25) and `too_many_arguments` (8 — the `process_*_changes`
-  signatures thread 8-9 out-params). No CI gate on `main` enforces clippy; the
-  unmerged `CI.yml` on the janitor branches would add one.
+* **Clippy's CI gate only covers the binary.** `CI.yml` runs
+  `cargo clippy -- -D warnings`, which checks the bin target only — that is
+  clean. `cargo clippy --all-targets` still reports **30** warnings in test
+  code (25 of them `needless_borrow`), ungated. Zero rustc warnings either way.
 
 ---
 
-## 9. Deploy
+## 9. CI and deploy
+
+Three workflows:
+
+* `CI.yml` — on push **and** `pull_request`. `cargo clippy -- -D warnings`, then
+  `make test` against a `postgres:15` service. **No Redis service**, so §5 applies.
+* `code-janitor.yml` — scheduled; opens the `janitor/*` cleanup PRs.
+* `deploy.yml` — on push to `main`/`master`.
 
 Push to `main`/`master` → `.github/workflows/deploy.yml`: runs `make test`
 against a `postgres:15` service (no Redis), then cargo-chef Docker build with

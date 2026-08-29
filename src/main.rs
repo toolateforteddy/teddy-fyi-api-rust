@@ -49,19 +49,11 @@ async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn init_app_state() -> AppState {
-    let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
-    let web_client_id = std::env::var("GOOGLE_CLIENT_ID_GROCERY_WEB").unwrap_or_default();
-    let scribbleroute_client_id = std::env::var("SCRIBBLEROUTE_API_CLIENT_ID").unwrap_or_default();
-
-    let mut google_client_ids = std::collections::HashSet::new();
-    if !client_id.is_empty() {
-        google_client_ids.insert(client_id);
-    }
-    if !web_client_id.is_empty() {
-        google_client_ids.insert(web_client_id);
-    }
-    if !scribbleroute_client_id.is_empty() {
-        google_client_ids.insert(scribbleroute_client_id);
+    let google_client_ids = auth::client_ids::load_google_client_ids();
+    if google_client_ids.is_empty() {
+        // Not fatal: local dev signs in with `mock.` tokens, which skip the
+        // audience check. In a real deployment this means every login fails.
+        tracing::error!("No Google client IDs configured; set GOOGLE_IOS_CLIENT_IDS");
     }
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");

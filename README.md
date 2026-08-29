@@ -69,6 +69,10 @@ Ensure you have the following environment variables configured:
 * `DATABASE_URL`: Connection string to your database.
 * `JWT_SECRET`: Secret key used for signing JWTs.
 * `GEMINI_API_KEY`: API key for accessing Gemini services.
+* `GOOGLE_IOS_CLIENT_IDS`: Comma-separated client IDs of the iOS apps. Google's iOS sign-in flow issues ID tokens whose `aud` is the app's own client ID, so each of these is also accepted as an audience.
+* `GOOGLE_CLIENT_IDS`: Comma-separated client IDs for everything that is not an iOS app.
+
+  Between them these two form the accepted-audience allowlist, and at least one must be set in a real deployment; local dev can omit both and sign in with `mock.` tokens. The legacy single-value vars `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID_GROCERY_WEB`, and `SCRIBBLEROUTE_API_CLIENT_ID` are still honored.
 
 ### 2. Run with Automated Dev Script
 The easiest way to start development is to run:

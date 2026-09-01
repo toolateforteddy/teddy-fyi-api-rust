@@ -3,6 +3,7 @@ use super::remote_mutations::*;
 use super::todo::*;
 use super::types::*;
 use super::config::*;
+use super::device::*;
 use super::drawing::*;
 use crate::state::AppState;
 use crate::auth::tokens::Claims;
@@ -321,6 +322,24 @@ pub async fn sync_handler(
                 let user_uuid = parse_or_hash_uuid(&claims.sub);
                 let client_uuid = parse_or_hash_uuid(&payload.client_id);
 
+                // The tablet this request speaks for. Registers itself on first sync; a
+                // request without a device_uuid falls back to the account's backfilled one.
+                let request_device = resolve_sync_device(
+                    &mut tx,
+                    &user_uuid,
+                    payload.device_uuid,
+                    payload.device_name.as_deref(),
+                )
+                .await?;
+
+                // ScribbleBox and ScribbleKeep see only their own tablet; the cloud
+                // dashboard reads across every device on the account.
+                let device_filter = if scope == SyncScope::ScribbleKeepCloud {
+                    None
+                } else {
+                    Some(request_device)
+                };
+
                 // Drawings are uploaded under ScribbleBox (legacy) and ScribbleKeep (current).
                 let uploads_drawings =
                     scope == SyncScope::ScribbleBox || scope == SyncScope::ScribbleKeep;
@@ -334,6 +353,8 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            request_device,
+                            device_filter,
                             &payload.drawings,
                             &mut success_drawing_uuids,
                         )
@@ -347,6 +368,8 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            request_device,
+                            device_filter,
                             &payload.drawing_changes,
                             &mut success_ids,
                             &mut upload_status,
@@ -362,6 +385,8 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            request_device,
+                            device_filter,
                             &payload.configs,
                             &mut success_config_uuids,
                         )
@@ -375,6 +400,8 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            request_device,
+                            device_filter,
                             &payload.config_changes,
                             &mut success_ids,
                             &mut upload_status,
@@ -389,13 +416,13 @@ pub async fn sync_handler(
                     || scope == SyncScope::ScribbleKeep
                     || scope == SyncScope::ScribbleKeepCloud
                 {
-                    fetch_remote_config_mutations(&mut tx, &user_uuid, &client_uuid, payload.last_synced_at).await?
+                    fetch_remote_config_mutations(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at).await?
                 } else {
                     vec![]
                 };
 
                 let fetched_drawing = if scope == SyncScope::ScribbleKeepCloud {
-                    fetch_remote_drawing_mutations(&mut tx, &user_uuid, &client_uuid, payload.last_synced_at).await?
+                    fetch_remote_drawing_mutations(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at).await?
                 } else {
                     vec![]
                 };
@@ -414,6 +441,7 @@ pub async fn sync_handler(
                     &mut tx,
                     &user_uuid,
                     &client_uuid,
+                    device_filter,
                     payload.last_synced_at,
                     &success_config_uuids,
                 )
@@ -424,6 +452,7 @@ pub async fn sync_handler(
                         &mut tx,
                         &user_uuid,
                         &client_uuid,
+                        device_filter,
                         payload.last_synced_at,
                         &success_drawing_uuids,
                         scope == SyncScope::ScribbleKeepCloud,
@@ -432,6 +461,8 @@ pub async fn sync_handler(
                 } else {
                     vec![]
                 };
+
+                touch_device(&mut tx, &user_uuid, request_device).await?;
 
                 tx.commit().await?;
 

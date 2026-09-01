@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
 use crate::routes::sync::{
     SyncRequest, SyncScope, ConfigSyncItem, DrawingSyncItem, AppJson, parse_or_hash_uuid
 };
@@ -12,13 +12,15 @@ async fn test_sync_handler_flat_configs(pool: PgPool) {
     let other_client = "client-2";
     let other_client_uuid = parse_or_hash_uuid(other_client);
     let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // 1. Setup DB with remote config
     sqlx::query!(
-        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -34,6 +36,7 @@ async fn test_sync_handler_flat_configs(pool: PgPool) {
     let config_id = uuid::Uuid::new_v4();
     let config_item = ConfigSyncItem {
         id: config_id,
+        device_uuid: None,
         key: "font_size".to_string(),
         value: "14".to_string(),
         sync_state: "PENDING_INSERT".to_string(),
@@ -45,6 +48,8 @@ async fn test_sync_handler_flat_configs(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -86,13 +91,15 @@ async fn test_sync_handler_flat_drawings(pool: PgPool) {
     let other_client = "client-2";
     let other_client_uuid = parse_or_hash_uuid(other_client);
     let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // 1. Setup DB with remote drawing
     sqlx::query!(
-        "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -109,6 +116,7 @@ async fn test_sync_handler_flat_drawings(pool: PgPool) {
     let drawing_item = DrawingSyncItem {
         id: drawing_id,
         user_id: Some(user_uuid.to_string()),
+        device_uuid: None,
         created_at: 1000,
         data: serde_json::json!({ "strokes": [1] }),
         sync_state: "PENDING_INSERT".to_string(),
@@ -120,6 +128,8 @@ async fn test_sync_handler_flat_drawings(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleBox),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -164,6 +174,7 @@ async fn test_sync_handler_flat_drawings_non_uuid_user_id(pool: PgPool) {
     let drawing_item = DrawingSyncItem {
         id: drawing_id,
         user_id: Some("toddler_1".to_string()),
+        device_uuid: None,
         created_at: 1000,
         data: serde_json::json!({ "strokes": [1] }),
         sync_state: "PENDING_INSERT".to_string(),
@@ -175,6 +186,8 @@ async fn test_sync_handler_flat_drawings_non_uuid_user_id(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleBox),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -211,12 +224,14 @@ async fn test_sync_handler_flat_drawings_non_uuid_user_id(pool: PgPool) {
 async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
     let state = setup_state(pool.clone());
     let user_uuid = parse_or_hash_uuid("user-1");
+    let _device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // Drawings now arrive under ScribbleKeep, alongside the configs that scope already carried.
     let drawing_id = uuid::Uuid::new_v4();
     let drawing_item = DrawingSyncItem {
         id: drawing_id,
         user_id: Some("toddler_1".to_string()),
+        device_uuid: None,
         created_at: 1000,
         data: serde_json::json!({ "strokes": [1] }),
         sync_state: "PENDING_INSERT".to_string(),
@@ -228,6 +243,7 @@ async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
     let config_id = uuid::Uuid::new_v4();
     let config_item = ConfigSyncItem {
         id: config_id,
+        device_uuid: None,
         key: "theme".to_string(),
         value: "light".to_string(),
         sync_state: "PENDING_INSERT".to_string(),
@@ -239,6 +255,8 @@ async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
         todo_list_changes: vec![],
         todo_changes: vec![],

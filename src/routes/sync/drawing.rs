@@ -1,12 +1,16 @@
+use crate::routes::sync::device::resolve_item_device;
 use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_drawing_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    request_device: Uuid,
+    device_filter: Option<Uuid>,
     changes: &[DrawingChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
@@ -24,9 +28,11 @@ pub async fn process_drawing_changes(
 
                 if is_need_update {
                     let existing = sqlx::query!(
-                        "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE id = $1 AND user_id = $2",
+                        "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+                         FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                         change_uuid,
-                        user_id
+                        user_id,
+                        device_filter
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
@@ -36,6 +42,7 @@ pub async fn process_drawing_changes(
                             id: row.id,
                             user_id: row.user_id.to_string(),
                             client_uuid: row.client_uuid.to_string(),
+                            device_uuid: Some(row.device_uuid),
                             version: row.version,
                             is_deleted: row.is_deleted,
                             last_modified: row.last_modified,
@@ -48,6 +55,7 @@ pub async fn process_drawing_changes(
                             id: change_id.to_string(),
                             operation_type: OperationType::Update,
                             version: row.version,
+                            device_uuid: Some(row.device_uuid),
                             data: Some(data_val),
                         });
                         success_ids.push(change_id.to_string());
@@ -58,11 +66,23 @@ pub async fn process_drawing_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<DrawingData>(data.clone()) {
                         Ok(item) => {
+                            let device_uuid = resolve_item_device(
+                                tx,
+                                user_id,
+                                change.device_uuid.or(item.device_uuid),
+                                request_device,
+                                "Drawing",
+                                change_id,
+                            )
+                            .await?;
+
                             // Fetch existing drawing from database
                             let existing = sqlx::query!(
-                                "SELECT version, last_modified FROM drawings WHERE id = $1 AND user_id = $2",
+                                "SELECT version, last_modified FROM drawings \
+                                 WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                                 change_uuid,
-                                user_id
+                                user_id,
+                                device_filter
                             )
                             .fetch_optional(&mut **tx)
                             .await?;
@@ -106,9 +126,10 @@ pub async fn process_drawing_changes(
                             );
 
                             sqlx::query!(
-                                "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7::text::sync_state, $8, $9) \
+                                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10) \
                                  ON CONFLICT (id) DO UPDATE SET \
+                                     device_uuid = EXCLUDED.device_uuid, \
                                      client_uuid = EXCLUDED.client_uuid, \
                                      version = EXCLUDED.version, \
                                      is_deleted = EXCLUDED.is_deleted, \
@@ -117,6 +138,7 @@ pub async fn process_drawing_changes(
                                      data = EXCLUDED.data",
                                 change_uuid,
                                 user_id,
+                                device_uuid,
                                 client_id,
                                 next_version,
                                 item.is_deleted,
@@ -142,9 +164,10 @@ pub async fn process_drawing_changes(
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
                     let existing = sqlx::query!(
-                        "SELECT version FROM drawings WHERE id = $1 AND user_id = $2",
+                        "SELECT version FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                         change_uuid,
-                        user_id
+                        user_id,
+                        device_filter
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
@@ -173,9 +196,10 @@ pub async fn process_drawing_changes(
             }
             OperationType::Delete => {
                 let existing = sqlx::query!(
-                    "SELECT version FROM drawings WHERE id = $1 AND user_id = $2",
+                    "SELECT version FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                     change_uuid,
-                    user_id
+                    user_id,
+                    device_filter
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
@@ -210,6 +234,7 @@ pub async fn fetch_remote_drawing_mutations(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
 ) -> Result<Vec<DrawingChangeDelta>, AppError> {
     let mut remote_changes = Vec::new();
@@ -217,13 +242,15 @@ pub async fn fetch_remote_drawing_mutations(
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     let rows = sqlx::query!(
-        "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+        "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
          FROM drawings \
-         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE)",
+         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE) \
+           AND ($5::uuid IS NULL OR device_uuid = $5)",
         user_id,
         last_synced_ms,
         client_id,
-        is_initial_sync
+        is_initial_sync,
+        device_filter
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -233,6 +260,7 @@ pub async fn fetch_remote_drawing_mutations(
             id: row.id,
             user_id: row.user_id.to_string(),
             client_uuid: row.client_uuid.to_string(),
+            device_uuid: Some(row.device_uuid),
             version: row.version,
             is_deleted: row.is_deleted,
             last_modified: row.last_modified,
@@ -251,6 +279,7 @@ pub async fn fetch_remote_drawing_mutations(
                 OperationType::Update
             },
             version: row.version,
+            device_uuid: Some(row.device_uuid),
             data: Some(data_val),
         });
     }
@@ -258,10 +287,13 @@ pub async fn fetch_remote_drawing_mutations(
     Ok(remote_changes)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_drawing_sync_items(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    request_device: Uuid,
+    device_filter: Option<Uuid>,
     items: &[DrawingSyncItem],
     success_uuids: &mut Vec<Uuid>,
 ) -> Result<(), AppError> {
@@ -270,9 +302,10 @@ pub async fn process_drawing_sync_items(
 
         if is_delete {
             let existing = sqlx::query!(
-                "SELECT version FROM drawings WHERE id = $1 AND user_id = $2",
+                "SELECT version FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                 item.id,
-                user_id
+                user_id,
+                device_filter
             )
             .fetch_optional(&mut **tx)
             .await?;
@@ -292,11 +325,23 @@ pub async fn process_drawing_sync_items(
             }
             success_uuids.push(item.id);
         } else {
+            let device_uuid = resolve_item_device(
+                tx,
+                user_id,
+                item.device_uuid,
+                request_device,
+                "Drawing",
+                &item.id.to_string(),
+            )
+            .await?;
+
             // Upsert drawing
             let existing = sqlx::query!(
-                "SELECT version, last_modified FROM drawings WHERE id = $1 AND user_id = $2",
+                "SELECT version, last_modified FROM drawings \
+                 WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                 item.id,
-                user_id
+                user_id,
+                device_filter
             )
             .fetch_optional(&mut **tx)
             .await?;
@@ -335,9 +380,10 @@ pub async fn process_drawing_sync_items(
             );
 
             sqlx::query!(
-                "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7::text::sync_state, $8, $9) \
+                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10) \
                  ON CONFLICT (id) DO UPDATE SET \
+                     device_uuid = EXCLUDED.device_uuid, \
                      client_uuid = EXCLUDED.client_uuid, \
                      version = EXCLUDED.version, \
                      is_deleted = EXCLUDED.is_deleted, \
@@ -346,6 +392,7 @@ pub async fn process_drawing_sync_items(
                      data = EXCLUDED.data",
                 item.id,
                 user_id,
+                device_uuid,
                 client_id,
                 next_version,
                 item.is_deleted,
@@ -363,10 +410,12 @@ pub async fn process_drawing_sync_items(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn fetch_drawings_for_response(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
     success_uuids: &[Uuid],
     include_remote_drawings: bool,
@@ -376,14 +425,16 @@ pub async fn fetch_drawings_for_response(
 
     let items = if include_remote_drawings {
         let rows = sqlx::query!(
-            "SELECT id, user_id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+            "SELECT id, user_id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
              FROM drawings \
-             WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4))",
+             WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4)) \
+               AND ($6::uuid IS NULL OR device_uuid = $6)",
             user_id,
             last_synced_ms,
             client_id,
             success_uuids,
-            is_initial_sync
+            is_initial_sync,
+            device_filter
         )
         .fetch_all(&mut **tx)
         .await?;
@@ -392,6 +443,7 @@ pub async fn fetch_drawings_for_response(
             .map(|row| DrawingSyncItem {
                 id: row.id,
                 user_id: Some(row.user_id.to_string()),
+                device_uuid: Some(row.device_uuid),
                 created_at: row.created_at,
                 data: row.data,
                 sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
@@ -402,7 +454,7 @@ pub async fn fetch_drawings_for_response(
             .collect()
     } else {
         let rows = sqlx::query!(
-            "SELECT id, user_id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+            "SELECT id, user_id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
              FROM drawings \
              WHERE user_id = $1 AND id = ANY($2)",
             user_id,
@@ -415,6 +467,7 @@ pub async fn fetch_drawings_for_response(
             .map(|row| DrawingSyncItem {
                 id: row.id,
                 user_id: Some(row.user_id.to_string()),
+                device_uuid: Some(row.device_uuid),
                 created_at: row.created_at,
                 data: row.data,
                 sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),

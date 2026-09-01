@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
 use crate::routes::sync::{
     SyncRequest, SyncScope, DrawingData, DrawingChangeDelta, ConfigData, ConfigChangeDelta,
     OperationType, AppJson, parse_or_hash_uuid
@@ -13,13 +13,15 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
     let other_client = "client-2";
     let other_client_uuid = parse_or_hash_uuid(other_client);
     let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // 1. Setup DB with a remote config change (should be downloaded)
     sqlx::query!(
-        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -33,10 +35,11 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
 
     // 2. Setup DB with a remote drawing change (should NOT be downloaded by ScribbleBox)
     sqlx::query!(
-        "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -54,6 +57,7 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
         id: drawing_id,
         user_id: user_uuid.to_string(),
         client_uuid: parse_or_hash_uuid("client-1").to_string(),
+        device_uuid: None,
         version: 1,
         is_deleted: false,
         last_modified: Utc::now().timestamp_millis(),
@@ -65,6 +69,8 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleBox),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -79,6 +85,7 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
             id: drawing_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
+            device_uuid: None,
             data: Some(serde_json::to_value(&drawing_data).unwrap()),
         }],
         configs: vec![],
@@ -113,13 +120,15 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
     let other_client = "client-2";
     let other_client_uuid = parse_or_hash_uuid(other_client);
     let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // 1. Setup DB with remote config (downloadable) and drawing (NOT downloadable)
     sqlx::query!(
-        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -132,10 +141,11 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
     .unwrap();
 
     sqlx::query!(
-        "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -153,6 +163,7 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
         id: config_id,
         user_id: user_uuid.to_string(),
         client_uuid: parse_or_hash_uuid("client-1").to_string(),
+        device_uuid: None,
         version: 1,
         is_deleted: false,
         last_modified: Utc::now().timestamp_millis(),
@@ -164,6 +175,8 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -177,6 +190,7 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
             id: config_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
+            device_uuid: None,
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
         drawing_changes: vec![],
@@ -212,13 +226,15 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
     let other_client = "client-2";
     let other_client_uuid = parse_or_hash_uuid(other_client);
     let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // 1. Setup DB with remote config and drawing (BOTH downloadable)
     sqlx::query!(
-        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -231,10 +247,11 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
     .unwrap();
 
     sqlx::query!(
-        "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         other_client_uuid,
         1_i32,
         false,
@@ -252,6 +269,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
         id: config_id,
         user_id: user_uuid.to_string(),
         client_uuid: parse_or_hash_uuid("client-1").to_string(),
+        device_uuid: None,
         version: 1,
         is_deleted: false,
         last_modified: Utc::now().timestamp_millis(),
@@ -263,6 +281,8 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleKeepCloud),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -276,6 +296,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
             id: config_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
+            device_uuid: None,
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
         drawing_changes: vec![],

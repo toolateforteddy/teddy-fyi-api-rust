@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) VALUES ($1, $2, $3, $4, 1, FALSE, $5, 'SYNCED'::sync_state, 'theme', $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7fd308d41e26d85db91dcfd2bb5f8207d10de56614c8211470d2b30baf4081e2"
+}

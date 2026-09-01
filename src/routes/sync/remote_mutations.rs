@@ -58,7 +58,7 @@ pub async fn fetch_remote_mutations(
     {
         let user_uuid = parse_or_hash_uuid(user_id);
         let client_uuid = parse_or_hash_uuid(client_id);
-        fetch_remote_config_mutations(tx, &user_uuid, &client_uuid, last_synced_at).await?
+        fetch_remote_config_mutations(tx, &user_uuid, &client_uuid, None, last_synced_at).await?
     } else {
         vec![]
     };
@@ -66,7 +66,7 @@ pub async fn fetch_remote_mutations(
     let remote_drawing_changes = if scope == SyncScope::ScribbleKeepCloud {
         let user_uuid = parse_or_hash_uuid(user_id);
         let client_uuid = parse_or_hash_uuid(client_id);
-        fetch_remote_drawing_mutations(tx, &user_uuid, &client_uuid, last_synced_at).await?
+        fetch_remote_drawing_mutations(tx, &user_uuid, &client_uuid, None, last_synced_at).await?
     } else {
         vec![]
     };

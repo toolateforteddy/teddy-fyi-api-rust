@@ -194,6 +194,8 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-2".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::Grocery),
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -309,6 +311,8 @@ async fn test_sync_handler_need_update_state_recovery(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-2".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::Grocery),
         todo_list_changes: vec![],
         todo_changes: vec![],

@@ -8,6 +8,7 @@ pub struct Drawing {
     pub id: Uuid,
     pub user_id: Uuid,
     pub client_uuid: Uuid,
+    pub device_uuid: Uuid,
     pub version: i32,
     pub is_deleted: bool,
     pub last_modified: i64,

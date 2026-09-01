@@ -96,6 +96,10 @@ pub struct ConfigChangeDelta {
     #[serde(rename = "type")]
     pub operation_type: OperationType,
     pub version: i32,
+    /// Which tablet this row belongs to. Absent from pre-device clients; such a write
+    /// falls back to the account's backfilled device.
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
     pub data: Option<serde_json::Value>,
 }
 
@@ -105,12 +109,18 @@ pub struct DrawingChangeDelta {
     #[serde(rename = "type")]
     pub operation_type: OperationType,
     pub version: i32,
+    /// Which tablet this row belongs to. Absent from pre-device clients; such a write
+    /// falls back to the account's backfilled device.
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
     pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConfigSyncItem {
     pub id: Uuid,
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
     pub key: String,
     pub value: String,
     #[serde(alias = "syncState", default = "default_sync_state")]
@@ -127,6 +137,8 @@ pub struct DrawingSyncItem {
     pub id: Uuid,
     #[serde(alias = "userId")]
     pub user_id: Option<String>,
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
     #[serde(alias = "createdAt")]
     pub created_at: i64,
     pub data: serde_json::Value,
@@ -155,6 +167,14 @@ pub enum SyncScope {
 pub struct SyncRequest {
     pub last_synced_at: Option<DateTime<Utc>>,
     pub client_id: String,
+    /// The tablet making this request. Absent from pre-device clients, which fall back to
+    /// the account's backfilled device.
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
+    /// Human-readable label for `device_uuid`, generated on the client. Used to register
+    /// the device on its first sync and to keep the stored name current.
+    #[serde(default, alias = "deviceName")]
+    pub device_name: Option<String>,
     #[serde(default)]
     pub scope: Option<SyncScope>,
     #[serde(default, alias = "todoListChanges")]
@@ -230,6 +250,7 @@ pub enum AppError {
     Deserialization(String),
     Gemini(String),
     Forbidden(String),
+    NotFound(String),
     Redis(redis::RedisError),
     Internal(String),
 }
@@ -256,6 +277,10 @@ impl IntoResponse for AppError {
             AppError::Forbidden(err) => {
                 tracing::error!("Forbidden error: {}", err);
                 (StatusCode::FORBIDDEN, err)
+            }
+            AppError::NotFound(err) => {
+                tracing::warn!("Not found: {}", err);
+                (StatusCode::NOT_FOUND, err)
             }
             AppError::Redis(err) => {
                 tracing::error!("Redis error: {:?}", err);
@@ -512,6 +537,8 @@ pub struct ConfigData {
     pub user_id: String,
     #[serde(alias = "clientUuid")]
     pub client_uuid: String,
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
     pub version: i32,
     #[serde(alias = "isDeleted")]
     pub is_deleted: bool,
@@ -530,6 +557,8 @@ pub struct DrawingData {
     pub user_id: String,
     #[serde(alias = "clientUuid")]
     pub client_uuid: String,
+    #[serde(default, alias = "deviceUuid")]
+    pub device_uuid: Option<Uuid>,
     pub version: i32,
     #[serde(alias = "isDeleted")]
     pub is_deleted: bool,

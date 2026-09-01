@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
 use crate::routes::sync::{
     SyncRequest, SyncScope, AppJson, fetch_remote_todo_mutations, fetch_remote_grocery_mutations,
     parse_or_hash_uuid
@@ -35,6 +35,8 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(last_synced),
         client_id: "client-2".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: None, // different client id, so it gets the changes
         todo_list_changes: vec![],
         todo_changes: vec![],
@@ -434,13 +436,15 @@ async fn test_sync_handler_epoch_initial_sync_bypasses_echo(pool: PgPool) {
     let client_id = "client-1";
     let client_uuid = parse_or_hash_uuid(client_id);
     let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
 
     // 1. Insert a config updated by client-1
     sqlx::query!(
-        "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'SYNCED'::sync_state, $7, $8)",
+        "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'SYNCED'::sync_state, $8, $9)",
         uuid::Uuid::new_v4(),
         user_uuid,
+        device_uuid,
         client_uuid,
         1_i32,
         false,
@@ -456,6 +460,8 @@ async fn test_sync_handler_epoch_initial_sync_bypasses_echo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap()),
         client_id: client_id.to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
         todo_list_changes: vec![],
         todo_changes: vec![],

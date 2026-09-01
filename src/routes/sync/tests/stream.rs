@@ -10,6 +10,7 @@ fn test_sync_sse_event_direct_update_serialization() {
         key: "volume".to_string(),
         value: json!(85),
         sender_client_id: Some("client-123".to_string()),
+        device_uuid: None,
     };
 
     let json_str = serde_json::to_string(&event).expect("Serialization failed");
@@ -27,6 +28,7 @@ fn test_sync_sse_event_invalidate_serialization() {
     let event = SyncSseEvent::Invalidate {
         entity: "user_settings".to_string(),
         sender_client_id: Some("client-456".to_string()),
+        device_uuid: None,
     };
 
     let json_str = serde_json::to_string(&event).expect("Serialization failed");
@@ -70,6 +72,7 @@ fn test_echo_filtering_logic() {
         key: "volume".to_string(),
         value: json!(90),
         sender_client_id: Some("client-abc".to_string()),
+        device_uuid: None,
     };
 
     let remote_event = SyncSseEvent::DirectUpdate {
@@ -77,6 +80,7 @@ fn test_echo_filtering_logic() {
         key: "volume".to_string(),
         value: json!(90),
         sender_client_id: Some("client-xyz".to_string()),
+        device_uuid: None,
     };
 
     // Check echo match

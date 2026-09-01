@@ -1,5 +1,6 @@
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use crate::routes::sync::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -11,11 +12,18 @@ pub enum SyncSseEvent {
         value: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         sender_client_id: Option<String>,
+        /// The tablet this update is aimed at. Fan-out is still per user on one channel,
+        /// so a client with several tablets on the account uses this to ignore events for
+        /// the others. Distinct from `sender_client_id`, which suppresses echoes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_uuid: Option<Uuid>,
     },
     Invalidate {
         entity: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         sender_client_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_uuid: Option<Uuid>,
     },
     InitialState {
         entity: String,

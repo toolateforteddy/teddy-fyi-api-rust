@@ -16,6 +16,9 @@ pub use status::*;
 pub mod handler;
 pub use handler::*;
 
+pub mod device;
+pub use device::*;
+
 pub mod config;
 pub use config::*;
 

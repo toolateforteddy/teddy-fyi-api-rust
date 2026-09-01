@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT device_uuid, value FROM configs WHERE user_id = $1 AND key = 'theme' ORDER BY value",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "value",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e900f5300bfe2286a5c00a6aa7d97d39d42429280a9a9137bd5947f486a6ec95"
+}

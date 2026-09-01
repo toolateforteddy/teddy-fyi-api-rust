@@ -34,32 +34,81 @@ pub async fn resolve_sync_device(
     }
 }
 
-/// Resolves the device a single uploaded row belongs to, falling back to the request's
-/// device when the row does not name one.
+/// How a request decides which device an uploaded row belongs to.
+pub enum ItemDeviceRule {
+    /// The request speaks for one tablet. A row that names no device belongs to it, and a
+    /// row naming another device registers that device on first sight.
+    RequestDevice(Uuid),
+    /// The caller manages devices it is not itself running on — the cloud app picks a
+    /// device from a dropdown, so the row names its subject, not the request. Every row
+    /// must name a device, and that device must already be registered to the account:
+    /// the cloud app can only manage tablets that exist, never bring one into being.
+    RowMustName,
+}
+
+/// Resolves the device a single uploaded row belongs to.
 pub async fn resolve_item_device(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     item_device: Option<Uuid>,
-    request_device: Uuid,
+    rule: &ItemDeviceRule,
     entity: &str,
     item_id: &str,
 ) -> Result<Uuid, AppError> {
-    match item_device {
-        Some(device_uuid) if device_uuid == request_device => Ok(device_uuid),
-        Some(device_uuid) => {
+    match (rule, item_device) {
+        (ItemDeviceRule::RequestDevice(request_device), Some(device_uuid))
+            if device_uuid == *request_device =>
+        {
+            Ok(device_uuid)
+        }
+        (ItemDeviceRule::RequestDevice(_), Some(device_uuid)) => {
             ensure_device(tx, user_id, device_uuid, None).await?;
             Ok(device_uuid)
         }
-        None => {
+        (ItemDeviceRule::RequestDevice(request_device), None) => {
             tracing::debug!(
                 "{} {} uploaded without device_uuid; falling back to device {}",
                 entity,
                 item_id,
                 request_device
             );
-            Ok(request_device)
+            Ok(*request_device)
         }
+        (ItemDeviceRule::RowMustName, Some(device_uuid)) => {
+            require_registered_device(tx, user_id, device_uuid).await?;
+            Ok(device_uuid)
+        }
+        (ItemDeviceRule::RowMustName, None) => Err(AppError::BadRequest(format!(
+            "{} {} must carry a device_uuid",
+            entity, item_id
+        ))),
     }
+}
+
+/// Asserts the device is already registered to this account, without creating it.
+///
+/// Unknown ids and ids owned by another account are reported identically, so this cannot
+/// be used to probe which device ids exist.
+pub async fn require_registered_device(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    device_uuid: Uuid,
+) -> Result<(), AppError> {
+    let owned = sqlx::query!(
+        "SELECT 1 as one FROM devices WHERE id = $1 AND user_id = $2",
+        device_uuid,
+        user_id
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if owned.is_none() {
+        return Err(AppError::NotFound(format!(
+            "Device {} is not registered to this account",
+            device_uuid
+        )));
+    }
+    Ok(())
 }
 
 /// Registers `device_uuid` under `user_id` when it is new, and rejects it when it is

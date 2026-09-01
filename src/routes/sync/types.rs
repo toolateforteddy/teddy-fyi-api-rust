@@ -248,6 +248,8 @@ pub enum AppError {
     Database(sqlx::Error),
     Serialization(serde_json::Error),
     Deserialization(String),
+    /// A syntactically valid payload the server refuses on its own rules.
+    BadRequest(String),
     Gemini(String),
     Forbidden(String),
     NotFound(String),
@@ -269,6 +271,10 @@ impl IntoResponse for AppError {
             AppError::Deserialization(err) => {
                 tracing::error!("Deserialization error: {}", err);
                 (StatusCode::BAD_REQUEST, format!("Invalid JSON payload: {}", err))
+            }
+            AppError::BadRequest(err) => {
+                tracing::warn!("Bad request: {}", err);
+                (StatusCode::BAD_REQUEST, err)
             }
             AppError::Gemini(err) => {
                 tracing::error!("Gemini error: {}", err);

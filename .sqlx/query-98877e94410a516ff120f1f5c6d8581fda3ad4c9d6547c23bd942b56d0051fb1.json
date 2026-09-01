@@ -1,24 +1,23 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+  "query": "SELECT 1 as one FROM devices WHERE id = $1 AND user_id = $2",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "version",
+        "name": "one",
         "type_info": "Int4"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
-      false
+      null
     ]
   },
-  "hash": "9061784a381b9074e49b1daa2a655b5e181c9be62c54af6a0ef643272a7eb347"
+  "hash": "98877e94410a516ff120f1f5c6d8581fda3ad4c9d6547c23bd942b56d0051fb1"
 }

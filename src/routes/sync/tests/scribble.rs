@@ -263,13 +263,15 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
     .await
     .unwrap();
 
-    // 2. Prepare request: uploads config (ScribbleKeepCloud only publishes configs)
+    // 2. Prepare request: uploads config (ScribbleKeepCloud only publishes configs).
+    //    Cloud writes must name the device they belong to; the dashboard is not a tablet
+    //    and gets no fallback device of its own.
     let config_id = uuid::Uuid::new_v4();
     let config_data = ConfigData {
         id: config_id,
         user_id: user_uuid.to_string(),
         client_uuid: parse_or_hash_uuid("client-1").to_string(),
-        device_uuid: None,
+        device_uuid: Some(device_uuid),
         version: 1,
         is_deleted: false,
         last_modified: Utc::now().timestamp_millis(),
@@ -296,7 +298,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
             id: config_id.to_string(),
             operation_type: OperationType::Insert,
             version: 1,
-            device_uuid: None,
+            device_uuid: Some(device_uuid),
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
         drawing_changes: vec![],

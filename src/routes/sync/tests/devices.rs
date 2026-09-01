@@ -374,3 +374,287 @@ fn test_device_uuid_wire_format() {
     .unwrap();
     assert_eq!(absent.device_uuid, None);
 }
+
+/// A tablet that pairs under a new device id keeps sending the config row ids it already
+/// had. `configs.id` is a global primary key while the duplicate-id lookup was scoped to
+/// the request's device, so the write used to insert a taken id and trip `configs_pkey`
+/// with a 500 instead of giving the new device its own row.
+#[sqlx::test]
+async fn test_config_id_already_held_by_another_device(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_a = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+    let device_b = seed_device(&pool, user_uuid, "SleepyRiverJourney").await;
+
+    let shared_id = Uuid::new_v4();
+
+    let mut item_a = config_item("bug_catcher_num_colors", "4");
+    item_a.id = shared_id;
+    let _ = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-a",
+            Some(device_a),
+            SyncScope::ScribbleKeep,
+            vec![item_a],
+            vec![],
+        )),
+    )
+    .await
+    .expect("device A sync should succeed");
+
+    let mut item_b = config_item("bug_catcher_num_colors", "7");
+    item_b.id = shared_id;
+    let res_b = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-b",
+            Some(device_b),
+            SyncScope::ScribbleKeep,
+            vec![item_b],
+            vec![],
+        )),
+    )
+    .await
+    .expect("device B sync should succeed rather than trip configs_pkey")
+    .0;
+
+    // Device A keeps its row and its id; device B gets its own row under a free id.
+    let rows = sqlx::query!(
+        "SELECT id, device_uuid, value FROM configs \
+         WHERE user_id = $1 AND key = 'bug_catcher_num_colors' ORDER BY value",
+        user_uuid
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].value, "4");
+    assert_eq!(rows[0].device_uuid, device_a);
+    assert_eq!(rows[0].id, shared_id);
+    assert_eq!(rows[1].value, "7");
+    assert_eq!(rows[1].device_uuid, device_b);
+    assert_ne!(rows[1].id, shared_id);
+
+    // The response tells device B the id its row actually landed on.
+    let echoed = res_b
+        .configs
+        .iter()
+        .find(|c| c.key == "bug_catcher_num_colors")
+        .expect("device B should see its own config back");
+    assert_eq!(echoed.device_uuid, Some(device_b));
+    assert_eq!(echoed.value, "7");
+    assert_ne!(echoed.id, shared_id);
+}
+
+/// The cloud dashboard is not a tablet, so a config write from it that names no device has
+/// no correct home — the server must say so rather than filing it against whichever device
+/// happens to be oldest on the account.
+#[sqlx::test]
+async fn test_cloud_config_write_without_device_is_rejected(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_a = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+
+    let err = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-cloud",
+            None,
+            SyncScope::ScribbleKeepCloud,
+            vec![config_item("theme", "dark")],
+            vec![],
+        )),
+    )
+    .await
+    .expect_err("a cloud config write without a device_uuid should be rejected");
+
+    match err {
+        AppError::BadRequest(msg) => assert!(msg.contains("device_uuid"), "got: {msg}"),
+        other => panic!("expected BadRequest, got {other:?}"),
+    }
+
+    // Nothing was written against the account's existing device.
+    let count = sqlx::query!(
+        "SELECT COUNT(*) as count FROM configs WHERE user_id = $1 AND device_uuid = $2",
+        user_uuid,
+        device_a
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .count
+    .unwrap();
+    assert_eq!(count, 0);
+}
+
+/// Reading across devices does not license writing across them: a cloud write naming
+/// device B must not land on device A's row even when it carries A's row id.
+#[sqlx::test]
+async fn test_cloud_write_cannot_reassign_another_devices_row(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_a = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+    let device_b = seed_device(&pool, user_uuid, "SleepyRiverJourney").await;
+
+    let shared_id = Uuid::new_v4();
+    let mut item_a = config_item("theme", "dark");
+    item_a.id = shared_id;
+    item_a.device_uuid = Some(device_a);
+    let _ = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-cloud",
+            None,
+            SyncScope::ScribbleKeepCloud,
+            vec![item_a],
+            vec![],
+        )),
+    )
+    .await
+    .expect("seeding device A's row via cloud should succeed");
+
+    // Same row id, but claimed for device B.
+    let mut item_b = config_item("theme", "light");
+    item_b.id = shared_id;
+    item_b.device_uuid = Some(device_b);
+    let _ = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-cloud",
+            None,
+            SyncScope::ScribbleKeepCloud,
+            vec![item_b],
+            vec![],
+        )),
+    )
+    .await
+    .expect("cloud write for device B should succeed");
+
+    // Device A keeps its row untouched; device B gets its own under a free id.
+    let rows = sqlx::query!(
+        "SELECT id, device_uuid, value FROM configs \
+         WHERE user_id = $1 AND key = 'theme' ORDER BY value",
+        user_uuid
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].value, "dark");
+    assert_eq!(rows[0].device_uuid, device_a);
+    assert_eq!(rows[0].id, shared_id);
+    assert_eq!(rows[1].value, "light");
+    assert_eq!(rows[1].device_uuid, device_b);
+    assert_ne!(rows[1].id, shared_id);
+}
+
+/// The cloud app's whole purpose: one request writing to several devices it manages, each
+/// row landing on the device it names rather than on whatever host the app runs from.
+#[sqlx::test]
+async fn test_cloud_writes_each_row_to_the_device_it_names(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_a = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+    let device_b = seed_device(&pool, user_uuid, "SleepyRiverJourney").await;
+
+    let mut for_a = config_item("theme", "dark");
+    for_a.device_uuid = Some(device_a);
+    let mut for_b = config_item("theme", "light");
+    for_b.device_uuid = Some(device_b);
+
+    let _ = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-cloud",
+            None,
+            SyncScope::ScribbleKeepCloud,
+            vec![for_a, for_b],
+            vec![],
+        )),
+    )
+    .await
+    .expect("cloud should write to both managed devices in one request");
+
+    let rows = sqlx::query!(
+        "SELECT device_uuid, value FROM configs \
+         WHERE user_id = $1 AND key = 'theme' ORDER BY value",
+        user_uuid
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].value, "dark");
+    assert_eq!(rows[0].device_uuid, device_a);
+    assert_eq!(rows[1].value, "light");
+    assert_eq!(rows[1].device_uuid, device_b);
+}
+
+/// The cloud app can only manage tablets that already exist. A stale or mistyped device id
+/// is an error, not an invitation to register a device that never synced.
+#[sqlx::test]
+async fn test_cloud_write_to_unregistered_device_is_rejected(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+    let stranger = Uuid::new_v4();
+
+    let mut item = config_item("theme", "dark");
+    item.device_uuid = Some(stranger);
+
+    let err = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-cloud",
+            None,
+            SyncScope::ScribbleKeepCloud,
+            vec![item],
+            vec![],
+        )),
+    )
+    .await
+    .expect_err("an unregistered device id should be rejected");
+
+    match err {
+        AppError::NotFound(msg) => assert!(msg.contains(&stranger.to_string()), "got: {msg}"),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+
+    // No phantom device was conjured, and nothing was written.
+    let devices = sqlx::query!("SELECT COUNT(*) as count FROM devices WHERE user_id = $1", user_uuid)
+        .fetch_one(&pool).await.unwrap().count.unwrap();
+    assert_eq!(devices, 1);
+    let configs = sqlx::query!("SELECT COUNT(*) as count FROM configs WHERE user_id = $1", user_uuid)
+        .fetch_one(&pool).await.unwrap().count.unwrap();
+    assert_eq!(configs, 0);
+}
+
+/// A cloud sync is not a tablet checking in: it must not register the host it runs on, nor
+/// mark a managed device as recently seen.
+#[sqlx::test]
+async fn test_cloud_sync_registers_and_touches_no_device(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_a = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+    let cloud_host = Uuid::new_v4();
+
+    let mut item = config_item("theme", "dark");
+    item.device_uuid = Some(device_a);
+
+    // The request names the cloud app's own host; it is not a tablet on this account.
+    let _ = sync_handler(
+        State(setup_state(pool.clone())),
+        AppJson(request(
+            "client-cloud",
+            Some(cloud_host),
+            SyncScope::ScribbleKeepCloud,
+            vec![item],
+            vec![],
+        )),
+    )
+    .await
+    .expect("cloud sync should succeed");
+
+    // The host was not registered as a device.
+    let rows = sqlx::query!("SELECT id, last_seen_at FROM devices WHERE user_id = $1", user_uuid)
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, device_a);
+    // And editing device A remotely did not mark it as having synced.
+    assert!(rows[0].last_seen_at.is_none());
+}

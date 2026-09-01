@@ -321,7 +321,14 @@ pub async fn sync_handler(
                 let user_uuid = parse_or_hash_uuid(&claims.sub);
                 let client_uuid = parse_or_hash_uuid(&payload.client_id);
 
-                if scope == SyncScope::ScribbleBox {
+                // Drawings are uploaded under ScribbleBox (legacy) and ScribbleKeep (current).
+                let uploads_drawings =
+                    scope == SyncScope::ScribbleBox || scope == SyncScope::ScribbleKeep;
+                // Configs are uploaded under the Keep scopes.
+                let uploads_configs = scope == SyncScope::ScribbleKeep
+                    || scope == SyncScope::ScribbleKeepCloud;
+
+                if uploads_drawings {
                     if !payload.drawings.is_empty() {
                         process_drawing_sync_items(
                             &mut tx,
@@ -347,8 +354,9 @@ pub async fn sync_handler(
                         )
                         .await?;
                     }
-                } else {
-                    // ScribbleKeep or ScribbleKeepCloud
+                }
+
+                if uploads_configs {
                     if !payload.configs.is_empty() {
                         process_config_sync_items(
                             &mut tx,
@@ -411,7 +419,7 @@ pub async fn sync_handler(
                 )
                 .await?;
 
-                let response_drawings = if scope == SyncScope::ScribbleKeepCloud || (scope == SyncScope::ScribbleBox && !success_drawing_uuids.is_empty()) {
+                let response_drawings = if scope == SyncScope::ScribbleKeepCloud || (uploads_drawings && !success_drawing_uuids.is_empty()) {
                     fetch_drawings_for_response(
                         &mut tx,
                         &user_uuid,
@@ -497,16 +505,19 @@ pub async fn sync_handler(
 
             // Update specific scopes for the requesting user
             let has_todo = !payload.todo_list_changes.is_empty() || !payload.todo_changes.is_empty();
-            let has_scribble_box = !payload.drawing_changes.is_empty() || !payload.drawings.is_empty();
-            let has_scribble_keep = !payload.config_changes.is_empty() || !payload.configs.is_empty();
+            let has_drawings = !payload.drawing_changes.is_empty() || !payload.drawings.is_empty();
+            let has_configs = !payload.config_changes.is_empty() || !payload.configs.is_empty();
 
             if has_todo {
                 let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Todo", claims.sub), &ts_str, 86400).await;
             }
-            if has_scribble_box {
+            // Drawings can now arrive under either the Box or Keep scope, but only the
+            // Box and KeepCloud status queries look at drawings, so mark those keys.
+            if has_drawings {
                 let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleBox", claims.sub), &ts_str, 86400).await;
+                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleKeepCloud", claims.sub), &ts_str, 86400).await;
             }
-            if has_scribble_keep {
+            if has_configs {
                 let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleKeep", claims.sub), &ts_str, 86400).await;
                 let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleKeepCloud", claims.sub), &ts_str, 86400).await;
             }

@@ -3,6 +3,7 @@ pub mod state;
 pub mod auth;
 pub mod models;
 pub mod dao;
+pub mod jobs;
 
 use axum::{
     extract::State,
@@ -16,14 +17,20 @@ use sqlx::postgres::PgPoolOptions;
 use state::AppState;
 use std::sync::Arc;
 
-async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
+/// Connects the pool without touching the schema. Split out from [`init_postgres`] so the
+/// `reap-stale-users` job can reach the database without running migrations of its own.
+async fn connect_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")?;
 
     // 2. Spin up the centralized thread connection pool
-    let pool = PgPoolOptions::new()
+    Ok(PgPoolOptions::new()
         .max_connections(5)
         .connect(&database_url)
-        .await?;
+        .await?)
+}
+
+async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
+    let pool = connect_postgres().await?;
 
     // 3. FORCE RUN OUTSTANDING MIGRATIONS ON STARTUP
     // This looks at our local `/migrations` folder and updates Neon instantly
@@ -75,11 +82,43 @@ async fn init_app_state() -> AppState {
     }
 }
 
+/// One sweep of the stale-account reaper, then exit. Deliberately does not build an
+/// [`AppState`]: the job needs the database and Redis, and none of the auth or AI secrets.
+async fn run_reaper() {
+    let pool = connect_postgres()
+        .await
+        .expect("Failed to connect to PostgreSQL");
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://cache-svc:6379".to_string());
+    let redis_client = redis::Client::open(redis_url).expect("Invalid Redis URL");
+
+    let config = jobs::reap_stale_users::ReapConfig::from_env();
+    match jobs::reap_stale_users::reap_stale_users(&pool, &redis_client, &config).await {
+        Ok(_) => {}
+        Err(err) => {
+            tracing::error!("Stale account sweep failed: {:?}", err);
+            std::process::exit(1);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize structured JSON logging
     tracing_subscriber::fmt().json().init();
 
+    // No subcommand serves the API; the CronJob passes `reap-stale-users`.
+    match std::env::args().nth(1).as_deref() {
+        None => serve().await,
+        Some("reap-stale-users") => run_reaper().await,
+        Some(other) => {
+            eprintln!("unknown subcommand '{}'; expected 'reap-stale-users'", other);
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn serve() {
     let app_state = init_app_state().await;
 
     // api routes group

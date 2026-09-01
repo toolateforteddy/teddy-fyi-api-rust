@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM grocery_list_members WHERE \"userId\" = $1 OR \"listId\" = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0dcffdc8b6821e032822c8edee4363d57e6788a72c925dc412001bda64be9914"
+}

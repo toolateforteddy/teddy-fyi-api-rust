@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO categories (id, name, position, \"userId\", \"listId\", version, is_deleted, sync_state)\n           VALUES ($1, $2, 0, $3, $4, 1, FALSE, 'SYNCED')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f8581a79c59e56ef6098b4eba117cd3ea92b9138b8b46ff81ecbd15e375ee14"
+}

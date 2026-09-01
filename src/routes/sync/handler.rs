@@ -324,22 +324,40 @@ pub async fn sync_handler(
                 let user_uuid = parse_or_hash_uuid(&claims.sub);
                 let client_uuid = parse_or_hash_uuid(&payload.client_id);
 
-                // The tablet this request speaks for. Registers itself on first sync; a
-                // request without a device_uuid falls back to the account's backfilled one.
-                let request_device = resolve_sync_device(
-                    &mut tx,
-                    &user_uuid,
-                    payload.device_uuid,
-                    payload.device_name.as_deref(),
-                )
-                .await?;
-
-                // ScribbleBox and ScribbleKeep see only their own tablet; the cloud
-                // dashboard reads across every device on the account.
-                let device_filter = if scope == SyncScope::ScribbleKeepCloud {
+                // A tablet scope speaks for its own device: it registers itself on first
+                // sync, and a request without a device_uuid falls back to the account's
+                // backfilled one.
+                //
+                // The cloud app does not. It runs on a machine that is not one of these
+                // tablets and edits whichever device the user picked from its dropdown, so
+                // it registers nothing, claims no device of its own, and names its subject
+                // in each row instead. Any device_uuid on the request itself would be the
+                // host it happens to run on, which is not what is being written to.
+                let request_device = if scope == SyncScope::ScribbleKeepCloud {
+                    tracing::debug!(
+                        "Cloud sync for user {} from client {}; device comes from each row",
+                        user_uuid,
+                        client_uuid
+                    );
                     None
                 } else {
-                    Some(request_device)
+                    Some(
+                        resolve_sync_device(
+                            &mut tx,
+                            &user_uuid,
+                            payload.device_uuid,
+                            payload.device_name.as_deref(),
+                        )
+                        .await?,
+                    )
+                };
+
+                // ScribbleBox and ScribbleKeep see only their own tablet; the cloud app
+                // reads across every device on the account.
+                let device_filter = request_device;
+                let device_rule = match request_device {
+                    Some(device) => ItemDeviceRule::RequestDevice(device),
+                    None => ItemDeviceRule::RowMustName,
                 };
 
                 // Drawings are uploaded under ScribbleBox (legacy) and ScribbleKeep (current).
@@ -355,7 +373,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
-                            request_device,
+                            &device_rule,
                             device_filter,
                             &payload.drawings,
                             &mut success_drawing_uuids,
@@ -370,7 +388,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
-                            request_device,
+                            &device_rule,
                             device_filter,
                             &payload.drawing_changes,
                             &mut success_ids,
@@ -387,8 +405,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
-                            request_device,
-                            device_filter,
+                            &device_rule,
                             &payload.configs,
                             &mut success_config_uuids,
                             &mut config_broadcasts,
@@ -403,7 +420,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
-                            request_device,
+                            &device_rule,
                             device_filter,
                             &payload.config_changes,
                             &mut success_ids,
@@ -466,7 +483,11 @@ pub async fn sync_handler(
                     vec![]
                 };
 
-                touch_device(&mut tx, &user_uuid, request_device).await?;
+                // Only a tablet's own sync counts as the tablet being seen; the cloud
+                // app editing a device remotely does not mean that device checked in.
+                if let Some(device) = request_device {
+                    touch_device(&mut tx, &user_uuid, device).await?;
+                }
 
                 tx.commit().await?;
 

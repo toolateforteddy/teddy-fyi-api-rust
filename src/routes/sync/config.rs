@@ -1,4 +1,4 @@
-use crate::routes::sync::device::resolve_item_device;
+use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
 use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -35,7 +35,6 @@ async fn resolve_config_target(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     device_uuid: Uuid,
-    device_filter: Option<Uuid>,
     submitted_id: Uuid,
     key: &str,
 ) -> Result<ConfigTarget, AppError> {
@@ -48,17 +47,32 @@ async fn resolve_config_target(
     .fetch_optional(&mut **tx)
     .await?;
 
+    // Writes are strictly device-scoped, cloud dashboard included: a row is only ever
+    // resolved within the device it belongs to, so a write can never reassign another
+    // tablet's row to the writer. Reading across devices is a separate concern — see the
+    // `device_filter` the fetch functions below still take.
     let by_id = sqlx::query!(
         "SELECT id, version, last_modified FROM configs \
-         WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+         WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
         submitted_id,
         user_id,
-        device_filter
+        device_uuid
     )
     .fetch_optional(&mut **tx)
     .await?;
 
-    let id_taken = by_id.is_some();
+    // `id` is a global PRIMARY KEY, but both lookups above are scoped to this user and,
+    // outside the cloud dashboard, to this device — so neither sees a row on the account's
+    // other tablet that already holds the submitted id. Probe globally, or the write below
+    // trips `configs_pkey`.
+    let id_taken = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM configs WHERE id = $1)",
+        submitted_id
+    )
+    .fetch_one(&mut **tx)
+    .await?
+    .unwrap_or(false);
+
     let existing = by_key
         .map(|row| ExistingConfig {
             id: row.id,
@@ -74,7 +88,12 @@ async fn resolve_config_target(
         });
 
     let new_id = match (&existing, id_taken) {
+        // The write lands on a row we already own, so leave that row's id alone rather
+        // than renaming it onto an id another row holds.
         (Some(row), true) => row.id,
+        // Nothing of ours to update, and the submitted id belongs to some other row: this
+        // device gets its own copy of the key under an id that is actually free.
+        (None, true) => Uuid::new_v4(),
         _ => submitted_id,
     };
 
@@ -156,7 +175,7 @@ pub async fn process_config_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
-    request_device: Uuid,
+    device_rule: &ItemDeviceRule,
     device_filter: Option<Uuid>,
     changes: &[ConfigChangeDelta],
     success_ids: &mut Vec<String>,
@@ -218,7 +237,7 @@ pub async fn process_config_changes(
                                 tx,
                                 user_id,
                                 change.device_uuid.or(item.device_uuid),
-                                request_device,
+                                device_rule,
                                 "Config",
                                 change_id,
                             )
@@ -228,7 +247,6 @@ pub async fn process_config_changes(
                                 tx,
                                 user_id,
                                 device_uuid,
-                                device_filter,
                                 change_uuid,
                                 &item.key,
                             )
@@ -303,11 +321,21 @@ pub async fn process_config_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
+                    let device_uuid = resolve_item_device(
+                        tx,
+                        user_id,
+                        change.device_uuid,
+                        device_rule,
+                        "Config",
+                        change_id,
+                    )
+                    .await?;
+
                     let existing = sqlx::query!(
-                        "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+                        "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
                         change_uuid,
                         user_id,
-                        device_filter
+                        device_uuid
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
@@ -316,12 +344,14 @@ pub async fn process_config_changes(
                         let next_version = row.version + 1;
                         tracing::info!("Applying config metadata update for {}. Next version: {}", change_id, next_version);
                         let written = sqlx::query!(
-                            "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' WHERE id = $3 AND user_id = $4 \
+                            "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' \
+                             WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
                              RETURNING device_uuid, is_deleted, last_modified, key, value",
                             next_version,
                             client_id,
                             change_uuid,
-                            user_id
+                            user_id,
+                            device_uuid
                         )
                         .fetch_optional(&mut **tx)
                         .await?;
@@ -352,11 +382,21 @@ pub async fn process_config_changes(
                 }
             }
             OperationType::Delete => {
+                let device_uuid = resolve_item_device(
+                    tx,
+                    user_id,
+                    change.device_uuid,
+                    device_rule,
+                    "Config",
+                    change_id,
+                )
+                .await?;
+
                 let existing = sqlx::query!(
-                    "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+                    "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
                     change_uuid,
                     user_id,
-                    device_filter
+                    device_uuid
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
@@ -366,12 +406,13 @@ pub async fn process_config_changes(
                     tracing::info!("Applying config soft-delete for {}. Next version: {}", change_id, next_version);
                     let written = sqlx::query!(
                         "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE' \
-                         WHERE id = $3 AND user_id = $4 \
+                         WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
                          RETURNING device_uuid, last_modified, key, value",
                         next_version,
                         client_id,
                         change_uuid,
-                        user_id
+                        user_id,
+                        device_uuid
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
@@ -467,8 +508,7 @@ pub async fn process_config_sync_items(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
-    request_device: Uuid,
-    device_filter: Option<Uuid>,
+    device_rule: &ItemDeviceRule,
     items: &[ConfigSyncItem],
     success_uuids: &mut Vec<Uuid>,
     broadcasts: &mut Vec<ConfigBroadcast>,
@@ -476,12 +516,24 @@ pub async fn process_config_sync_items(
     for item in items {
         let is_delete = item.is_deleted || item.sync_state == "PENDING_DELETE";
 
+        // Resolved before the split: a delete is a write too, so it is device-scoped on
+        // the same terms as an upsert.
+        let device_uuid = resolve_item_device(
+            tx,
+            user_id,
+            item.device_uuid,
+            device_rule,
+            "Config",
+            &item.id.to_string(),
+        )
+        .await?;
+
         if is_delete {
             let existing = sqlx::query!(
-                "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+                "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
                 item.id,
                 user_id,
-                device_filter
+                device_uuid
             )
             .fetch_optional(&mut **tx)
             .await?;
@@ -492,12 +544,13 @@ pub async fn process_config_sync_items(
                 let written = sqlx::query!(
                     "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, \
                          sync_state = 'PENDING_DELETE'::text::sync_state \
-                     WHERE id = $3 AND user_id = $4 \
+                     WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
                      RETURNING device_uuid, last_modified, key, value",
                     next_version,
                     client_id,
                     item.id,
-                    user_id
+                    user_id,
+                    device_uuid
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
@@ -520,18 +573,8 @@ pub async fn process_config_sync_items(
             }
             success_uuids.push(item.id);
         } else {
-            let device_uuid = resolve_item_device(
-                tx,
-                user_id,
-                item.device_uuid,
-                request_device,
-                "Config",
-                &item.id.to_string(),
-            )
-            .await?;
-
             let target =
-                resolve_config_target(tx, user_id, device_uuid, device_filter, item.id, &item.key)
+                resolve_config_target(tx, user_id, device_uuid, item.id, &item.key)
                     .await?;
 
             let next_version = if let Some(ref row) = target.existing {

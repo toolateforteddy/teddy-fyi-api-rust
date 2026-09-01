@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, version, last_modified FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+  "query": "SELECT id, device_uuid, value FROM configs WHERE user_id = $1 AND key = 'bug_catcher_num_colors' ORDER BY value",
   "describe": {
     "columns": [
       {
@@ -10,19 +10,17 @@
       },
       {
         "ordinal": 1,
-        "name": "version",
-        "type_info": "Int4"
+        "name": "device_uuid",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "last_modified",
-        "type_info": "Int8"
+        "name": "value",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
         "Uuid"
       ]
     },
@@ -32,5 +30,5 @@
       false
     ]
   },
-  "hash": "405d22d158b599d5c3d3af27c5d23178f8eec89760419051e4950827a4c609ee"
+  "hash": "3c7758f2fc770053d6e63af8b33cb389f63b26c6837d2c36f5568eb31d9c1125"
 }

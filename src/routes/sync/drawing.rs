@@ -1,4 +1,4 @@
-use crate::routes::sync::device::resolve_item_device;
+use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
 use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -9,7 +9,7 @@ pub async fn process_drawing_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
-    request_device: Uuid,
+    device_rule: &ItemDeviceRule,
     device_filter: Option<Uuid>,
     changes: &[DrawingChangeDelta],
     success_ids: &mut Vec<String>,
@@ -70,7 +70,7 @@ pub async fn process_drawing_changes(
                                 tx,
                                 user_id,
                                 change.device_uuid.or(item.device_uuid),
-                                request_device,
+                                device_rule,
                                 "Drawing",
                                 change_id,
                             )
@@ -125,6 +125,9 @@ pub async fn process_drawing_changes(
                                 item.is_deleted
                             );
 
+                            // Drawing ids are hashed from client strings when they are not UUIDs, so the same
+                            // id can arrive from two different accounts. Without the guard on the conflict
+                            // target, one account's upload would overwrite the other's row.
                             sqlx::query!(
                                 "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
                                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10) \
@@ -135,7 +138,8 @@ pub async fn process_drawing_changes(
                                      is_deleted = EXCLUDED.is_deleted, \
                                      last_modified = EXCLUDED.last_modified, \
                                      sync_state = EXCLUDED.sync_state, \
-                                     data = EXCLUDED.data",
+                                     data = EXCLUDED.data \
+                                 WHERE drawings.user_id = EXCLUDED.user_id",
                                 change_uuid,
                                 user_id,
                                 device_uuid,
@@ -292,7 +296,7 @@ pub async fn process_drawing_sync_items(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
-    request_device: Uuid,
+    device_rule: &ItemDeviceRule,
     device_filter: Option<Uuid>,
     items: &[DrawingSyncItem],
     success_uuids: &mut Vec<Uuid>,
@@ -329,7 +333,7 @@ pub async fn process_drawing_sync_items(
                 tx,
                 user_id,
                 item.device_uuid,
-                request_device,
+                device_rule,
                 "Drawing",
                 &item.id.to_string(),
             )
@@ -379,6 +383,9 @@ pub async fn process_drawing_sync_items(
                 item.is_deleted
             );
 
+            // Drawing ids are hashed from client strings when they are not UUIDs, so the same
+            // id can arrive from two different accounts. Without the guard on the conflict
+            // target, one account's upload would overwrite the other's row.
             sqlx::query!(
                 "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10) \
@@ -389,7 +396,8 @@ pub async fn process_drawing_sync_items(
                      is_deleted = EXCLUDED.is_deleted, \
                      last_modified = EXCLUDED.last_modified, \
                      sync_state = EXCLUDED.sync_state, \
-                     data = EXCLUDED.data",
+                     data = EXCLUDED.data \
+                 WHERE drawings.user_id = EXCLUDED.user_id",
                 item.id,
                 user_id,
                 device_uuid,

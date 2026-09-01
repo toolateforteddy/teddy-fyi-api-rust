@@ -62,7 +62,7 @@ pub async fn login_handler(
             );
             return Err(StatusCode::UNAUTHORIZED);
         }
-        (payload.user_id.clone(), google_payload.email.clone())
+        (google_payload.sub, google_payload.email.clone())
     };
 
     let duration_secs = payload.expires_in_secs.unwrap_or(86400);

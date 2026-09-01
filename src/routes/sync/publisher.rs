@@ -50,3 +50,27 @@ pub async fn publish_user_event(
     tracing::info!("Published Redis event to channel {}: {:?}", channel, event);
     Ok(())
 }
+
+/// Computes the Redis Pub/Sub channel for one device on an account.
+///
+/// Config lives per `(user, device)`, so its updates go here rather than on the account-wide
+/// channel: a stream that named a device only wants that tablet's writes.
+pub fn get_device_channel_name(user_id: &str, device_uuid: &Uuid) -> String {
+    format!("sync_channel:{}:device:{}", user_id, device_uuid)
+}
+
+/// Publishes an SSE event to a single device's Pub/Sub channel after DB mutations commit.
+pub async fn publish_device_event(
+    redis_client: &redis::Client,
+    user_id: &str,
+    device_uuid: &Uuid,
+    event: &SyncSseEvent,
+) -> Result<(), AppError> {
+    let payload = serde_json::to_string(event)?;
+    let channel = get_device_channel_name(user_id, device_uuid);
+
+    let mut conn = redis_client.get_multiplexed_async_connection().await?;
+    conn.publish::<_, _, ()>(&channel, payload).await?;
+    tracing::info!("Published Redis event to channel {}: {:?}", channel, event);
+    Ok(())
+}

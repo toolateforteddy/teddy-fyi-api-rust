@@ -2,3 +2,4 @@ pub mod sync;
 pub mod ai;
 pub mod lists;
 pub mod devices;
+pub mod user;

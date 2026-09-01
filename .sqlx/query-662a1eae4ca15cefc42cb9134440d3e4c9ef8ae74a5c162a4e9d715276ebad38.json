@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM categories WHERE \"userId\" = $1 OR \"listId\" = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "662a1eae4ca15cefc42cb9134440d3e4c9ef8ae74a5c162a4e9d715276ebad38"
+}

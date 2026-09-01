@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", \"listId\", version, is_deleted, sync_state)\n           VALUES ($1, $2, 0, TRUE, $3, $4, 1, FALSE, 'SYNCED')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8d3fbb03f95b24ac4e4ff8d7b57e838b5fbfe059234d70a3c0423f37a6f9f8f2"
+}

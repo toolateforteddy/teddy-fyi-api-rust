@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM stores WHERE \"userId\" = $1 OR \"listId\" = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "94a34789ee2eac7d3f8ce44496612382af463a0b49cd0ffb181808173cdc6e05"
+}

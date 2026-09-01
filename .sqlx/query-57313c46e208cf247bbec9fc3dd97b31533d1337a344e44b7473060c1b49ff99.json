@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM grocery_lists WHERE \"ownerId\" = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "57313c46e208cf247bbec9fc3dd97b31533d1337a344e44b7473060c1b49ff99"
+}

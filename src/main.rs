@@ -94,6 +94,7 @@ async fn main() {
         .route("/devices", axum::routing::get(routes::devices::list_devices_handler))
         .route("/devices", axum::routing::post(routes::devices::register_device_handler))
         .route("/devices/:id", axum::routing::patch(routes::devices::rename_device_handler))
+        .route("/user/data", axum::routing::delete(routes::user::delete_user_data_handler))
         .route("/lists/invite", axum::routing::post(routes::lists::invite_handler))
         .route("/lists/join", axum::routing::post(routes::lists::join_handler))
         .route("/hc", get(|| async { "OK" }))

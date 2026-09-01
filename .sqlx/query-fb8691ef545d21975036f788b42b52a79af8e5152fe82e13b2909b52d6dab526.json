@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT \"userId\" FROM grocery_list_members WHERE \"listId\" = ANY($1) AND \"userId\" <> $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "userId",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fb8691ef545d21975036f788b42b52a79af8e5152fe82e13b2909b52d6dab526"
+}

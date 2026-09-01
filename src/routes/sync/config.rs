@@ -4,6 +4,12 @@ use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+/// A config row this request wrote, paired with the device whose stream should hear about it.
+pub struct ConfigBroadcast {
+    pub device_uuid: Uuid,
+    pub item: ConfigSyncItem,
+}
+
 /// A config row already on the server that an incoming write should land on.
 struct ExistingConfig {
     id: Uuid,
@@ -107,6 +113,7 @@ async fn write_config(
     last_modified: i64,
     key: &str,
     value: &str,
+    broadcasts: &mut Vec<ConfigBroadcast>,
 ) -> Result<(), AppError> {
     if let Some(ref existing) = target.existing {
         sqlx::query!(
@@ -146,6 +153,20 @@ async fn write_config(
         .execute(&mut **tx)
         .await?;
     }
+
+    broadcasts.push(ConfigBroadcast {
+        device_uuid,
+        item: ConfigSyncItem {
+            id: target.new_id,
+            device_uuid: Some(device_uuid),
+            key: key.to_string(),
+            value: value.to_string(),
+            sync_state: "SYNCED".to_string(),
+            version,
+            is_deleted,
+            last_modified,
+        },
+    });
     Ok(())
 }
 
@@ -160,6 +181,7 @@ pub async fn process_config_changes(
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
     remote_changes: &mut Vec<ConfigChangeDelta>,
+    broadcasts: &mut Vec<ConfigBroadcast>,
 ) -> Result<(), AppError> {
     for change in changes {
         let change_id = &change.id;
@@ -282,6 +304,7 @@ pub async fn process_config_changes(
                                 item.last_modified,
                                 &item.key,
                                 &item.value,
+                                broadcasts,
                             )
                             .await?;
 
@@ -320,17 +343,34 @@ pub async fn process_config_changes(
                     if let Some(row) = existing {
                         let next_version = row.version + 1;
                         tracing::info!("Applying config metadata update for {}. Next version: {}", change_id, next_version);
-                        sqlx::query!(
+                        let written = sqlx::query!(
                             "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' \
-                             WHERE id = $3 AND user_id = $4 AND device_uuid = $5",
+                             WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
+                             RETURNING device_uuid, is_deleted, last_modified, key, value",
                             next_version,
                             client_id,
                             change_uuid,
                             user_id,
                             device_uuid
                         )
-                        .execute(&mut **tx)
+                        .fetch_optional(&mut **tx)
                         .await?;
+
+                        if let Some(row) = written {
+                            broadcasts.push(ConfigBroadcast {
+                                device_uuid: row.device_uuid,
+                                item: ConfigSyncItem {
+                                    id: change_uuid,
+                                    device_uuid: Some(row.device_uuid),
+                                    key: row.key,
+                                    value: row.value,
+                                    sync_state: "SYNCED".to_string(),
+                                    version: next_version,
+                                    is_deleted: row.is_deleted,
+                                    last_modified: row.last_modified,
+                                },
+                            });
+                        }
 
                         upload_status.push(SuccessResult {
                             id: change_id.to_string(),
@@ -364,17 +404,34 @@ pub async fn process_config_changes(
                 if let Some(row) = existing {
                     let next_version = row.version + 1;
                     tracing::info!("Applying config soft-delete for {}. Next version: {}", change_id, next_version);
-                    sqlx::query!(
+                    let written = sqlx::query!(
                         "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE' \
-                         WHERE id = $3 AND user_id = $4 AND device_uuid = $5",
+                         WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
+                         RETURNING device_uuid, last_modified, key, value",
                         next_version,
                         client_id,
                         change_uuid,
                         user_id,
                         device_uuid
                     )
-                    .execute(&mut **tx)
+                    .fetch_optional(&mut **tx)
                     .await?;
+
+                    if let Some(row) = written {
+                        broadcasts.push(ConfigBroadcast {
+                            device_uuid: row.device_uuid,
+                            item: ConfigSyncItem {
+                                id: change_uuid,
+                                device_uuid: Some(row.device_uuid),
+                                key: row.key,
+                                value: row.value,
+                                sync_state: "PENDING_DELETE".to_string(),
+                                version: next_version,
+                                is_deleted: true,
+                                last_modified: row.last_modified,
+                            },
+                        });
+                    }
 
                     upload_status.push(SuccessResult {
                         id: change_id.to_string(),
@@ -454,6 +511,7 @@ pub async fn process_config_sync_items(
     device_rule: &ItemDeviceRule,
     items: &[ConfigSyncItem],
     success_uuids: &mut Vec<Uuid>,
+    broadcasts: &mut Vec<ConfigBroadcast>,
 ) -> Result<(), AppError> {
     for item in items {
         let is_delete = item.is_deleted || item.sync_state == "PENDING_DELETE";
@@ -483,17 +541,35 @@ pub async fn process_config_sync_items(
             if let Some(row) = existing {
                 let next_version = row.version + 1;
                 tracing::info!("Applying config soft-delete for {}. Next version: {}", item.id, next_version);
-                sqlx::query!(
-                    "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE'::text::sync_state \
-                     WHERE id = $3 AND user_id = $4 AND device_uuid = $5",
+                let written = sqlx::query!(
+                    "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, \
+                         sync_state = 'PENDING_DELETE'::text::sync_state \
+                     WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
+                     RETURNING device_uuid, last_modified, key, value",
                     next_version,
                     client_id,
                     item.id,
                     user_id,
                     device_uuid
                 )
-                .execute(&mut **tx)
+                .fetch_optional(&mut **tx)
                 .await?;
+
+                if let Some(row) = written {
+                    broadcasts.push(ConfigBroadcast {
+                        device_uuid: row.device_uuid,
+                        item: ConfigSyncItem {
+                            id: item.id,
+                            device_uuid: Some(row.device_uuid),
+                            key: row.key,
+                            value: row.value,
+                            sync_state: "PENDING_DELETE".to_string(),
+                            version: next_version,
+                            is_deleted: true,
+                            last_modified: row.last_modified,
+                        },
+                    });
+                }
             }
             success_uuids.push(item.id);
         } else {
@@ -547,6 +623,7 @@ pub async fn process_config_sync_items(
                 item.last_modified,
                 &item.key,
                 &item.value,
+                broadcasts,
             )
             .await?;
 
@@ -559,6 +636,41 @@ pub async fn process_config_sync_items(
         }
     }
     Ok(())
+}
+
+/// Every live config on the account, or on one device when `device_filter` names one.
+///
+/// This is the snapshot an SSE stream opens with: the state that the `DIRECT_UPDATE` events
+/// following it are deltas against. Deleted rows are left out, since a stream that has seen
+/// nothing yet has nothing to retract.
+pub async fn fetch_config_snapshot(
+    pool: &sqlx::PgPool,
+    user_id: &Uuid,
+    device_filter: Option<Uuid>,
+) -> Result<Vec<ConfigSyncItem>, AppError> {
+    let rows = sqlx::query!(
+        "SELECT id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
+         FROM configs \
+         WHERE user_id = $1 AND is_deleted = FALSE AND ($2::uuid IS NULL OR device_uuid = $2)",
+        user_id,
+        device_filter
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ConfigSyncItem {
+            id: row.id,
+            device_uuid: Some(row.device_uuid),
+            key: row.key,
+            value: row.value,
+            sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
+            version: row.version,
+            is_deleted: row.is_deleted,
+            last_modified: row.last_modified,
+        })
+        .collect())
 }
 
 pub async fn fetch_configs_for_response(

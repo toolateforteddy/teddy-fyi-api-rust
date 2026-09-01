@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE'::text::sync_state WHERE id = $3 AND user_id = $4 AND device_uuid = $5 RETURNING device_uuid, last_modified, key, value",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_modified",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "value",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "80ab460a87dd06b299533b102e1a160926cac402e7a083861c3bb60d63ad5ab0"
+}

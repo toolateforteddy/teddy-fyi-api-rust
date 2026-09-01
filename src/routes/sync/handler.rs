@@ -5,6 +5,7 @@ use super::types::*;
 use super::config::*;
 use super::device::*;
 use super::drawing::*;
+use super::publisher::{publish_device_event, SyncSseEvent};
 use crate::state::AppState;
 use crate::auth::tokens::Claims;
 use axum::{
@@ -317,6 +318,7 @@ pub async fn sync_handler(
                 let mut remote_config_changes = Vec::new();
                 let mut remote_drawing_changes = Vec::new();
                 let mut success_config_uuids = Vec::new();
+                let mut config_broadcasts = Vec::new();
                 let mut success_drawing_uuids = Vec::new();
 
                 let user_uuid = parse_or_hash_uuid(&claims.sub);
@@ -389,6 +391,7 @@ pub async fn sync_handler(
                             device_filter,
                             &payload.configs,
                             &mut success_config_uuids,
+                            &mut config_broadcasts,
                         )
                         .await?;
                         for uuid in &success_config_uuids {
@@ -406,6 +409,7 @@ pub async fn sync_handler(
                             &mut success_ids,
                             &mut upload_status,
                             &mut remote_config_changes,
+                            &mut config_broadcasts,
                         )
                         .await?;
                     }
@@ -466,9 +470,9 @@ pub async fn sync_handler(
 
                 tx.commit().await?;
 
-                Ok::<_, AppError>((success_ids, upload_status, remote_config_changes, remote_drawing_changes, response_configs, response_drawings))
+                Ok::<_, AppError>((success_ids, upload_status, remote_config_changes, remote_drawing_changes, response_configs, response_drawings, config_broadcasts))
             } else {
-                Ok((vec![], vec![], vec![], vec![], vec![], vec![]))
+                Ok((vec![], vec![], vec![], vec![], vec![], vec![], vec![]))
             }
         }
     };
@@ -500,6 +504,35 @@ pub async fn sync_handler(
     let remote_drawing_changes = config_drawing_res.3;
     let response_configs = config_drawing_res.4;
     let response_drawings = config_drawing_res.5;
+    let config_broadcasts = config_drawing_res.6;
+
+    // Fan each config write out to its own device's Pub/Sub channel, so an SSE stream that
+    // named that device sees the change without waiting for its next sync poll. Publishing
+    // happens after the transaction commits, so a listener that reacts by syncing reads the
+    // row that was just written. A Redis outage must not fail the sync, so failures only log.
+    for broadcast in &config_broadcasts {
+        let event = SyncSseEvent::DirectUpdate {
+            entity: "config".to_string(),
+            key: broadcast.item.key.clone(),
+            value: serde_json::to_value(&broadcast.item)?,
+            sender_client_id: Some(payload.client_id.clone()),
+            device_uuid: Some(broadcast.device_uuid),
+        };
+        if let Err(err) = publish_device_event(
+            &state.redis_client,
+            &claims.sub,
+            &broadcast.device_uuid,
+            &event,
+        )
+        .await
+        {
+            tracing::warn!(
+                "Failed to publish config event for device {}: {:?}",
+                broadcast.device_uuid,
+                err
+            );
+        }
+    }
 
     let has_grocery = !payload.grocery_list_changes.is_empty()
         || !payload.grocery_list_member_changes.is_empty()

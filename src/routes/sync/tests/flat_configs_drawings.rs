@@ -206,3 +206,77 @@ async fn test_sync_handler_flat_drawings_non_uuid_user_id(pool: PgPool) {
         .unwrap();
     assert_eq!(row.user_id, user_uuid);
 }
+
+#[sqlx::test]
+async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+
+    // Drawings now arrive under ScribbleKeep, alongside the configs that scope already carried.
+    let drawing_id = uuid::Uuid::new_v4();
+    let drawing_item = DrawingSyncItem {
+        id: drawing_id,
+        user_id: Some("toddler_1".to_string()),
+        created_at: 1000,
+        data: serde_json::json!({ "strokes": [1] }),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let config_id = uuid::Uuid::new_v4();
+    let config_item = ConfigSyncItem {
+        id: config_id,
+        key: "theme".to_string(),
+        value: "light".to_string(),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        scope: Some(SyncScope::ScribbleKeep),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![config_item],
+        drawings: vec![drawing_item],
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    // The uploaded drawing is echoed back, and no remote drawings leak into the Keep scope.
+    let returned_ids: Vec<uuid::Uuid> = res.drawings.iter().map(|d| d.id).collect();
+    assert!(returned_ids.contains(&drawing_id));
+    assert_eq!(res.drawings.len(), 1);
+
+    // Both the drawing and the config landed in the DB under the parent's user id.
+    let drawing_owner = sqlx::query!("SELECT user_id FROM drawings WHERE id = $1", drawing_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .user_id;
+    assert_eq!(drawing_owner, user_uuid);
+
+    let config_count = sqlx::query!("SELECT count(*) FROM configs WHERE id = $1", config_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(config_count, 1);
+}

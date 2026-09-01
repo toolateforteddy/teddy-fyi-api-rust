@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4))",
+  "query": "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
   "describe": {
     "columns": [
       {
@@ -15,45 +15,55 @@
       },
       {
         "ordinal": 2,
+        "name": "device_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "client_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "is_deleted",
         "type_info": "Bool"
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "last_modified",
         "type_info": "Int8"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
-        "name": "created_at",
-        "type_info": "Int8"
+        "ordinal": 8,
+        "name": "key",
+        "type_info": "Text"
       },
       {
-        "ordinal": 7,
-        "name": "data",
-        "type_info": "Jsonb"
+        "ordinal": 9,
+        "name": "value",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Int8",
         "Uuid",
-        "UuidArray",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
+      false,
+      false,
       false,
       false,
       false,
@@ -64,5 +74,5 @@
       false
     ]
   },
-  "hash": "fdd1caae952542b8f668200f8b6f0d1eba7fc9d92fa57263a0a40b84ae718c55"
+  "hash": "f2a275d5e08ef0388adff215eea884d66ec860b58370cefb495a589672a675b7"
 }

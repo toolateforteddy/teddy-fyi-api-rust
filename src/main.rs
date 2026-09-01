@@ -91,6 +91,9 @@ async fn main() {
         .route("/categorize", axum::routing::post(routes::ai::handlers::categorize_item_handler))
 
         .route("/assign-icon", axum::routing::post(routes::ai::handlers::assign_todo_icon_handler))
+        .route("/devices", axum::routing::get(routes::devices::list_devices_handler))
+        .route("/devices", axum::routing::post(routes::devices::register_device_handler))
+        .route("/devices/:id", axum::routing::patch(routes::devices::rename_device_handler))
         .route("/lists/invite", axum::routing::post(routes::lists::invite_handler))
         .route("/lists/join", axum::routing::post(routes::lists::join_handler))
         .route("/hc", get(|| async { "OK" }))

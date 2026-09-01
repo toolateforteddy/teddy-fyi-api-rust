@@ -11,7 +11,7 @@ impl ConfigDao {
         user_id: Uuid,
     ) -> Result<Option<Config>, sqlx::Error> {
         sqlx::query_as::<_, Config>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
              FROM configs WHERE id = $1 AND user_id = $2"
         )
         .bind(id)
@@ -27,7 +27,7 @@ impl ConfigDao {
         user_id: Uuid,
     ) -> Result<Option<Config>, sqlx::Error> {
         sqlx::query_as::<_, Config>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
              FROM configs WHERE key = $1 AND user_id = $2"
         )
         .bind(key)
@@ -42,7 +42,7 @@ impl ConfigDao {
         user_id: Uuid,
     ) -> Result<Vec<Config>, sqlx::Error> {
         sqlx::query_as::<_, Config>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
              FROM configs WHERE user_id = $1 AND is_deleted = FALSE"
         )
         .bind(user_id)
@@ -57,7 +57,7 @@ impl ConfigDao {
         client_uuid: Uuid,
     ) -> Result<Vec<Config>, sqlx::Error> {
         sqlx::query_as::<_, Config>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
              FROM configs \
              WHERE user_id = $1 AND client_uuid = $2 AND sync_state != 'SYNCED'"
         )
@@ -80,12 +80,13 @@ impl ConfigDao {
             None => {
                 // Config doesn't exist yet, insert directly
                 sqlx::query_as::<_, Config>(
-                    "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-                     RETURNING id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value"
+                    "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                     RETURNING id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value"
                 )
                 .bind(incoming.id)
                 .bind(user_id)
+                .bind(incoming.device_uuid)
                 .bind(incoming.client_uuid)
                 .bind(incoming.version)
                 .bind(incoming.is_deleted)
@@ -117,10 +118,11 @@ impl ConfigDao {
 
                 sqlx::query_as::<_, Config>(
                     "UPDATE configs \
-                     SET client_uuid = $1, version = $2, is_deleted = $3, last_modified = $4, sync_state = $5, value = $6 \
-                     WHERE id = $7 AND user_id = $8 \
-                     RETURNING id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value"
+                     SET device_uuid = $1, client_uuid = $2, version = $3, is_deleted = $4, last_modified = $5, sync_state = $6, value = $7 \
+                     WHERE id = $8 AND user_id = $9 \
+                     RETURNING id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value"
                 )
+                .bind(incoming.device_uuid)
                 .bind(incoming.client_uuid)
                 .bind(next_version)
                 .bind(incoming.is_deleted)
@@ -151,7 +153,7 @@ impl ConfigDao {
                 "UPDATE configs \
                  SET is_deleted = TRUE, version = $1, last_modified = $2, client_uuid = $3, sync_state = $4 \
                  WHERE id = $5 AND user_id = $6 \
-                 RETURNING id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value"
+                 RETURNING id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value"
             )
             .bind(next_version)
             .bind(epoch_millis)

@@ -11,7 +11,7 @@ impl DrawingDao {
         user_id: Uuid,
     ) -> Result<Option<Drawing>, sqlx::Error> {
         sqlx::query_as::<_, Drawing>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data \
              FROM drawings WHERE id = $1 AND user_id = $2"
         )
         .bind(id)
@@ -26,7 +26,7 @@ impl DrawingDao {
         user_id: Uuid,
     ) -> Result<Vec<Drawing>, sqlx::Error> {
         sqlx::query_as::<_, Drawing>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data \
              FROM drawings WHERE user_id = $1 AND is_deleted = FALSE"
         )
         .bind(user_id)
@@ -41,7 +41,7 @@ impl DrawingDao {
         client_uuid: Uuid,
     ) -> Result<Vec<Drawing>, sqlx::Error> {
         sqlx::query_as::<_, Drawing>(
-            "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data \
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data \
              FROM drawings \
              WHERE user_id = $1 AND client_uuid = $2 AND sync_state != 'SYNCED'"
         )
@@ -64,12 +64,13 @@ impl DrawingDao {
             None => {
                 // Drawing doesn't exist yet, insert directly
                 sqlx::query_as::<_, Drawing>(
-                    "INSERT INTO drawings (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-                     RETURNING id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data"
+                    "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                     RETURNING id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data"
                 )
                 .bind(incoming.id)
                 .bind(user_id)
+                .bind(incoming.device_uuid)
                 .bind(incoming.client_uuid)
                 .bind(incoming.version)
                 .bind(incoming.is_deleted)
@@ -101,10 +102,11 @@ impl DrawingDao {
 
                 sqlx::query_as::<_, Drawing>(
                     "UPDATE drawings \
-                     SET client_uuid = $1, version = $2, is_deleted = $3, last_modified = $4, sync_state = $5, data = $6 \
-                     WHERE id = $7 AND user_id = $8 \
-                     RETURNING id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data"
+                     SET device_uuid = $1, client_uuid = $2, version = $3, is_deleted = $4, last_modified = $5, sync_state = $6, data = $7 \
+                     WHERE id = $8 AND user_id = $9 \
+                     RETURNING id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data"
                 )
+                .bind(incoming.device_uuid)
                 .bind(incoming.client_uuid)
                 .bind(next_version)
                 .bind(incoming.is_deleted)
@@ -135,7 +137,7 @@ impl DrawingDao {
                 "UPDATE drawings \
                  SET is_deleted = TRUE, version = $1, last_modified = $2, client_uuid = $3, sync_state = $4 \
                  WHERE id = $5 AND user_id = $6 \
-                 RETURNING id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data"
+                 RETURNING id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data"
             )
             .bind(next_version)
             .bind(epoch_millis)

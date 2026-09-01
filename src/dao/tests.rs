@@ -8,6 +8,7 @@ async fn test_config_dao_lifecycle(pool: PgPool) {
     let user_1 = Uuid::new_v4();
     let user_2 = Uuid::new_v4();
     let client_1 = Uuid::new_v4();
+    let device_1 = Uuid::new_v4();
     let config_id = Uuid::new_v4();
 
     // 1. Insert a new config for user_1
@@ -15,6 +16,7 @@ async fn test_config_dao_lifecycle(pool: PgPool) {
         id: config_id,
         user_id: user_1,
         client_uuid: client_1,
+        device_uuid: device_1,
         version: 1,
         is_deleted: false,
         last_modified: 1000,
@@ -85,12 +87,14 @@ async fn test_config_dao_lifecycle(pool: PgPool) {
 async fn test_drawing_dao_lifecycle(pool: PgPool) {
     let user_1 = Uuid::new_v4();
     let client_1 = Uuid::new_v4();
+    let device_1 = Uuid::new_v4();
     let drawing_id = Uuid::new_v4();
 
     let drawing = Drawing {
         id: drawing_id,
         user_id: user_1,
         client_uuid: client_1,
+        device_uuid: device_1,
         version: 1,
         is_deleted: false,
         last_modified: 1000,

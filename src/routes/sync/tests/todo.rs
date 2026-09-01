@@ -22,6 +22,8 @@ async fn test_sync_handler_insert_todo_list(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: None,
         todo_list_changes: vec![TodoListChangeDelta {
             id: "list-1".to_string(),
@@ -76,6 +78,8 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
@@ -118,6 +122,8 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-2".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
@@ -181,6 +187,8 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-2".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: None,
         todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
@@ -262,6 +270,8 @@ async fn test_sync_handler_scope_todo(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::Todo),
         todo_list_changes: vec![],
         todo_changes: vec![],

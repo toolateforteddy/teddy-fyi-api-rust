@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE id = $1 AND user_id = $2",
+  "query": "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE) AND ($5::uuid IS NULL OR device_uuid = $5)",
   "describe": {
     "columns": [
       {
@@ -15,47 +15,56 @@
       },
       {
         "ordinal": 2,
-        "name": "client_uuid",
+        "name": "device_uuid",
         "type_info": "Uuid"
       },
       {
         "ordinal": 3,
+        "name": "client_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "is_deleted",
         "type_info": "Bool"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "last_modified",
         "type_info": "Int8"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
-        "name": "key",
-        "type_info": "Text"
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Int8"
       },
       {
-        "ordinal": 8,
-        "name": "value",
-        "type_info": "Text"
+        "ordinal": 9,
+        "name": "data",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
+        "Int8",
+        "Uuid",
+        "Bool",
         "Uuid"
       ]
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -67,5 +76,5 @@
       false
     ]
   },
-  "hash": "976f2c7cad0eb0aea04179083f279dd958dc15257b9143b8a0ad782753eca5df"
+  "hash": "651669f31d6eaef7871a7008772e145b0b9015f4a2ce50838c00edcdffd864aa"
 }

@@ -1,12 +1,142 @@
+use crate::routes::sync::device::resolve_item_device;
 use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+/// A config row already on the server that an incoming write should land on.
+struct ExistingConfig {
+    id: Uuid,
+    version: i32,
+    last_modified: i64,
+}
+
+/// Where an incoming config write should land.
+///
+/// The unique key is `(user_id, device_uuid, key)`, so a row can already exist either
+/// under the id the client sent or under that key with a different id — two clients that
+/// independently created the same key produce exactly that. Resolving both up front lets
+/// the write reconcile the id instead of tripping the constraint.
+struct ConfigTarget {
+    existing: Option<ExistingConfig>,
+    /// The id the row carries after the write. The client's id is adopted when it is free;
+    /// otherwise the server's id stands, because changing it would collide with the row
+    /// that already holds it.
+    new_id: Uuid,
+}
+
+async fn resolve_config_target(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    device_uuid: Uuid,
+    device_filter: Option<Uuid>,
+    submitted_id: Uuid,
+    key: &str,
+) -> Result<ConfigTarget, AppError> {
+    let by_key = sqlx::query!(
+        "SELECT id, version, last_modified FROM configs WHERE user_id = $1 AND device_uuid = $2 AND key = $3",
+        user_id,
+        device_uuid,
+        key
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let by_id = sqlx::query!(
+        "SELECT id, version, last_modified FROM configs \
+         WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+        submitted_id,
+        user_id,
+        device_filter
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let id_taken = by_id.is_some();
+    let existing = by_key
+        .map(|row| ExistingConfig {
+            id: row.id,
+            version: row.version,
+            last_modified: row.last_modified,
+        })
+        .or_else(|| {
+            by_id.map(|row| ExistingConfig {
+                id: row.id,
+                version: row.version,
+                last_modified: row.last_modified,
+            })
+        });
+
+    let new_id = match (&existing, id_taken) {
+        (Some(row), true) => row.id,
+        _ => submitted_id,
+    };
+
+    Ok(ConfigTarget { existing, new_id })
+}
+
+/// Applies a resolved config write: updates the row the target points at, or inserts.
+#[allow(clippy::too_many_arguments)]
+async fn write_config(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    client_id: &Uuid,
+    device_uuid: Uuid,
+    target: &ConfigTarget,
+    version: i32,
+    is_deleted: bool,
+    last_modified: i64,
+    key: &str,
+    value: &str,
+) -> Result<(), AppError> {
+    if let Some(ref existing) = target.existing {
+        sqlx::query!(
+            "UPDATE configs SET id = $1, device_uuid = $2, client_uuid = $3, version = $4, \
+                 is_deleted = $5, last_modified = $6, sync_state = $7::text::sync_state, \
+                 key = $8, value = $9 \
+             WHERE id = $10 AND user_id = $11",
+            target.new_id,
+            device_uuid,
+            client_id,
+            version,
+            is_deleted,
+            last_modified,
+            "SYNCED",
+            key,
+            value,
+            existing.id,
+            user_id
+        )
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query!(
+            "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10)",
+            target.new_id,
+            user_id,
+            device_uuid,
+            client_id,
+            version,
+            is_deleted,
+            last_modified,
+            "SYNCED",
+            key,
+            value
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn process_config_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    request_device: Uuid,
+    device_filter: Option<Uuid>,
     changes: &[ConfigChangeDelta],
     success_ids: &mut Vec<String>,
     upload_status: &mut Vec<SuccessResult>,
@@ -24,9 +154,11 @@ pub async fn process_config_changes(
 
                 if is_need_update {
                     let existing = sqlx::query!(
-                        "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value FROM configs WHERE id = $1 AND user_id = $2",
+                        "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
+                         FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                         change_uuid,
-                        user_id
+                        user_id,
+                        device_filter
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
@@ -36,6 +168,7 @@ pub async fn process_config_changes(
                             id: row.id,
                             user_id: row.user_id.to_string(),
                             client_uuid: row.client_uuid.to_string(),
+                            device_uuid: Some(row.device_uuid),
                             version: row.version,
                             is_deleted: row.is_deleted,
                             last_modified: row.last_modified,
@@ -48,6 +181,7 @@ pub async fn process_config_changes(
                             id: change_id.to_string(),
                             operation_type: OperationType::Update,
                             version: row.version,
+                            device_uuid: Some(row.device_uuid),
                             data: Some(data_val),
                         });
                         success_ids.push(change_id.to_string());
@@ -58,16 +192,27 @@ pub async fn process_config_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<ConfigData>(data.clone()) {
                         Ok(item) => {
-                            // Fetch existing config from database
-                            let existing = sqlx::query!(
-                                "SELECT version, last_modified, value FROM configs WHERE id = $1 AND user_id = $2",
-                                change_uuid,
-                                user_id
+                            let device_uuid = resolve_item_device(
+                                tx,
+                                user_id,
+                                change.device_uuid.or(item.device_uuid),
+                                request_device,
+                                "Config",
+                                change_id,
                             )
-                            .fetch_optional(&mut **tx)
                             .await?;
 
-                            let next_version = if let Some(ref row) = existing {
+                            let target = resolve_config_target(
+                                tx,
+                                user_id,
+                                device_uuid,
+                                device_filter,
+                                change_uuid,
+                                &item.key,
+                            )
+                            .await?;
+
+                            let next_version = if let Some(ref row) = target.existing {
                                 if item.version == row.version {
                                     row.version + 1
                                 } else if item.version < row.version {
@@ -100,34 +245,26 @@ pub async fn process_config_changes(
                             };
 
                             tracing::info!(
-                                "Applying config upsert for {} (key: {}). Version: {}, is_deleted: {}",
+                                "Applying config upsert for {} (key: {}, device: {}). Version: {}, is_deleted: {}",
                                 change_id,
                                 item.key,
+                                device_uuid,
                                 next_version,
                                 item.is_deleted
                             );
 
-                            sqlx::query!(
-                                "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7::text::sync_state, $8, $9) \
-                                 ON CONFLICT (id) DO UPDATE SET \
-                                     client_uuid = EXCLUDED.client_uuid, \
-                                     version = EXCLUDED.version, \
-                                     is_deleted = EXCLUDED.is_deleted, \
-                                     last_modified = EXCLUDED.last_modified, \
-                                     sync_state = EXCLUDED.sync_state, \
-                                     value = EXCLUDED.value",
-                                change_uuid,
+                            write_config(
+                                tx,
                                 user_id,
                                 client_id,
+                                device_uuid,
+                                &target,
                                 next_version,
                                 item.is_deleted,
                                 item.last_modified,
-                                "SYNCED",
-                                item.key,
-                                item.value
+                                &item.key,
+                                &item.value,
                             )
-                            .execute(&mut **tx)
                             .await?;
 
                             upload_status.push(SuccessResult {
@@ -144,9 +281,10 @@ pub async fn process_config_changes(
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
                     let existing = sqlx::query!(
-                        "SELECT version FROM configs WHERE id = $1 AND user_id = $2",
+                        "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                         change_uuid,
-                        user_id
+                        user_id,
+                        device_filter
                     )
                     .fetch_optional(&mut **tx)
                     .await?;
@@ -175,9 +313,10 @@ pub async fn process_config_changes(
             }
             OperationType::Delete => {
                 let existing = sqlx::query!(
-                    "SELECT version FROM configs WHERE id = $1 AND user_id = $2",
+                    "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                     change_uuid,
-                    user_id
+                    user_id,
+                    device_filter
                 )
                 .fetch_optional(&mut **tx)
                 .await?;
@@ -212,6 +351,7 @@ pub async fn fetch_remote_config_mutations(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
 ) -> Result<Vec<ConfigChangeDelta>, AppError> {
     let mut remote_changes = Vec::new();
@@ -219,13 +359,15 @@ pub async fn fetch_remote_config_mutations(
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     let rows = sqlx::query!(
-        "SELECT id, user_id, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
+        "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
          FROM configs \
-         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE)",
+         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE) \
+           AND ($5::uuid IS NULL OR device_uuid = $5)",
         user_id,
         last_synced_ms,
         client_id,
-        is_initial_sync
+        is_initial_sync,
+        device_filter
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -235,6 +377,7 @@ pub async fn fetch_remote_config_mutations(
             id: row.id,
             user_id: row.user_id.to_string(),
             client_uuid: row.client_uuid.to_string(),
+            device_uuid: Some(row.device_uuid),
             version: row.version,
             is_deleted: row.is_deleted,
             last_modified: row.last_modified,
@@ -253,6 +396,7 @@ pub async fn fetch_remote_config_mutations(
                 OperationType::Update
             },
             version: row.version,
+            device_uuid: Some(row.device_uuid),
             data: Some(data_val),
         });
     }
@@ -260,10 +404,13 @@ pub async fn fetch_remote_config_mutations(
     Ok(remote_changes)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_config_sync_items(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    request_device: Uuid,
+    device_filter: Option<Uuid>,
     items: &[ConfigSyncItem],
     success_uuids: &mut Vec<Uuid>,
 ) -> Result<(), AppError> {
@@ -272,9 +419,10 @@ pub async fn process_config_sync_items(
 
         if is_delete {
             let existing = sqlx::query!(
-                "SELECT version FROM configs WHERE id = $1 AND user_id = $2",
+                "SELECT version FROM configs WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                 item.id,
-                user_id
+                user_id,
+                device_filter
             )
             .fetch_optional(&mut **tx)
             .await?;
@@ -294,16 +442,21 @@ pub async fn process_config_sync_items(
             }
             success_uuids.push(item.id);
         } else {
-            // Upsert config
-            let existing = sqlx::query!(
-                "SELECT version, last_modified, value FROM configs WHERE id = $1 AND user_id = $2",
-                item.id,
-                user_id
+            let device_uuid = resolve_item_device(
+                tx,
+                user_id,
+                item.device_uuid,
+                request_device,
+                "Config",
+                &item.id.to_string(),
             )
-            .fetch_optional(&mut **tx)
             .await?;
 
-            let next_version = if let Some(ref row) = existing {
+            let target =
+                resolve_config_target(tx, user_id, device_uuid, device_filter, item.id, &item.key)
+                    .await?;
+
+            let next_version = if let Some(ref row) = target.existing {
                 if item.version == row.version {
                     row.version + 1
                 } else if item.version < row.version {
@@ -330,37 +483,34 @@ pub async fn process_config_sync_items(
             };
 
             tracing::info!(
-                "Applying config upsert for {} (key: {}). Next version: {}, is_deleted: {}",
+                "Applying config upsert for {} (key: {}, device: {}). Next version: {}, is_deleted: {}",
                 item.id,
                 item.key,
+                device_uuid,
                 next_version,
                 item.is_deleted
             );
 
-            sqlx::query!(
-                "INSERT INTO configs (id, user_id, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7::text::sync_state, $8, $9) \
-                 ON CONFLICT (id) DO UPDATE SET \
-                     client_uuid = EXCLUDED.client_uuid, \
-                     version = EXCLUDED.version, \
-                     is_deleted = EXCLUDED.is_deleted, \
-                     last_modified = EXCLUDED.last_modified, \
-                     sync_state = EXCLUDED.sync_state, \
-                     value = EXCLUDED.value",
-                item.id,
+            write_config(
+                tx,
                 user_id,
                 client_id,
+                device_uuid,
+                &target,
                 next_version,
                 item.is_deleted,
                 item.last_modified,
-                "SYNCED",
-                item.key,
-                item.value
+                &item.key,
+                &item.value,
             )
-            .execute(&mut **tx)
             .await?;
 
             success_uuids.push(item.id);
+            // The server's id won the reconciliation, so echo that row back too — it is how
+            // the client learns which row its key actually lives on.
+            if target.new_id != item.id {
+                success_uuids.push(target.new_id);
+            }
         }
     }
     Ok(())
@@ -370,6 +520,7 @@ pub async fn fetch_configs_for_response(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
     success_uuids: &[Uuid],
 ) -> Result<Vec<ConfigSyncItem>, AppError> {
@@ -377,14 +528,16 @@ pub async fn fetch_configs_for_response(
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     let rows = sqlx::query!(
-        "SELECT id, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
+        "SELECT id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
          FROM configs \
-         WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4))",
+         WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4)) \
+           AND ($6::uuid IS NULL OR device_uuid = $6)",
         user_id,
         last_synced_ms,
         client_id,
         success_uuids,
-        is_initial_sync
+        is_initial_sync,
+        device_filter
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -393,6 +546,7 @@ pub async fn fetch_configs_for_response(
         .into_iter()
         .map(|row| ConfigSyncItem {
             id: row.id,
+            device_uuid: Some(row.device_uuid),
             key: row.key,
             value: row.value,
             sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
@@ -404,4 +558,3 @@ pub async fn fetch_configs_for_response(
 
     Ok(items)
 }
-

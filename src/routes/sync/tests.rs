@@ -2,6 +2,7 @@ pub mod helpers;
 
 mod cache;
 mod deserialization;
+mod devices;
 mod flat_configs_drawings;
 mod grocery;
 mod misc;

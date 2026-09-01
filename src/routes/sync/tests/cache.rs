@@ -143,6 +143,8 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: None,
         todo_list_changes: vec![TodoListChangeDelta {
             id: "list-status-cache-1".to_string(),
@@ -262,6 +264,8 @@ async fn test_sync_handler_updates_redis_cache_collaborative(pool: PgPool) {
     let req = SyncRequest {
         last_synced_at: None,
         client_id: "client-a".to_string(),
+        device_uuid: None,
+        device_name: None,
         scope: Some(SyncScope::Grocery),
         todo_list_changes: vec![],
         todo_changes: vec![],

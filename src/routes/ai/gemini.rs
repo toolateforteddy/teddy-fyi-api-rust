@@ -83,15 +83,36 @@ pub async fn call_gemini<T: DeserializeOwned + JsonSchema>(
         },
     };
 
+    // Timed around the network call only. Gemini is the one dependency here that
+    // is billed per request, so its rate is a spend signal as much as a health one.
+    let started = std::time::Instant::now();
     let response = client
         .post(&url)
         .json(&request)
         .send()
         .await
+        .inspect_err(|_| {
+            crate::observability::metrics::record_gemini_call(
+                model,
+                "transport_error",
+                started.elapsed().as_secs_f64(),
+            );
+        })
         .map_err(|e| {
             tracing::error!("Failed to call Gemini: {:?}", e);
             AppError::Gemini(format!("Gemini API call failed: {}", e))
         })?;
+
+    let outcome = if response.status().is_success() {
+        "ok"
+    } else {
+        "http_error"
+    };
+    crate::observability::metrics::record_gemini_call(
+        model,
+        outcome,
+        started.elapsed().as_secs_f64(),
+    );
 
     let gemini_resp: GeminiResponse = response.json().await.map_err(|e| {
         tracing::error!("Failed to parse Gemini response: {:?}", e);

@@ -8,7 +8,7 @@ edition = "2021"
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json"] }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 google-oauth = "1"
 sqlx = { version = "0.8", features = [ "postgres", "macros", "chrono", "runtime-tokio-native-tls", "uuid" ] }
 uuid = { version = "1.8", features = ["v4", "v5", "serde"] }
@@ -20,9 +20,12 @@ jsonwebtoken = { version = "10.4.0", default-features = false, features = ["rust
 rand = "0.10.1"
 reqwest = { version = "0.12", features = ["json"] }
 schemars = "0.8"
-tower-http = { version = "0.6.10", features = ["cors"] }
+tower-http = { version = "0.6.10", features = ["cors", "trace", "request-id", "util"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 futures-util = "0.3"
 tokio-stream = "0.1"
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+sha2 = "0.11.0"
 
 

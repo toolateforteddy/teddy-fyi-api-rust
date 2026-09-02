@@ -124,6 +124,15 @@ pub async fn sync_stream_handler(
         },
     );
 
+    // The gauge is held by the stream itself: `map` captures the guard, so it lives
+    // exactly as long as the connection and is dropped when the client goes away —
+    // which is the only moment a disconnect is actually observable here.
+    let connection_guard = crate::observability::metrics::SseConnectionGuard::open();
+    let stream = stream.map(move |item| {
+        let _guard = &connection_guard;
+        item
+    });
+
     // 5. Configure 4-minute auto ping ticker
     let response_headers = build_sse_headers();
     let sse = Sse::new(stream).keep_alive(

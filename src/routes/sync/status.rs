@@ -145,11 +145,13 @@ pub async fn sync_status_handler(
                 }
                 Ok(None) => {} // Cache miss
                 Err(err) => {
+                    crate::observability::metrics::record_redis_degraded("sync_status_get");
                     tracing::warn!("Failed to GET key '{}' from Redis: {:?}", cache_key, err);
                 }
             }
         }
         Err(err) => {
+            crate::observability::metrics::record_redis_degraded("sync_status_connect");
             tracing::warn!("Failed to connect to Redis: {:?}", err);
         }
     }
@@ -161,10 +163,17 @@ pub async fn sync_status_handler(
             let db_ts = get_latest_db_timestamp(&state, user_id, scope).await?;
             
             // Try populating cache with TTL 24 hours (86400 seconds)
-            if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
-                let ts_str = db_ts.to_rfc3339();
-                if let Err(err) = conn.set_ex::<_, _, ()>(&cache_key, ts_str, 86400).await {
-                    tracing::warn!("Failed to SET key '{}' with TTL: {:?}", cache_key, err);
+            match state.redis_client.get_multiplexed_tokio_connection().await {
+                Ok(mut conn) => {
+                    let ts_str = db_ts.to_rfc3339();
+                    if let Err(err) = conn.set_ex::<_, _, ()>(&cache_key, ts_str, 86400).await {
+                        crate::observability::metrics::record_redis_degraded("sync_status_backfill_set");
+                        tracing::warn!("Failed to SET key '{}' with TTL: {:?}", cache_key, err);
+                    }
+                }
+                Err(err) => {
+                    crate::observability::metrics::record_redis_degraded("sync_status_backfill_connect");
+                    tracing::warn!("Failed to connect to Redis to backfill cache: {:?}", err);
                 }
             }
             db_ts

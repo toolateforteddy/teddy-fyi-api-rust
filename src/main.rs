@@ -4,6 +4,7 @@ pub mod auth;
 pub mod models;
 pub mod dao;
 pub mod jobs;
+pub mod observability;
 
 use axum::{
     extract::State,
@@ -16,6 +17,7 @@ use axum::{
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
 use std::sync::Arc;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
 /// Connects the pool without touching the schema. Split out from [`init_postgres`] so the
 /// `reap-stale-users` job can reach the database without running migrations of its own.
@@ -104,8 +106,14 @@ async fn run_reaper() {
 
 #[tokio::main]
 async fn main() {
-    // Initialize structured JSON logging
-    tracing_subscriber::fmt().json().init();
+    // Initialize structured JSON logging. `RUST_LOG` selects the level so a noisy
+    // incident can be debugged with a rollout restart instead of a rebuild.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .init();
 
     // No subcommand serves the API; the CronJob passes `reap-stale-users`.
     match std::env::args().nth(1).as_deref() {
@@ -119,7 +127,15 @@ async fn main() {
 }
 
 async fn serve() {
+    // Installed before anything else so no startup metric is dropped on the floor.
+    if let Some(handle) = observability::metrics::init_recorder() {
+        tokio::spawn(observability::metrics::serve_metrics(handle));
+    }
+
     let app_state = init_app_state().await;
+    // Metadata only — `db_health` reads `size()` to tell an outage from load, and
+    // never issues a query.
+    observability::db_health::register_pool(app_state.db_pool.clone());
 
     // api routes group
     let api_routes = Router::new()
@@ -176,10 +192,23 @@ async fn serve() {
     let app = Router::new()
         .route("/hello", get(|| async { "world" }))
         .route("/hellov2", get(|| async { "world2" }))
-        .route("/healthcheck", get(|| async { "OK" })) // Shallow/Liveness check
+        // Superseded by `/healthz/live`. Kept until the cluster's probes have
+        // been repointed, so this deploy cannot strand a rollout; delete after.
+        .route("/healthcheck", get(|| async { "OK" }))
+        .merge(observability::health::health_routes(app_state.redis_client.clone()))
         .nest("/api", api_routes)
         .nest("/auth", auth_routes)
-        .layer(cors);
+        .layer(cors)
+        // Read bottom-up: `Router::layer` makes the *last* call the outermost, so
+        // this runs SetRequestId → track_request → Propagate. The order matters and
+        // is not cosmetic — SetRequestId must precede the middleware that logs the
+        // id, and Propagate must sit inside both so it sees the stamped request on
+        // the way in and can copy the id onto the response on the way out.
+        // `track_request` is outside `require_auth`, so rejected requests are
+        // measured too.
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(middleware::from_fn(observability::http::track_request))
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
 
     // Read the port from the environment, falling back to 3000
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());

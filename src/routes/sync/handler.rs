@@ -571,7 +571,18 @@ pub async fn sync_handler(
         || !payload.drawings.is_empty();
 
     if has_mutations {
-        if let Ok(mut conn) = state.redis_client.get_multiplexed_tokio_connection().await {
+        // Connected once and inspected, rather than two `if let`s: the failure needs
+        // to be counted, and a second connect attempt just to log it would double the
+        // cost of the path that is already failing.
+        let cache_conn = state.redis_client.get_multiplexed_tokio_connection().await;
+        if let Err(ref err) = cache_conn {
+            // Losing this write is not a correctness problem — `/api/sync/status`
+            // falls back to the database aggregate — but it is a silent, expensive
+            // degradation, so it gets counted.
+            crate::observability::metrics::record_redis_degraded("sync_cache_write_connect");
+            tracing::warn!("Failed to connect to Redis to update sync caches: {:?}", err);
+        }
+        if let Ok(mut conn) = cache_conn {
             let ts_str = server_timestamp.to_rfc3339();
             
             // Update All scope for the requesting user
@@ -615,6 +626,24 @@ pub async fn sync_handler(
         payload.client_id,
         client_uuid,
         scope
+    );
+
+    let downloaded = remote_todo_list_changes.len()
+        + remote_todo_changes.len()
+        + remote_grocery_list_changes.len()
+        + remote_grocery_list_member_changes.len()
+        + remote_store_changes.len()
+        + remote_category_changes.len()
+        + remote_grocery_changes.len()
+        + remote_grocery_item_store_info_changes.len()
+        + remote_config_changes.len()
+        + remote_drawing_changes.len()
+        + response_configs.len()
+        + response_drawings.len();
+    crate::observability::http::record_sync_completed(
+        &format!("{:?}", scope),
+        success_ids.len(),
+        downloaded,
     );
 
     Ok(Json(SyncResponse {

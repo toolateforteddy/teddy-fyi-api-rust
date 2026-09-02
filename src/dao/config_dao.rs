@@ -20,18 +20,20 @@ impl ConfigDao {
         .await
     }
 
-    /// Fetches a configuration by its key, scoped to a specific user to ensure data isolation.
+    /// Fetches a configuration by its key and device, scoped to a specific user to ensure data isolation.
     pub async fn get_by_key(
         pool: &sqlx::PgPool,
         key: &str,
         user_id: Uuid,
+        device_uuid: Uuid,
     ) -> Result<Option<Config>, sqlx::Error> {
         sqlx::query_as::<_, Config>(
             "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value \
-             FROM configs WHERE key = $1 AND user_id = $2"
+             FROM configs WHERE user_id = $1 AND device_uuid = $2 AND key = $3"
         )
-        .bind(key)
         .bind(user_id)
+        .bind(device_uuid)
+        .bind(key)
         .fetch_optional(pool)
         .await
     }

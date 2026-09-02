@@ -39,6 +39,10 @@ async fn test_config_dao_lifecycle(pool: PgPool) {
     let fetched_user_1 = ConfigDao::get_by_id(&pool, config_id, user_1).await.unwrap().unwrap();
     assert_eq!(fetched_user_1.value, "dark");
 
+    let fetched_by_key = ConfigDao::get_by_key(&pool, "theme", user_1, device_1).await.unwrap().unwrap();
+    assert_eq!(fetched_by_key.id, config_id);
+    assert_eq!(fetched_by_key.value, "dark");
+
     // 4. Upsert with matching version: increments version
     let mut update_config = fetched_user_1.clone();
     update_config.value = "light".to_string();

@@ -97,6 +97,18 @@ pub async fn require_auth(
     }
 
     let mut req = req;
+    // Cloned before the claims move into the extensions; the request log needs it
+    // on the way back out, by which point `req` is gone.
+    let user_id = token_data.claims.sub.clone();
     req.extensions_mut().insert(token_data.claims);
-    Ok(next.run(req).await)
+
+    let mut response = next.run(req).await;
+    // Hashed, never raw — see `observability::http::LoggedUser` for why.
+    let salt = crate::observability::http::log_hash_salt(&state.jwt_secret);
+    response
+        .extensions_mut()
+        .insert(crate::observability::http::LoggedUser(
+            crate::observability::http::hash_user_id(&user_id, &salt),
+        ));
+    Ok(response)
 }

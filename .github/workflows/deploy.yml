@@ -93,3 +93,8 @@ jobs:
       - name: Deploy to GKE (Rollout Restart)
         run: |
           kubectl rollout restart deployment/api-rust-dep
+          # Without this the job is green the moment the restart is *requested*, so a
+          # crashlooping image reports a successful deploy. `rollout status` blocks
+          # until the new ReplicaSet is actually available and exits non-zero if it
+          # never gets there.
+          kubectl rollout status deployment/api-rust-dep --timeout=5m

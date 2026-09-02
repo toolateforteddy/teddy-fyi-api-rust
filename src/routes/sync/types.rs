@@ -308,6 +308,11 @@ impl IntoResponse for AppError {
 
 impl From<sqlx::Error> for AppError {
     fn from(err: sqlx::Error) -> Self {
+        // Every `?` on a database error in this service converts here, which
+        // makes this the one place that sees all of them. Readiness cannot probe
+        // Postgres without paying a Neon wake-up per probe, so this is where the
+        // health signal comes from instead: real traffic, no extra queries.
+        crate::observability::db_health::record_error(&err);
         AppError::Database(err)
     }
 }

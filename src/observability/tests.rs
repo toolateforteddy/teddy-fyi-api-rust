@@ -252,3 +252,45 @@ mod db_health {
         assert!(!is_degraded_at(later + 1));
     }
 }
+
+mod sse_device_targeting {
+    use crate::routes::sync::publisher::SyncSseEvent;
+    use crate::routes::sync::stream::event_targets_device;
+    use uuid::Uuid;
+
+    #[test]
+    fn initial_state_and_unscoped_events_target_all_listeners() {
+        let device_a = Uuid::new_v4();
+        let initial = SyncSseEvent::InitialState {
+            entity: "config".to_string(),
+            data: serde_json::json!({}),
+        };
+        assert!(event_targets_device(&initial, None));
+        assert!(event_targets_device(&initial, Some(device_a)));
+
+        let unscoped_update = SyncSseEvent::Invalidate {
+            entity: "config".to_string(),
+            sender_client_id: None,
+            device_uuid: None,
+        };
+        assert!(event_targets_device(&unscoped_update, None));
+        assert!(event_targets_device(&unscoped_update, Some(device_a)));
+    }
+
+    #[test]
+    fn device_scoped_events_only_target_matching_device() {
+        let device_a = Uuid::new_v4();
+        let device_b = Uuid::new_v4();
+        let scoped_update = SyncSseEvent::DirectUpdate {
+            entity: "config".to_string(),
+            key: "theme".to_string(),
+            value: serde_json::json!("dark"),
+            sender_client_id: None,
+            device_uuid: Some(device_a),
+        };
+
+        assert!(event_targets_device(&scoped_update, Some(device_a)));
+        assert!(!event_targets_device(&scoped_update, Some(device_b)));
+        assert!(!event_targets_device(&scoped_update, None));
+    }
+}

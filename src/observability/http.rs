@@ -46,7 +46,8 @@ pub fn hash_user_id(user_id: &str, salt: &str) -> String {
     hasher.update(b":");
     hasher.update(user_id.as_bytes());
     let digest = hasher.finalize();
-    digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
+    let val = u64::from_be_bytes(digest[..8].try_into().unwrap());
+    format!("{:016x}", val)
 }
 
 /// Reads the salt once per call site; see [`hash_user_id`] for the fallback.

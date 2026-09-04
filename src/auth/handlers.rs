@@ -5,6 +5,10 @@ use crate::auth::tokens::{create_access_token, hash_refresh_token, verify_refres
 use rand::RngExt;
 use rand::distr::Alphanumeric;
 
+/// Default access-token lifetime, and the ceiling a client may request. Device pairing
+/// mints at this length: the tablet has no `expires_in_secs` to ask with.
+pub const DEFAULT_SESSION_SECS: i64 = 86400;
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub user_id: String,
@@ -42,11 +46,77 @@ pub struct RefreshRequest {
     pub expires_in_secs: Option<i64>,
 }
 
+/// Mints the access/refresh pair for `user_id` and records the session, which is every
+/// step of signing in *after* the caller has established who the user is.
+///
+/// Extracted verbatim from [`login_handler`] so the device-pairing poll handler can mint
+/// the identical pair once a parent has claimed a code, without a second copy of the
+/// upsert rules drifting away from this one.
+pub async fn issue_session(
+    state: &AppState,
+    user_id: &str,
+    email: Option<&str>,
+    client_uuid: &str,
+    duration_secs: i64,
+) -> Result<AuthResponse, StatusCode> {
+    // 1. Generate tokens
+    let access_token = create_access_token(
+        user_id,
+        client_uuid,
+        state.jwt_secret.as_bytes(),
+        Some(duration_secs),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let refresh_token: String = rand::rng()
+        .sample_iter(Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect();
+
+    // 2. Upsert user info in users table
+    sqlx::query!(
+        r#"INSERT INTO users (id, email)
+           VALUES ($1, $2)
+           ON CONFLICT (id) DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email), updated_at = NOW()"#,
+        user_id,
+        email
+    )
+    .execute(&state.db_pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to upsert user: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // 3. Upsert session
+    let refresh_token_hash = hash_refresh_token(&refresh_token);
+    let expiration = chrono::Utc::now() + chrono::Duration::days(7);
+
+    sqlx::query!(
+        "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, client_uuid) DO UPDATE
+         SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at, old_refresh_token_hash = EXCLUDED.old_refresh_token_hash, rotated_at = EXCLUDED.rotated_at",
+        user_id,
+        client_uuid,
+        refresh_token_hash,
+        expiration,
+        None::<String>,
+        None::<chrono::DateTime<chrono::Utc>>
+    ).execute(&state.db_pool).await.map_err(|e| {
+        tracing::error!("Failed to upsert session: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(AuthResponse { access_token, refresh_token })
+}
+
 pub async fn login_handler(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, StatusCode> {
-    // 1. Resolve user ID and email (supporting dev bypass)
+    // Resolve user ID and email (supporting dev bypass)
     let (user_id, email) = if payload.google_auth_token.starts_with("mock.") && state.cookie_domain.is_empty() {
         (payload.user_id.clone(), Some("dev-user@teddy.fyi".to_string()))
     } else {
@@ -65,62 +135,21 @@ pub async fn login_handler(
         (google_payload.sub, google_payload.email.clone())
     };
 
-    let duration_secs = payload.expires_in_secs.unwrap_or(86400);
-    let duration_secs = if duration_secs <= 0 || duration_secs > 86400 {
-        86400
+    let duration_secs = payload.expires_in_secs.unwrap_or(DEFAULT_SESSION_SECS);
+    let duration_secs = if duration_secs <= 0 || duration_secs > DEFAULT_SESSION_SECS {
+        DEFAULT_SESSION_SECS
     } else {
         duration_secs
     };
 
-    // 2. Generate tokens
-    let access_token = create_access_token(
+    let AuthResponse { access_token, refresh_token } = issue_session(
+        &state,
         &user_id,
+        email.as_deref(),
         &payload.client_uuid,
-        state.jwt_secret.as_bytes(),
-        Some(duration_secs),
+        duration_secs,
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let refresh_token: String = rand::rng()
-        .sample_iter(Alphanumeric)
-        .take(64)
-        .map(char::from)
-        .collect();
-
-    // 3. Upsert user info in users table
-    sqlx::query!(
-        r#"INSERT INTO users (id, email)
-           VALUES ($1, $2)
-           ON CONFLICT (id) DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email), updated_at = NOW()"#,
-        user_id,
-        email
-    )
-    .execute(&state.db_pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Failed to upsert user: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // 4. Upsert session
-    let refresh_token_hash = hash_refresh_token(&refresh_token);
-    let expiration = chrono::Utc::now() + chrono::Duration::days(7);
-
-    sqlx::query!(
-        "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (user_id, client_uuid) DO UPDATE
-         SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at, old_refresh_token_hash = EXCLUDED.old_refresh_token_hash, rotated_at = EXCLUDED.rotated_at",
-        user_id,
-        payload.client_uuid,
-        refresh_token_hash,
-        expiration,
-        None::<String>,
-        None::<chrono::DateTime<chrono::Utc>>
-    ).execute(&state.db_pool).await.map_err(|e| {
-        tracing::error!("Failed to upsert session: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .await?;
 
     if payload.use_cookie.unwrap_or(false) {
         let cookie_header_value = if state.cookie_domain.is_empty() {
@@ -439,9 +468,9 @@ pub async fn refresh_handler(
     }
 
     // 3. Rotate tokens
-    let duration_secs = payload.expires_in_secs.unwrap_or(86400);
-    let duration_secs = if duration_secs <= 0 || duration_secs > 86400 {
-        86400
+    let duration_secs = payload.expires_in_secs.unwrap_or(DEFAULT_SESSION_SECS);
+    let duration_secs = if duration_secs <= 0 || duration_secs > DEFAULT_SESSION_SECS {
+        DEFAULT_SESSION_SECS
     } else {
         duration_secs
     };

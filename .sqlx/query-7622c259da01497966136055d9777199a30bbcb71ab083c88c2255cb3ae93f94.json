@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_authorizations\n            SET expires_at = now() - interval '2 days'\n          WHERE client_uuid = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7622c259da01497966136055d9777199a30bbcb71ab083c88c2255cb3ae93f94"
+}

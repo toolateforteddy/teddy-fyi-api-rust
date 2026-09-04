@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO device_authorizations\n                 (device_code_hash, user_code, client_uuid, app, expires_at)\n             VALUES ($1, $2, $3, $4, $5)\n             ON CONFLICT DO NOTHING\n             RETURNING user_code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e104dc513b03fe0d8a6d332a413841420688563cd7970f7b0cac9db140f3dee8"
+}

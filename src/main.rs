@@ -42,6 +42,43 @@ async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::erro
     Ok(pool)
 }
 
+/// Browser origins allowed to call this API, from `CORS_ALLOWED_ORIGINS` (comma-separated).
+///
+/// The default carries teddy.fyi, which is all this service allowed before device pairing,
+/// plus both spellings of the ScribbleRoute site: `/auth/device/claim` is called from the
+/// `/link` page in a parent's browser, and a blocked preflight there is the difference
+/// between a Fire tablet being able to sign in and not.
+///
+/// An unparseable entry is dropped with a warning rather than panicking the process: a typo
+/// in a manifest should cost one origin, not the whole service.
+fn allowed_origins() -> Vec<axum::http::HeaderValue> {
+    const DEFAULT_ORIGINS: &str =
+        "https://teddy.fyi,https://scribbleroute.com,https://www.scribbleroute.com";
+
+    let raw = std::env::var("CORS_ALLOWED_ORIGINS")
+        .ok()
+        .filter(|raw| !raw.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_ORIGINS.to_string());
+
+    let origins: Vec<axum::http::HeaderValue> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .filter_map(|origin| match origin.parse::<axum::http::HeaderValue>() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                tracing::error!("Ignoring unparseable CORS origin {:?}: {:?}", origin, err);
+                None
+            }
+        })
+        .collect();
+
+    if origins.is_empty() {
+        tracing::error!("No usable CORS origins configured; browser clients will be blocked");
+    }
+    origins
+}
+
 async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
     // Ping the database
     match sqlx::query!("SELECT 1 as one").fetch_one(&state.db_pool).await {
@@ -93,6 +130,19 @@ async fn run_reaper() {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://cache-svc:6379".to_string());
     let redis_client = redis::Client::open(redis_url).expect("Invalid Redis URL");
+
+    // Piggy-backs on the existing CronJob rather than adding a second schedule to the
+    // cluster. Unlike the account sweep this is not gated on `REAP_DRY_RUN`: it deletes
+    // only codes that are already dead, and it runs first so a failure in the (much
+    // larger) account sweep cannot leave them piling up.
+    match jobs::reap_device_authorizations::reap_device_authorizations(&pool).await {
+        Ok(summary) => {
+            tracing::info!(summary = ?summary, "Expired device authorizations swept");
+        }
+        Err(err) => {
+            tracing::error!("Device authorization sweep failed: {:?}", err);
+        }
+    }
 
     let config = jobs::reap_stale_users::ReapConfig::from_env();
     match jobs::reap_stale_users::reap_stale_users(&pool, &redis_client, &config).await {
@@ -165,15 +215,23 @@ async fn serve() {
         .route("/login", axum::routing::post(auth::handlers::login_handler))
         .route("/refresh", axum::routing::post(auth::handlers::refresh_handler))
         .route("/logout", axum::routing::post(auth::handlers::logout_handler))
+        // Device pairing, for tablets with no Google identity of their own. All three are
+        // unauthenticated by design: the tablet has no session yet, and the browser that
+        // claims presents a Google ID token in the body rather than one of ours.
+        .route("/device/start", axum::routing::post(auth::device::start_handler))
+        .route("/device/claim", axum::routing::post(auth::device::claim_handler))
+        .route("/device/poll", axum::routing::post(auth::device::poll_handler))
         .with_state(app_state.clone());
 
     // Explicit CORS Configurations:
-    // - allow_origin: Must explicitly point to https://teddy.fyi.
+    // - allow_origin: an explicit list; see `allowed_origins`. Never `Any` — this layer
+    //   sits outside `.nest("/auth", ...)` so it governs the device-pairing endpoints
+    //   too, and `allow_credentials(true)` makes a wildcard origin invalid regardless.
     // - allow_credentials: Set to true.
     // - allow_methods: Explicitly allow GET, POST, PUT, DELETE, OPTIONS.
     // - allow_headers: Explicitly allow Content-Type, Authorization, and X-Client-UUID.
     let cors = tower_http::cors::CorsLayer::new()
-        .allow_origin("https://teddy.fyi".parse::<axum::http::HeaderValue>().unwrap())
+        .allow_origin(allowed_origins())
         .allow_credentials(true)
         .allow_methods([
             axum::http::Method::GET,

@@ -83,10 +83,30 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
         "expires_in": 600, "interval": 5 }
       ```
       `device_code` is generated the way the refresh token in `login_handler` already is (64
-      `Alphanumeric` samples). `user_code` is **8 characters from a 24-symbol unambiguous
-      alphabet** — no `0`/`O`, no `1`/`I`/`L`, and no vowels, so a code can never spell a word a
-      parent has to read aloud with embarrassment. Displayed `XXXX-XXXX`. Retry generation on
-      collision with an unexpired row.
+      `Alphanumeric` samples). `user_code` is **8 characters from this alphabet, which is the whole
+      of it**, displayed `XXXX-XXXX`:
+
+      ```
+      23456789CDFHJKMNPQRTVWXY
+      ```
+
+      That is the 36 alphanumerics minus four groups, and **all four have to be removed or the
+      count is not 24** — vowels and lookalikes alone leave 28, which is how this spec was wrong
+      when it was first written:
+
+      | Removed | Why |
+      | :-- | :-- |
+      | `A E I O U` | A code can never spell a word a parent has to read aloud |
+      | `0 1 I L` | The classic lookalikes |
+      | `S Z B G` | Confusable with `5 2 8 6` — keep the digit, drop the letter, so each ambiguous pair has exactly one legal member |
+
+      24⁸ ≈ 1.1 × 10¹¹ codes, about 36 bits. The entropy is not what stops guessing — the
+      ten-minute lifetime, single use and the attempt limit in step 4 are — it just means the code
+      length is not the weak part.
+
+      The hyphen is presentation only: normalise input (uppercase, strip hyphens and spaces)
+      before lookup, and store the normalised form, so there is exactly one legal spelling of any
+      code. Retry generation on collision with an unexpired row.
 
 - [ ] **4. `POST /auth/device/claim`.** Request `{ google_auth_token, user_code }`.
 

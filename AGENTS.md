@@ -47,3 +47,10 @@ endpoint shapes are already written down.
   before changing any of it — the response codes are load-bearing, several of them deliberately
   indistinguishable from each other. Cross-repo: the Android client and the
   `scribbleroute.com/link` page are the other two halves and are not built here.
+
+  Two products now pair through these endpoints, and they redeem codes on two different
+  websites, so `/auth/device/start` reads the `app` the client sends and answers with that
+  app's page: `SCRIBBLE_KEEP`/`SCRIBBLE_BOX` → `scribbleroute.com/link`, `TEDDY_FYI`/
+  `TEDDY_FYI_GROCERY` → `teddy.fyi/link` (`APP_VERIFICATION_URIS` in `src/auth/device.rs`).
+  A new client that pairs adds its wire name there, or it will send its parents to the
+  default page — which is somebody else's site.

@@ -76,7 +76,8 @@ Ensure you have the following environment variables configured:
 
   Device pairing has no bypass of its own: `POST /auth/device/claim` always validates the ID token, so the ScribbleRoute **web** client ID must be in this allowlist or every parent's claim returns `401`. It is currently supplied by `SCRIBBLEROUTE_API_CLIENT_ID`.
 * `CORS_ALLOWED_ORIGINS` (optional): Comma-separated browser origins allowed to call this API. Defaults to `https://teddy.fyi,https://scribbleroute.com,https://www.scribbleroute.com`. Never a wildcard — `allow_credentials` is on, which makes one invalid anyway.
-* `DEVICE_VERIFICATION_URI` (optional): Where the tablet tells the parent to go to redeem a pairing code. Defaults to `https://scribbleroute.com/link`.
+* `DEVICE_VERIFICATION_URI_<APP>` (optional): Where a tablet running `<APP>` tells the parent to go to redeem a pairing code, e.g. `DEVICE_VERIFICATION_URI_TEDDY_FYI`. `<APP>` is the `app` the client sends to `/auth/device/start`, uppercased with every non-alphanumeric character written as `_`. This service is shared, and the two products redeem codes on two different websites, so with nothing set each known app falls back to its own page — `SCRIBBLE_KEEP` and `SCRIBBLE_BOX` to `https://scribbleroute.com/link`, `TEDDY_FYI` and `TEDDY_FYI_GROCERY` to `https://teddy.fyi/link`. Set one of these only to point a single app at a staging site.
+* `DEVICE_VERIFICATION_URI` (optional): The redemption page for a caller that named no app, or an app this build does not know. Defaults to `https://scribbleroute.com/link`. It does **not** override the per-app pages above.
 
 ### 2. Run with Automated Dev Script
 The easiest way to start development is to run:

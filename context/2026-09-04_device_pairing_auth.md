@@ -48,6 +48,21 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
 
 ---
 
+## Status: done, deployed, and proved
+
+Every step below is built and live, and the markers were kept current as they landed. What is
+newly recorded here is the end-to-end proof: on 4 September 2026 a parent signed a Fire tablet in
+through `scribbleroute.com/link`, and a drawing then travelled from ScribbleBox on that tablet, to
+ScribbleKeep beside it, to ScribbleKeep Cloud on a Pixel. The endpoints work against real clients,
+not just against their tests.
+
+Two things landed beyond the spec below: `allowed_origins()` reads `CORS_ALLOWED_ORIGINS` and
+drops an unparseable entry with a warning instead of panicking, and step 7's reaping became its
+own `jobs::reap_device_authorizations` rather than riding along with the stale-user sweep.
+
+The steps stay as written — they are what the endpoints promise, and changing one should mean
+changing this file in the same commit.
+
 ## The work
 
 - [x] **1. Migration: `device_authorizations`.**

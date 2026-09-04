@@ -58,9 +58,27 @@ const POLL_INTERVAL_SECS: i64 = 5;
 const MAX_CLAIM_FAILURES: i64 = 5;
 const CLAIM_FAILURE_WINDOW_MINS: i64 = 10;
 
-/// Where the parent is sent to redeem the code. Configurable so a staging site can point at
-/// its own page without a rebuild.
+/// Where the parent is sent to redeem the code when the caller named no app this service
+/// recognises. Configurable so a staging site can point at its own page without a rebuild.
 const DEFAULT_VERIFICATION_URI: &str = "https://scribbleroute.com/link";
+
+/// The redemption page each known app's parent is sent to, keyed by the normalised `app`
+/// the client sends to [`start_handler`].
+///
+/// This service is shared: ScribbleRoute's tablets and teddy.fyi's tablets both pair
+/// through these endpoints, and they are redeemed on two different websites. A single
+/// global URI would send half the parents to a page that does not know their code, so the
+/// app that asked for the code decides where it is typed.
+///
+/// Keys are the wire names the clients send -- `SyncScope`/build-flavour enum names, which
+/// are `SCREAMING_SNAKE_CASE` -- run through [`normalize_app`] so spelling drift on the
+/// client costs nothing.
+const APP_VERIFICATION_URIS: &[(&str, &str)] = &[
+    ("SCRIBBLE_KEEP", "https://scribbleroute.com/link"),
+    ("SCRIBBLE_BOX", "https://scribbleroute.com/link"),
+    ("TEDDY_FYI", "https://teddy.fyi/link"),
+    ("TEDDY_FYI_GROCERY", "https://teddy.fyi/link"),
+];
 
 /// Attempts to land a unique `user_code` before giving up. Each attempt is a fresh draw
 /// from a space of ~1.1e11, so more than one is already vanishingly unlikely.
@@ -97,11 +115,57 @@ pub struct PollRequest {
     pub client_uuid: String,
 }
 
-fn verification_uri() -> String {
-    std::env::var("DEVICE_VERIFICATION_URI")
+/// Folds an `app` as sent into the form [`APP_VERIFICATION_URIS`] and the environment are
+/// keyed by: uppercased, with everything that is not a letter or a digit written as `_`.
+/// `teddy.fyi grocery` and `TEDDY_FYI_GROCERY` are then the same app, and the result is
+/// always a legal environment variable suffix.
+fn normalize_app(app: &str) -> String {
+    app.trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// A non-empty environment variable, or nothing. A variable set to whitespace is a
+/// deployment that meant to unset it.
+fn env_uri(key: &str) -> Option<String> {
+    std::env::var(key)
         .ok()
-        .filter(|uri| !uri.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_VERIFICATION_URI.to_string())
+        .map(|uri| uri.trim().to_string())
+        .filter(|uri| !uri.is_empty())
+}
+
+/// Where the parent of `app` redeems their code, most specific source first:
+///
+/// 1. `DEVICE_VERIFICATION_URI_<APP>` -- one deployment overriding one app, which is how a
+///    staging site points a single client at itself.
+/// 2. [`APP_VERIFICATION_URIS`] -- what each shipped app expects, with no configuration.
+/// 3. `DEVICE_VERIFICATION_URI`, then [`DEFAULT_VERIFICATION_URI`] -- the answer for a
+///    caller that named no app, or named one this build has never heard of.
+fn verification_uri(app: Option<&str>) -> String {
+    if let Some(key) = app.map(|app| normalize_app(app)).filter(|k| !k.is_empty()) {
+        if let Some(uri) = env_uri(&format!("DEVICE_VERIFICATION_URI_{key}")) {
+            return uri;
+        }
+        if let Some((_, uri)) = APP_VERIFICATION_URIS.iter().find(|(name, _)| *name == key) {
+            return (*uri).to_string();
+        }
+        // Not an error: an older or newer client may name an app this build predates, and
+        // the default page is still a page. Worth a line, because a parent sent to the
+        // wrong site is a support question and this is where the answer is.
+        tracing::warn!(
+            app = %key,
+            "Unknown app on device start; falling back to the default verification URI"
+        );
+    }
+
+    env_uri("DEVICE_VERIFICATION_URI").unwrap_or_else(|| DEFAULT_VERIFICATION_URI.to_string())
 }
 
 /// Draws a `user_code` from [`USER_CODE_ALPHABET`]. Stored and compared without the
@@ -198,7 +262,7 @@ pub async fn start_handler(
             return Ok(Json(StartResponse {
                 device_code,
                 user_code: format_user_code(&user_code),
-                verification_uri: verification_uri(),
+                verification_uri: verification_uri(payload.app.as_deref()),
                 expires_in: CODE_TTL_SECS,
                 interval: POLL_INTERVAL_SECS,
             })

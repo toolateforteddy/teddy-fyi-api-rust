@@ -420,3 +420,62 @@ async fn reaper_drops_only_dead_rows(pool: PgPool) {
     .unwrap();
     assert_eq!(remaining, vec!["fire-tablet-live".to_string()]);
 }
+
+/// The `app` a client sends is a build's enum name, and it is the only thing standing
+/// between a teddy.fyi parent and ScribbleRoute's pairing page. Folded rather than matched
+/// literally so a client that spells its app with a dot or a space still lands.
+#[test]
+fn app_names_fold_to_one_spelling() {
+    assert_eq!(normalize_app("TEDDY_FYI"), "TEDDY_FYI");
+    assert_eq!(normalize_app("teddy.fyi"), "TEDDY_FYI");
+    assert_eq!(normalize_app("  teddy fyi  "), "TEDDY_FYI");
+    assert_eq!(normalize_app("Scribble-Keep"), "SCRIBBLE_KEEP");
+}
+
+/// Both products pair through this one service and redeem on their own websites, so the
+/// table is pinned: a wrong entry here is a parent typing a live code into a page that has
+/// never heard of it.
+#[test]
+fn each_app_redeems_on_its_own_site() {
+    let uri = |app: &str| {
+        APP_VERIFICATION_URIS
+            .iter()
+            .find(|(name, _)| *name == app)
+            .map(|(_, uri)| *uri)
+    };
+
+    assert_eq!(uri("SCRIBBLE_KEEP"), Some("https://scribbleroute.com/link"));
+    assert_eq!(uri("SCRIBBLE_BOX"), Some("https://scribbleroute.com/link"));
+    assert_eq!(uri("TEDDY_FYI"), Some("https://teddy.fyi/link"));
+    assert_eq!(uri("TEDDY_FYI_GROCERY"), Some("https://teddy.fyi/link"));
+
+    for (app, _) in APP_VERIFICATION_URIS {
+        assert_eq!(
+            normalize_app(app),
+            *app,
+            "table keys are looked up after normalisation, so they must already be normal"
+        );
+    }
+}
+
+/// Resolution with nothing configured, which is how this runs in production: the table
+/// answers for an app it knows, and anything else gets the default page rather than an
+/// error.
+#[test]
+fn unconfigured_lookup_falls_back_to_the_default_page() {
+    // Only meaningful with no deployment-level override in the ambient environment.
+    if std::env::var("DEVICE_VERIFICATION_URI").is_ok() {
+        return;
+    }
+
+    assert_eq!(
+        verification_uri(Some("SCRIBBLE_KEEP")),
+        "https://scribbleroute.com/link"
+    );
+    assert_eq!(verification_uri(Some("teddy_fyi")), "https://teddy.fyi/link");
+    assert_eq!(
+        verification_uri(Some("some-future-app")),
+        DEFAULT_VERIFICATION_URI
+    );
+    assert_eq!(verification_uri(None), DEFAULT_VERIFICATION_URI);
+}

@@ -45,6 +45,10 @@ async fn forget_last_poll(pool: &PgPool, client_uuid: &str) {
 
 #[test]
 fn user_code_alphabet_is_unambiguous_and_voiceless() {
+    // Pinned to the literal in the spec, not just to the rules behind it: the website's
+    // entry field is written from that same literal, and a code either side rejects is a
+    // parent who cannot pair their tablet.
+    assert_eq!(USER_CODE_ALPHABET, b"23456789CDFHJKMNPQRTVWXY");
     assert_eq!(USER_CODE_ALPHABET.len(), 24);
     for excluded in b"0O1ILAEIOUBGSZ" {
         assert!(

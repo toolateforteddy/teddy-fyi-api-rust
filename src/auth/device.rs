@@ -31,12 +31,17 @@ use crate::auth::handlers::{issue_session, AuthResponse};
 use crate::auth::tokens::{hash_refresh_token, verify_refresh_token};
 use crate::state::AppState;
 
-/// Characters a `user_code` is drawn from. Excludes `0`/`O` and `1`/`I`/`L`, which are
-/// misread off a tablet screen; every vowel, so a code can never spell a word a parent has
-/// to read aloud with embarrassment; and the four consonants that are routinely mistaken
-/// for digits (`B`/8, `G`/6, `S`/5, `Z`/2), which leaves the digits themselves unambiguous.
-/// 24 symbols, so an 8-character code is a ~24^8 (≈1.1e11) space.
-const USER_CODE_ALPHABET: &[u8] = b"CDFHJKMNPQRTVWXY23456789";
+/// Characters a `user_code` is drawn from, written out in the order the spec gives them
+/// (`context/2026-09-04_device_pairing_auth.md`, step 3) because the website's entry field
+/// has to agree with this exactly. The 36 alphanumerics minus four groups: every vowel, so
+/// a code can never spell a word a parent has to read aloud; `0`/`1`/`I`/`L`, the classic
+/// lookalikes; and `S`/`Z`/`B`/`G`, which read as `5`/`2`/`8`/`6` — the letter goes and the
+/// digit stays, so each ambiguous pair keeps exactly one legal member.
+///
+/// 24 symbols, so an 8-character code is a ~24^8 (≈1.1e11, about 36 bits) space. That is
+/// not what stops guessing — the ten-minute lifetime, the single use and
+/// [`MAX_CLAIM_FAILURES`] are — it only means the length is not the weak part.
+const USER_CODE_ALPHABET: &[u8] = b"23456789CDFHJKMNPQRTVWXY";
 
 /// Characters in a `user_code`, displayed as two groups of four.
 const USER_CODE_LEN: usize = 8;

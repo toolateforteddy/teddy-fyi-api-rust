@@ -209,3 +209,23 @@ pub async fn touch_device(
     .await?;
     Ok(())
 }
+
+/// The account's fallback device, without registering one.
+///
+/// `fallback_device` is the write path's version: a sync request with no `device_uuid`
+/// creates a device when the account has none. Read-only callers — the SSE stream — must
+/// not bring a device into being just by connecting, so this reports `None` instead and
+/// leaves the caller account-wide. Same ordering, so both paths pick the same device.
+pub async fn existing_fallback_device(
+    pool: &sqlx::PgPool,
+    user_id: &Uuid,
+) -> Result<Option<Uuid>, AppError> {
+    let row = sqlx::query!(
+        "SELECT id FROM devices WHERE user_id = $1 ORDER BY created_at ASC, id ASC LIMIT 1",
+        user_id
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| row.id))
+}

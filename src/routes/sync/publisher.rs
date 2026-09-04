@@ -17,6 +17,10 @@ pub enum SyncSseEvent {
         /// the others. Distinct from `sender_client_id`, which suppresses echoes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_uuid: Option<Uuid>,
+        /// Set when the update is a tombstone: the row it names was deleted, so a listener
+        /// should drop the key rather than store `value`. Absent on ordinary writes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_deleted: bool,
     },
     Invalidate {
         entity: String,
@@ -29,6 +33,10 @@ pub enum SyncSseEvent {
         entity: String,
         data: serde_json::Value,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Computes the dedicated Redis Pub/Sub channel for a given user ID.

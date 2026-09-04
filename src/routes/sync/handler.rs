@@ -535,9 +535,13 @@ pub async fn sync_handler(
         let event = SyncSseEvent::DirectUpdate {
             entity: "config".to_string(),
             key: broadcast.item.key.clone(),
-            value: serde_json::to_value(&broadcast.item)?,
+            // The value itself, not the whole row: `key`/`value` is the contract every
+            // listener reads, and handing it the serialized `ConfigSyncItem` made clients
+            // store that JSON object as the config's value.
+            value: serde_json::Value::String(broadcast.item.value.clone()),
             sender_client_id: Some(payload.client_id.clone()),
             device_uuid: Some(broadcast.device_uuid),
+            is_deleted: broadcast.item.is_deleted,
         };
         if let Err(err) = publish_device_event(
             &state.redis_client,

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::auth::tokens::Claims;
 use crate::state::AppState;
 use super::config::fetch_config_snapshot;
+use super::device::existing_fallback_device;
 use super::publisher::{get_channel_name, get_device_channel_name, SyncSseEvent};
 use super::remote_mutations::parse_or_hash_uuid;
 use super::types::AppError;
@@ -20,10 +21,63 @@ use super::types::AppError;
 #[derive(Debug, Deserialize)]
 pub struct StreamQuery {
     pub client_id: Option<String>,
-    /// The tablet this stream watches. Config is device-scoped, so without it the stream
-    /// only carries account-wide events.
+    /// The tablet this stream watches. Config is device-scoped, so a stream that names no
+    /// device falls back to the account's device rather than going without one — see
+    /// `resolve_stream_device`.
     #[serde(default, alias = "deviceUuid")]
     pub device_uuid: Option<Uuid>,
+    /// Which app is listening. Kept as a raw string rather than `SyncScope`: clients send
+    /// it lowercase (`scope=scribble_keep`), and a strict enum here would reject the very
+    /// requests it is meant to classify. Only the cloud app is distinguished — see
+    /// `is_cloud_scope`.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// Whether the stream belongs to the ScribbleKeep Cloud dashboard.
+///
+/// The cloud app runs on a machine that is not one of the account's tablets and watches
+/// every device at once, so it is the one caller that stays account-wide when it names no
+/// device. A tablet in the same position means "my own device" — see `resolve_stream_device`.
+fn is_cloud_scope(scope: Option<&str>) -> bool {
+    scope
+        .map(|s| s.eq_ignore_ascii_case("SCRIBBLE_KEEP_CLOUD"))
+        .unwrap_or(false)
+}
+
+/// The device an SSE stream watches.
+///
+/// A stream that names a device watches that one. A tablet that names none falls back to
+/// the account's device exactly as its sync requests do, because it is the same tablet on
+/// both paths: without this, a client that syncs against the fallback device subscribes to
+/// the account-wide channel only and never hears the config writes aimed at it. The cloud
+/// dashboard is the exception and stays account-wide.
+pub async fn resolve_stream_device(
+    pool: &sqlx::PgPool,
+    user_uuid: &Uuid,
+    requested: Option<Uuid>,
+    scope: Option<&str>,
+) -> Result<Option<Uuid>, AppError> {
+    if let Some(device_uuid) = requested {
+        return Ok(Some(device_uuid));
+    }
+    if is_cloud_scope(scope) {
+        return Ok(None);
+    }
+
+    let fallback = existing_fallback_device(pool, user_uuid).await?;
+    match fallback {
+        Some(device) => tracing::debug!(
+            "Stream without device_uuid for user {}; falling back to device {}",
+            user_uuid,
+            device
+        ),
+        None => tracing::debug!(
+            "Stream without device_uuid for user {}; account has no device yet, staying account-wide",
+            user_uuid
+        ),
+    }
+    Ok(fallback)
 }
 
 /// Helper function to construct mandatory SSE headers for proxy/Nginx compatibility.
@@ -52,16 +106,21 @@ pub async fn sync_stream_handler(
             .and_then(|h| h.to_str().ok().map(|s| s.to_string()))
     });
 
-    let device_uuid = query.device_uuid.or_else(|| {
+    let requested_device = query.device_uuid.or_else(|| {
         headers
             .get("x-device-uuid")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| Uuid::parse_str(s).ok())
     });
 
+    let user_uuid = parse_or_hash_uuid(&user_id);
+    let device_uuid =
+        resolve_stream_device(&state.db_pool, &user_uuid, requested_device, query.scope.as_deref())
+            .await?;
+
     // 1. Subscribe to Redis Pub/Sub channels FIRST to prevent race conditions. The
-    // account-wide channel always; the device channel too when the caller named a device,
-    // which is where config writes for that tablet are published.
+    // account-wide channel always; the device channel too when the stream resolved to a
+    // device, which is where config writes for that tablet are published.
     let channel_name = get_channel_name(&user_id);
     let mut pubsub = state.redis_client.get_async_pubsub().await?;
     pubsub.subscribe(&channel_name).await?;
@@ -70,11 +129,10 @@ pub async fn sync_stream_handler(
     }
 
     // 2. Query the primary DB for the initial state: the configs this stream is about to
-    // receive updates for. Scoped to the named device when there is one, account-wide
-    // otherwise — the same split the sync endpoint draws between a tablet and the cloud
+    // receive updates for. Scoped to the device the stream resolved to, account-wide
+    // when it resolved to none — the same split the sync endpoint draws between a tablet and the cloud
     // dashboard. Reading after the subscribe means a write landing in between is replayed
     // as an event rather than lost.
-    let user_uuid = parse_or_hash_uuid(&user_id);
     let configs = fetch_config_snapshot(&state.db_pool, &user_uuid, device_uuid).await?;
     let initial_event = SyncSseEvent::InitialState {
         entity: "config".to_string(),

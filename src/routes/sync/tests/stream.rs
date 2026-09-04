@@ -1,5 +1,5 @@
 use crate::routes::sync::publisher::{get_channel_name, get_device_channel_name, SyncSseEvent};
-use crate::routes::sync::stream::{build_sse_headers, event_targets_device};
+use crate::routes::sync::stream::{build_sse_headers, event_targets_device, resolve_stream_device};
 use crate::routes::sync::config::fetch_config_snapshot;
 use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
 use crate::routes::sync::{AppJson, ConfigSyncItem, SyncRequest, SyncScope, parse_or_hash_uuid};
@@ -18,6 +18,7 @@ fn test_sync_sse_event_direct_update_serialization() {
         value: json!(85),
         sender_client_id: Some("client-123".to_string()),
         device_uuid: None,
+        is_deleted: false,
     };
 
     let json_str = serde_json::to_string(&event).expect("Serialization failed");
@@ -28,6 +29,10 @@ fn test_sync_sse_event_direct_update_serialization() {
     assert_eq!(val["key"], "volume");
     assert_eq!(val["value"], 85);
     assert_eq!(val["sender_client_id"], "client-123");
+    assert!(
+        val.get("is_deleted").is_none(),
+        "an ordinary write should not carry a tombstone flag"
+    );
 }
 
 #[test]
@@ -80,6 +85,7 @@ fn test_echo_filtering_logic() {
         value: json!(90),
         sender_client_id: Some("client-abc".to_string()),
         device_uuid: None,
+        is_deleted: false,
     };
 
     let remote_event = SyncSseEvent::DirectUpdate {
@@ -88,6 +94,7 @@ fn test_echo_filtering_logic() {
         value: json!(90),
         sender_client_id: Some("client-xyz".to_string()),
         device_uuid: None,
+        is_deleted: false,
     };
 
     // Check echo match
@@ -130,6 +137,7 @@ fn test_event_targets_device_filtering() {
         value: json!("dark"),
         sender_client_id: None,
         device_uuid: Some(device),
+        is_deleted: false,
     };
     let account_wide = SyncSseEvent::Invalidate {
         entity: "config".to_string(),
@@ -217,13 +225,16 @@ async fn test_config_write_publishes_to_device_channel(pool: PgPool) {
             value,
             sender_client_id,
             device_uuid: event_device,
+            is_deleted,
         } => {
             assert_eq!(entity, "config");
             assert_eq!(key, "theme");
-            assert_eq!(value["value"], "dark");
-            assert_eq!(value["id"], config_id.to_string());
+            // The config's own value, not the serialized row: a listener stores `value`
+            // verbatim, so anything else lands in its database as the setting.
+            assert_eq!(value, serde_json::Value::String("dark".to_string()));
             assert_eq!(sender_client_id.as_deref(), Some("client-1"));
             assert_eq!(event_device, Some(device_uuid));
+            assert!(!is_deleted);
         }
         other => panic!("Expected a DIRECT_UPDATE for the config, got {other:?}"),
     }
@@ -281,4 +292,66 @@ async fn test_config_snapshot_is_device_scoped(pool: PgPool) {
     expected.sort();
     assert_eq!(ids, expected);
     assert!(!account_wide.iter().any(|c| c.id == deleted));
+}
+
+
+/// A tablet that opens the stream without naming a device still lands on the device its
+/// own sync writes go to — the account's fallback — so the config events published there
+/// reach it. Without this the stream sits on the account-wide channel and hears nothing.
+#[sqlx::test]
+async fn test_stream_without_device_falls_back_to_account_device(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
+    // A second, newer device must not steal the fallback from the backfilled one.
+    seed_device(&pool, user_uuid, "Other Tablet").await;
+
+    let resolved = resolve_stream_device(&pool, &user_uuid, None, Some("scribble_keep"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved,
+        Some(device_uuid),
+        "a device-less tablet stream should watch the same device its sync resolves to"
+    );
+
+    // An explicit device always wins over the fallback.
+    let named = uuid::Uuid::new_v4();
+    let resolved = resolve_stream_device(&pool, &user_uuid, Some(named), Some("scribble_keep"))
+        .await
+        .unwrap();
+    assert_eq!(resolved, Some(named));
+}
+
+/// The cloud dashboard watches every tablet on the account, so naming no device leaves it
+/// account-wide rather than pinning it to one — the same split the sync endpoint draws.
+#[sqlx::test]
+async fn test_cloud_stream_without_device_stays_account_wide(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    for scope in ["SCRIBBLE_KEEP_CLOUD", "scribble_keep_cloud"] {
+        let resolved = resolve_stream_device(&pool, &user_uuid, None, Some(scope))
+            .await
+            .unwrap();
+        assert_eq!(resolved, None, "cloud scope {scope} should stay account-wide");
+    }
+}
+
+/// Connecting is a read: an account with no device yet gets an account-wide stream, not a
+/// freshly minted device row.
+#[sqlx::test]
+async fn test_stream_does_not_register_a_device(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+
+    let resolved = resolve_stream_device(&pool, &user_uuid, None, Some("scribble_keep"))
+        .await
+        .unwrap();
+    assert_eq!(resolved, None);
+
+    let devices = sqlx::query_scalar!("SELECT COUNT(*) FROM devices WHERE user_id = $1", user_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(devices, 0, "opening a stream must not register a device");
 }

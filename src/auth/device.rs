@@ -149,7 +149,7 @@ fn env_uri(key: &str) -> Option<String> {
 /// 3. `DEVICE_VERIFICATION_URI`, then [`DEFAULT_VERIFICATION_URI`] -- the answer for a
 ///    caller that named no app, or named one this build has never heard of.
 fn verification_uri(app: Option<&str>) -> String {
-    if let Some(key) = app.map(|app| normalize_app(app)).filter(|k| !k.is_empty()) {
+    if let Some(key) = app.map(normalize_app).filter(|k| !k.is_empty()) {
         if let Some(uri) = env_uri(&format!("DEVICE_VERIFICATION_URI_{key}")) {
             return uri;
         }

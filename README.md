@@ -74,6 +74,10 @@ Ensure you have the following environment variables configured:
 
   Between them these two form the accepted-audience allowlist, and at least one must be set in a real deployment; local dev can omit both and sign in with `mock.` tokens. The legacy single-value vars `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID_GROCERY_WEB`, and `SCRIBBLEROUTE_API_CLIENT_ID` are still honored.
 
+  Device pairing has no bypass of its own: `POST /auth/device/claim` always validates the ID token, so the ScribbleRoute **web** client ID must be in this allowlist or every parent's claim returns `401`. It is currently supplied by `SCRIBBLEROUTE_API_CLIENT_ID`.
+* `CORS_ALLOWED_ORIGINS` (optional): Comma-separated browser origins allowed to call this API. Defaults to `https://teddy.fyi,https://scribbleroute.com,https://www.scribbleroute.com`. Never a wildcard — `allow_credentials` is on, which makes one invalid anyway.
+* `DEVICE_VERIFICATION_URI` (optional): Where the tablet tells the parent to go to redeem a pairing code. Defaults to `https://scribbleroute.com/link`.
+
 ### 2. Run with Automated Dev Script
 The easiest way to start development is to run:
 ```bash
@@ -117,6 +121,41 @@ All routes under `/api` require Google OAuth or JWT authorization.
 - `POST /auth/login` - Exchanges a Google OAuth token for access/refresh tokens.
 - `POST /auth/refresh` - Renews an expired access token.
 - `POST /auth/logout` - Revokes current session cookies.
+
+#### Device pairing (no Google Play Services)
+
+A Fire tablet has no Google identity provider on the device, so it can never produce the ID
+token `/auth/login` needs. These three unauthenticated endpoints move the Google half of
+sign-in to a browser on a device that does have an account. RFC 8628 in shape, but they are
+our endpoints minting our own tokens.
+
+- `POST /auth/device/start` - The tablet asks for a code.
+  - **Request**: `{ "client_uuid": "...", "app": "scribblekeep" }`
+  - **Response (`200 OK`)**:
+    ```json
+    { "device_code": "<64 alnum>", "user_code": "H4KP-9TQR",
+      "verification_uri": "https://scribbleroute.com/link",
+      "expires_in": 600, "interval": 5 }
+    ```
+  - The tablet displays `user_code` and keeps `device_code` to itself.
+- `POST /auth/device/claim` - The parent redeems the code from `scribbleroute.com/link`.
+  - **Request**: `{ "google_auth_token": "<Google ID token>", "user_code": "H4KP-9TQR" }`
+  - `204` on success. `404` for anything unknown, expired or already claimed — deliberately
+    one response, so it cannot be used to sort real codes from invented ones. `429` once a
+    Google account has failed five claims in ten minutes.
+- `POST /auth/device/poll` - The tablet collects its session.
+  - **Request**: `{ "device_code": "...", "client_uuid": "..." }`
+
+    | Condition | Response |
+    | :-- | :-- |
+    | Unclaimed, unexpired | `202` `{"status":"pending"}` |
+    | Claimed | `200` + the same `{ access_token, refresh_token }` `/auth/login` returns |
+    | Expired, or already consumed | `410` |
+    | Polled faster than `interval` | `429` |
+    | `client_uuid` does not match `/start` | `404` |
+
+Expired and spent rows are swept by the `reap-stale-users` job, which runs the device sweep
+before the account sweep.
 
 ### Sync Endpoints
 #### `GET /api/sync/status`

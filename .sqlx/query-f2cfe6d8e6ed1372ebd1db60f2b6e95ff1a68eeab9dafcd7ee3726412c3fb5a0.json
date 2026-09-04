@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_authorizations\n            SET consumed_at = now()\n          WHERE device_code_hash = $1 AND consumed_at IS NULL\n          RETURNING device_code_hash",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_code_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f2cfe6d8e6ed1372ebd1db60f2b6e95ff1a68eeab9dafcd7ee3726412c3fb5a0"
+}

@@ -50,7 +50,7 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
 
 ## The work
 
-- [ ] **1. Migration: `device_authorizations`.**
+- [x] **1. Migration: `device_authorizations`.**
       `migrations/<timestamp>_create_device_authorizations.sql`.
 
       | Column | Type | Notes |
@@ -66,14 +66,14 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
       Postgres, not Valkey. This is auth state and it should not evaporate with the cache — and
       unlike the sync-status cache, there is no cheap DB fallback to recompute it from.
 
-- [ ] **2. Extract session minting from `login_handler`.** Steps 2–4 of
+- [x] **2. Extract session minting from `login_handler`.** Steps 2–4 of
       `src/auth/handlers.rs::login_handler` — access token, 64-char random refresh token, `users`
       upsert, `sessions` upsert — become
       `issue_session(state, user_id, email, client_uuid, duration_secs) -> AuthResponse`.
       `login_handler` calls it, and so does the poll handler. **Pure refactor**: no behaviour
       change, and the existing `src/auth/tests.rs` must stay green without being edited.
 
-- [ ] **3. `POST /auth/device/start`.** Unauthenticated, mounted on the public `auth_routes`
+- [x] **3. `POST /auth/device/start`.** Unauthenticated, mounted on the public `auth_routes`
       router in `main.rs`.
 
       Request `{ client_uuid, app }`. Response:
@@ -108,7 +108,7 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
       before lookup, and store the normalised form, so there is exactly one legal spelling of any
       code. Retry generation on collision with an unexpired row.
 
-- [ ] **4. `POST /auth/device/claim`.** Request `{ google_auth_token, user_code }`.
+- [x] **4. `POST /auth/device/claim`.** Request `{ google_auth_token, user_code }`.
 
       Verify the Google ID token *exactly* as `login_handler` does —
       `state.google_client.validate_id_token`, then the `state.google_client_ids` audience check —
@@ -122,7 +122,7 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
 
       Never log a `user_code` or a `device_code`, at any level.
 
-- [ ] **5. `POST /auth/device/poll`.** Request `{ device_code, client_uuid }`.
+- [x] **5. `POST /auth/device/poll`.** Request `{ device_code, client_uuid }`.
 
       | Condition | Response |
       | :-- | :-- |
@@ -132,7 +132,7 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
       | Polled faster than `interval` | `429` |
       | `client_uuid` does not match `/start` | `404` — same shape as an unknown code, so it is not an oracle |
 
-- [ ] **6. CORS — this one will bite.** `main.rs` currently allows exactly one origin:
+- [x] **6. CORS — this one will bite.** `main.rs` currently allows exactly one origin:
       ```rust
       .allow_origin("https://teddy.fyi".parse::<HeaderValue>().unwrap())
       ```
@@ -142,11 +142,11 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
       not `Any`. `allow_credentials(true)` is already set, which makes a wildcard origin invalid
       anyway.
 
-- [ ] **7. Reaping.** Expired rows are dead weight and mild risk. Either extend the
+- [x] **7. Reaping.** Expired rows are dead weight and mild risk. Either extend the
       `src/jobs/reap_stale_users.rs` pattern with a sweep, or delete on the `expires_at` index —
       whichever sits better in the job runner already there.
 
-- [ ] **8. Verify the audience env — check this first, it is five minutes.**
+- [x] **8. Verify the audience env — check this first, it is five minutes.**
       `login_handler` accepts an ID token only if its `aud` is in `state.google_client_ids`, loaded
       by `src/auth/client_ids.rs` from `GOOGLE_CLIENT_IDS`, `GOOGLE_CLIENT_ID` and
       `SCRIBBLEROUTE_API_CLIENT_ID`. The website will present a token whose `aud` is the
@@ -157,7 +157,14 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
       parent, and the only trace is the `tracing::warn!` audience-mismatch line inside
       `login_handler`'s equivalent — invisible from the client, which sees a bare 401.
 
-- [ ] **9. Tests** in `src/auth/device/tests.rs`: happy path; wrong code; expired code; replayed
+      **Verified 2026-09-04 against the prod cluster** (`gke_melodic-sunbeam-164916_us-central1-a_prod`,
+      deployment `api-rust-dep`): the `api-rust-secret-env` secret sets `SCRIBBLEROUTE_API_CLIENT_ID`
+      to exactly `34718544535-n0eabvd30ebmn4npqnpq7dlgmt9qn3pe.apps.googleusercontent.com`, which
+      `client_ids.rs` folds into the allowlist. Nothing to change. Worth knowing for later: neither
+      `GOOGLE_CLIENT_IDS` nor `GOOGLE_IOS_CLIENT_IDS` is set there at all — the deployment is still
+      running entirely on the three legacy single-value vars.
+
+- [x] **9. Tests** in `src/auth/device/tests.rs`: happy path; wrong code; expired code; replayed
       device code; poll before claim; `client_uuid` mismatch; rate limit; audience mismatch.
 
 ---
@@ -175,3 +182,12 @@ unit tests in `src/auth/device/tests.rs`. Nothing lands in `auth.rs` but a `pub 
   default say `api-rust.teddy.fyi`. Presumably one service behind two names — but the `/link` page
   must call whichever one CORS is configured for in step 6, so settle it before writing that
   config rather than after.
+
+  **Resolved, and it turned out not to constrain step 6.** CORS keys off the *browser's* origin,
+  which is `scribbleroute.com` either way; the API hostname the page dials is not part of the
+  check. Both names resolve to the one `api-rust-dep` deployment in
+  `gke_melodic-sunbeam-164916_us-central1-a_prod`, so the same `CorsLayer` governs both. The
+  question is still worth settling for the website's own config, but the `/link` page works
+  against either name today. The one thing that would break it is a *third* origin: if the page is
+  ever served from somewhere other than `scribbleroute.com` or `www.scribbleroute.com`, add it to
+  `CORS_ALLOWED_ORIGINS` on the deployment.

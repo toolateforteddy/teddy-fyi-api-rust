@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM device_claim_failures WHERE failed_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d02c3c0d3bf360f18c336a228e12c8372e92cb7f7626ffeb5a0ebcd0a30428e2"
+}

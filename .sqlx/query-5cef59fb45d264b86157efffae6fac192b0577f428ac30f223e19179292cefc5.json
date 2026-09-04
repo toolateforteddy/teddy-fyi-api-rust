@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_authorizations SET attempts = attempts + 1 WHERE user_code = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5cef59fb45d264b86157efffae6fac192b0577f428ac30f223e19179292cefc5"
+}

@@ -41,7 +41,9 @@ Before designing anything in these areas, read the note — the decisions are al
 endpoint shapes are already written down.
 
 - **Auth on devices with no Google Play Services** (Fire tablets, and any future shared-device
-  install) — `context/2026-09-04_device_pairing_auth.md`. Adds `/auth/device/start`, `/auth/device/claim`
-  and `/auth/device/poll`, a `device_authorizations` migration, and a pure extraction of session
-  minting out of `login_handler`. Cross-repo: the Android client and the `scribbleroute.com/link`
-  page are the other two halves.
+  install) — `context/2026-09-04_device_pairing_auth.md`. **Built**, in `src/auth/device.rs`:
+  `/auth/device/start`, `/auth/device/claim` and `/auth/device/poll`, the `device_authorizations`
+  migration, and `auth::handlers::issue_session` extracted out of `login_handler`. Read the note
+  before changing any of it — the response codes are load-bearing, several of them deliberately
+  indistinguishable from each other. Cross-repo: the Android client and the
+  `scribbleroute.com/link` page are the other two halves and are not built here.

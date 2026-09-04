@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_authorizations SET last_polled_at = NULL WHERE client_uuid = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1dfc11b82eff3368ceb8337d2ad1de90e73a6cecdad10b80e79812af969621f3"
+}

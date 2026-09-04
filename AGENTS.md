@@ -34,3 +34,14 @@ The backend exposes a single, atomic endpoint to reconcile state.
 2. Ensure the sync engine avoids the "echo" problem by accurately utilizing the `client_id` filter.
 3. Keep the payload formats perfectly mirrored to the Android client schema requirements.
 4. **Strict Module Layout Guideline:** NEVER use the legacy `mod.rs` pattern for module entry points (this is an anti-pattern/code smell similar to Python's `__init__.py` abuse). Instead, strictly follow the modern Rust file-based module layout (e.g., declare `routes.rs` at the parent level, and place its sibling submodules inside a `routes/` directory). Keep module entry files strictly declarative, containing only `pub mod` and `pub use` statements, with zero handler logic or unit tests residing inside them.
+
+## Planned work with a written spec
+
+Before designing anything in these areas, read the note — the decisions are already made and the
+endpoint shapes are already written down.
+
+- **Auth on devices with no Google Play Services** (Fire tablets, and any future shared-device
+  install) — `context/2026-09-04_device_pairing_auth.md`. Adds `/auth/device/start`, `/auth/device/claim`
+  and `/auth/device/poll`, a `device_authorizations` migration, and a pure extraction of session
+  minting out of `login_handler`. Cross-repo: the Android client and the `scribbleroute.com/link`
+  page are the other two halves.

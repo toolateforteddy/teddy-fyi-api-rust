@@ -443,6 +443,7 @@ async fn test_sync_succeeds_without_icon_when_budget_is_exhausted(pool: PgPool) 
         sub: user_id.clone(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     };
     let res = crate::routes::sync::sync_handler(
         State(state),

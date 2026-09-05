@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO device_claim_failures (user_id, failed_at) VALUES ('guesser', $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f8248c4409efce7f71b8a7dc513d845da674d75b21cb25d2f00e9e339b31f517"
+}

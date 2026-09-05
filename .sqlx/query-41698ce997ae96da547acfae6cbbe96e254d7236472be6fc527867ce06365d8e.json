@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO device_authorizations\n             (device_code_hash, user_code, client_uuid, expires_at)\n         VALUES ('hash-open', 'OPENCODE', 'client-9', $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41698ce997ae96da547acfae6cbbe96e254d7236472be6fc527867ce06365d8e"
+}

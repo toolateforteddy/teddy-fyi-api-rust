@@ -94,6 +94,13 @@ pub async fn sync_handler(
         let payload = payload.handle();
         async move {
             if scope == SyncScope::All || scope == SyncScope::Todo {
+                // Before the transaction, deliberately: this may make an outbound Gemini
+                // call, and doing that while holding a connection open inside a live
+                // transaction is how a handful of concurrent syncs exhausts the pool and
+                // times out unrelated endpoints. See `crate::routes::sync::todo::icons`.
+                let resolved_icons =
+                    resolve_todo_icons(&state, &claims.sub, &payload.todo_changes).await;
+
                 let mut tx = state.db_pool.begin().await?;
                 let mut success_ids = Vec::new();
                 let mut upload_status = Vec::new();
@@ -116,7 +123,7 @@ pub async fn sync_handler(
                     &mut tx,
                     &claims.sub,
                     &payload.client_id,
-                    &state,
+                    &resolved_icons,
                     server_timestamp,
                     &payload.todo_changes,
                     &mut success_ids,

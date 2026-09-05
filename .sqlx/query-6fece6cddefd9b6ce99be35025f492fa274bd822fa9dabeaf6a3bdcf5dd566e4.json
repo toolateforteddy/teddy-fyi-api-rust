@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_authorizations SET consumed_at = now() WHERE client_uuid = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6fece6cddefd9b6ce99be35025f492fa274bd822fa9dabeaf6a3bdcf5dd566e4"
+}

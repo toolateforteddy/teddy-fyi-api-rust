@@ -87,7 +87,10 @@ pub async fn process_todo_changes(
                             let mut current_updated_by = client_id.to_string();
 
                             // Auto-assign icon if missing and fewer than 3 items are being synced in this batch
-                            if changes.len() < 3 && item.icon.as_deref().unwrap_or("").is_empty() {
+                            if changes.len() < 3
+                                && item.icon.as_deref().unwrap_or("").is_empty()
+                                && !item.title.trim().is_empty()
+                            {
                                 // This is the third path that spends the Gemini
                                 // budget, and the least obvious one — a client
                                 // that never calls `/api/assign-icon` can still

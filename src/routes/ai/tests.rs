@@ -23,6 +23,21 @@ use crate::routes::sync::types::AppError;
 // ---------------------------------------------------------------------------
 
 #[test]
+fn empty_or_whitespace_title_is_rejected() {
+    let err_empty = check_title_length("item_title", "").unwrap_err();
+    match err_empty {
+        AppError::BadRequest(msg) => assert!(msg.contains("item_title must not be empty")),
+        other => panic!("expected BadRequest for empty title, got {:?}", other),
+    }
+
+    let err_whitespace = check_title_length("todo_title", "   ").unwrap_err();
+    match err_whitespace {
+        AppError::BadRequest(msg) => assert!(msg.contains("todo_title must not be empty")),
+        other => panic!("expected BadRequest for whitespace title, got {:?}", other),
+    }
+}
+
+#[test]
 fn title_length_is_measured_in_characters_not_bytes() {
     // Exactly at the bound in characters, but 300 bytes in UTF-8. The old
     // `len() > 100` byte check rejected this while accepting 100 ASCII

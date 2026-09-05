@@ -70,6 +70,67 @@ pub async fn process_grocery_changes(
         existing_store_info_set.insert((row.grocery_item_id, row.store_id));
     }
 
+    // Auto-populated store mappings, resolved for the whole batch in one query.
+    // This used to run a three-table join once per grocery change, so a payload at
+    // `SYNC_MAX_ITEMS_PER_COLLECTION` meant up to 10,000 joins on the single pooled
+    // connection this transaction holds. Only rows the server has never seen need the
+    // mapping (see the call site below), so only their names are looked up.
+    let mut mapping_lookup_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for change in changes {
+        if existing_map.contains_key(&change.id) {
+            continue;
+        }
+        if !matches!(
+            change.operation_type,
+            OperationType::Insert | OperationType::Update
+        ) {
+            continue;
+        }
+        if let Some(ref data) = change.data {
+            if let Ok(item) = serde_json::from_value::<GroceryItemData>(data.clone()) {
+                mapping_lookup_names.insert(item.name.to_lowercase());
+            }
+        }
+    }
+
+    // The lookup key is the Rust-lowercased name, and the query filters on exactly those
+    // strings, so every key the query returns is one we can look up again by that name.
+    let mut mappings_by_name: std::collections::HashMap<
+        String,
+        Vec<(String, Option<f64>, bool)>,
+    > = std::collections::HashMap::new();
+    if !mapping_lookup_names.is_empty() {
+        let mapping_names: Vec<String> = mapping_lookup_names.into_iter().collect();
+        let mapping_rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT LOWER(gi.name) as "name_key!", gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available
+            FROM grocery_item_store_info gsi
+            JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
+            JOIN grocery_list_members glm ON gi."listId" = glm."listId"
+            WHERE LOWER(gi.name) = ANY($1)
+              AND glm."userId" = $2
+              AND gi.is_deleted = FALSE
+              AND gsi.is_deleted = FALSE
+            "#,
+            &mapping_names,
+            user_id
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+
+        for row in mapping_rows {
+            mappings_by_name
+                .entry(row.name_key)
+                .or_default()
+                .push((row.store_id, row.price, row.is_available));
+        }
+    }
+
+    // Backfill rows are collected here and written with one multi-row insert after the
+    // loop; nothing between here and there reads `grocery_item_store_info`.
+    let mut pending_store_info: Vec<(String, String, Option<f64>, bool)> = Vec::new();
+
     for change in changes {
         let string_id = change.id.clone();
         match change.operation_type {
@@ -223,43 +284,27 @@ pub async fn process_grocery_changes(
                             .execute(&mut **tx)
                             .await?;
 
-                            // Auto-populate store mapping
-                            let existing_mappings = sqlx::query!(
-                                r#"
-                                SELECT DISTINCT gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available
-                                FROM grocery_item_store_info gsi
-                                JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
-                                JOIN grocery_list_members glm ON gi."listId" = glm."listId"
-                                WHERE LOWER(gi.name) = LOWER($1)
-                                  AND glm."userId" = $2
-                                  AND gi.is_deleted = FALSE
-                                  AND gsi.is_deleted = FALSE
-                                "#,
-                                item.name,
-                                user_id
-                            )
-                            .fetch_all(&mut **tx)
-                            .await?;
-
-                            for mapping in existing_mappings {
-                                let exists = existing_store_info_set.contains(&(item.id.clone(), mapping.store_id.clone()));
-
-                                if !exists {
-                                    sqlx::query!(
-                                        r#"
-                                        INSERT INTO grocery_item_store_info (
-                                            "groceryItemId", "storeId", price, "isAvailable", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
-                                        ) VALUES ($1, $2, $3, $4, $5, 1, FALSE, 'SYNCED', $6, NULL)
-                                        "#,
-                                        item.id,
-                                        mapping.store_id,
-                                        mapping.price,
-                                        mapping.is_available,
-                                        user_id,
-                                        server_timestamp
-                                    )
-                                    .execute(&mut **tx)
-                                    .await?;
+                            // Auto-populate store mapping, but only the first time the
+                            // server sees this row: the backfill is a convenience for a
+                            // brand new item, and a row already in `existing_map` went
+                            // through it on the sync that created it.
+                            if record.is_none() {
+                                if let Some(mappings) = mappings_by_name.get(&item.name.to_lowercase()) {
+                                    for (store_id, price, is_available) in mappings {
+                                        // `existing_store_info_set` also absorbs what this
+                                        // batch has already queued, so two changes naming the
+                                        // same (item, store) pair no longer both try to insert.
+                                        if existing_store_info_set
+                                            .insert((item.id.clone(), store_id.clone()))
+                                        {
+                                            pending_store_info.push((
+                                                item.id.clone(),
+                                                store_id.clone(),
+                                                *price,
+                                                *is_available,
+                                            ));
+                                        }
+                                    }
                                 }
                             }
 
@@ -366,5 +411,33 @@ pub async fn process_grocery_changes(
             }
         }
     }
+
+    if !pending_store_info.is_empty() {
+        let item_ids: Vec<String> = pending_store_info.iter().map(|m| m.0.clone()).collect();
+        let store_ids: Vec<String> = pending_store_info.iter().map(|m| m.1.clone()).collect();
+        let prices: Vec<Option<f64>> = pending_store_info.iter().map(|m| m.2).collect();
+        let availabilities: Vec<bool> = pending_store_info.iter().map(|m| m.3).collect();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO grocery_item_store_info (
+                "groceryItemId", "storeId", price, "isAvailable", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
+            )
+            SELECT m.item_id, m.store_id, m.price, m.is_available, $5, 1, FALSE, 'SYNCED', $6, NULL::text
+            FROM UNNEST($1::text[], $2::text[], $3::double precision[], $4::bool[])
+                AS m(item_id, store_id, price, is_available)
+            ON CONFLICT ("groceryItemId", "storeId") DO NOTHING
+            "#,
+            &item_ids,
+            &store_ids,
+            &prices as &[Option<f64>],
+            &availabilities,
+            user_id,
+            server_timestamp
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+
     Ok(())
 }

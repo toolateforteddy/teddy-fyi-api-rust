@@ -1,8 +1,267 @@
-use crate::routes::sync::deletes::soft_delete_version;
+use crate::routes::sync::batching::RunTracker;
+use crate::routes::sync::deletes::ack_unsynced_delete;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
+use std::collections::{HashMap, HashSet};
+
+/// The kinds of write this processor issues. A run may only contain one of them; see
+/// `crate::routes::sync::batching`.
+#[derive(PartialEq, Eq)]
+enum WriteKind {
+    Upsert,
+    VersionBump,
+    Delete,
+}
+
+/// The column vectors for the run currently being accumulated.
+///
+/// One `Vec` per column rather than a `Vec` of structs, because that is the shape
+/// `UNNEST($1::text[], $2::int4[], ...)` takes: the arrays are zipped into rows by
+/// Postgres, so the batched statement is the per-item statement with every scalar
+/// parameter replaced by an array of the same length. Parameters that are the same for
+/// every item in the request -- the authenticated user, the server timestamp, the client
+/// -- stay scalars.
+#[derive(Default)]
+struct Pending {
+    up_id: Vec<String>,
+    up_name: Vec<String>,
+    up_quantity: Vec<String>,
+    up_is_bought: Vec<bool>,
+    up_created_at: Vec<i64>,
+    up_position: Vec<i32>,
+    up_category_id: Vec<Option<String>>,
+    up_times_bought: Vec<i32>,
+    up_is_active: Vec<bool>,
+    up_list_id: Vec<Option<String>>,
+    up_unit: Vec<Option<String>>,
+    up_notes: Vec<Option<String>>,
+    up_version: Vec<i32>,
+    up_is_deleted: Vec<bool>,
+
+    bump_id: Vec<String>,
+    bump_version: Vec<i32>,
+
+    del_id: Vec<String>,
+    /// Where in `upload_status` each buffered delete's placeholder sits. A delete's
+    /// version comes back from the statement (`version = version + 1` is decided by the
+    /// row, not by us), but its status entry has to keep its position in the response, so
+    /// the entry is pushed in loop order and its version patched in on flush.
+    del_status_idx: Vec<usize>,
+}
+
+impl Pending {
+    async fn flush(
+        &mut self,
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: &str,
+        client_id: &str,
+        server_timestamp: DateTime<Utc>,
+        existing_store_info_set: &HashSet<(String, String)>,
+        upload_status: &mut [SuccessResult],
+    ) -> Result<(), AppError> {
+        if !self.up_id.is_empty() {
+            sqlx::query!(
+                r#"
+                INSERT INTO grocery_items (
+                    id, name, quantity, "isBought", "createdAt", position, "categoryId",
+                    "timesBought", "userId", "isActive", "listId", unit, notes, version,
+                    is_deleted, sync_state, updated_at, updated_by_client
+                )
+                SELECT
+                    v.id, v.name, v.quantity, v.is_bought, v.created_at, v.position,
+                    v.category_id, v.times_bought, $15, v.is_active, v.list_id, v.unit,
+                    v.notes, v.version, v.is_deleted, 'SYNCED', $16, $17
+                FROM UNNEST(
+                    $1::text[], $2::text[], $3::text[], $4::bool[], $5::int8[], $6::int4[],
+                    $7::text[], $8::int4[], $9::bool[], $10::text[], $11::text[],
+                    $12::text[], $13::int4[], $14::bool[]
+                ) AS v(
+                    id, name, quantity, is_bought, created_at, position, category_id,
+                    times_bought, is_active, list_id, unit, notes, version, is_deleted
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    quantity = EXCLUDED.quantity,
+                    "isBought" = EXCLUDED."isBought",
+                    "createdAt" = EXCLUDED."createdAt",
+                    position = EXCLUDED.position,
+                    "categoryId" = EXCLUDED."categoryId",
+                    "timesBought" = EXCLUDED."timesBought",
+                    "userId" = EXCLUDED."userId",
+                    "isActive" = EXCLUDED."isActive",
+                    "listId" = EXCLUDED."listId",
+                    unit = EXCLUDED.unit,
+                    notes = EXCLUDED.notes,
+                    version = EXCLUDED.version,
+                    is_deleted = EXCLUDED.is_deleted,
+                    sync_state = EXCLUDED.sync_state,
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by_client = EXCLUDED.updated_by_client
+                "#,
+                &self.up_id,
+                &self.up_name,
+                &self.up_quantity,
+                &self.up_is_bought,
+                &self.up_created_at,
+                &self.up_position,
+                &self.up_category_id as &[Option<String>],
+                &self.up_times_bought,
+                &self.up_is_active,
+                &self.up_list_id as &[Option<String>],
+                &self.up_unit as &[Option<String>],
+                &self.up_notes as &[Option<String>],
+                &self.up_version,
+                &self.up_is_deleted,
+                user_id,
+                server_timestamp,
+                client_id
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            // Auto-populate store mapping. The lookup stays one query per item (it is a
+            // correlated `LOWER(name)` search, not a uniform write), but it now runs after
+            // the upsert above rather than interleaved with it, so it still sees the row
+            // it belongs to; only the inserts it produces are batched.
+            let mut si_item: Vec<String> = Vec::new();
+            let mut si_store: Vec<String> = Vec::new();
+            let mut si_price: Vec<Option<f64>> = Vec::new();
+            let mut si_available: Vec<bool> = Vec::new();
+
+            for (item_id, item_name) in self.up_id.iter().zip(self.up_name.iter()) {
+                let existing_mappings = sqlx::query!(
+                    r#"
+                    SELECT DISTINCT gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available
+                    FROM grocery_item_store_info gsi
+                    JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
+                    JOIN grocery_list_members glm ON gi."listId" = glm."listId"
+                    WHERE LOWER(gi.name) = LOWER($1)
+                      AND glm."userId" = $2
+                      AND gi.is_deleted = FALSE
+                      AND gsi.is_deleted = FALSE
+                    "#,
+                    item_name,
+                    user_id
+                )
+                .fetch_all(&mut **tx)
+                .await?;
+
+                for mapping in existing_mappings {
+                    let exists = existing_store_info_set
+                        .contains(&(item_id.clone(), mapping.store_id.clone()));
+
+                    if !exists {
+                        si_item.push(item_id.clone());
+                        si_store.push(mapping.store_id);
+                        si_price.push(mapping.price);
+                        si_available.push(mapping.is_available);
+                    }
+                }
+            }
+
+            if !si_item.is_empty() {
+                sqlx::query!(
+                    r#"
+                    INSERT INTO grocery_item_store_info (
+                        "groceryItemId", "storeId", price, "isAvailable", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
+                    )
+                    SELECT v.item_id, v.store_id, v.price, v.is_available, $5, 1, FALSE, 'SYNCED', $6, NULL
+                    FROM UNNEST($1::text[], $2::text[], $3::float8[], $4::bool[])
+                        AS v(item_id, store_id, price, is_available)
+                    "#,
+                    &si_item,
+                    &si_store,
+                    &si_price as &[Option<f64>],
+                    &si_available,
+                    user_id,
+                    server_timestamp
+                )
+                .execute(&mut **tx)
+                .await?;
+            }
+
+            self.up_id.clear();
+            self.up_name.clear();
+            self.up_quantity.clear();
+            self.up_is_bought.clear();
+            self.up_created_at.clear();
+            self.up_position.clear();
+            self.up_category_id.clear();
+            self.up_times_bought.clear();
+            self.up_is_active.clear();
+            self.up_list_id.clear();
+            self.up_unit.clear();
+            self.up_notes.clear();
+            self.up_version.clear();
+            self.up_is_deleted.clear();
+        }
+
+        if !self.bump_id.is_empty() {
+            sqlx::query!(
+                r#"
+                UPDATE grocery_items SET
+                    version = v.version,
+                    updated_at = $3,
+                    updated_by_client = $4,
+                    sync_state = 'SYNCED'
+                FROM UNNEST($1::text[], $2::int4[]) AS v(id, version)
+                WHERE grocery_items.id = v.id
+                "#,
+                &self.bump_id,
+                &self.bump_version,
+                server_timestamp,
+                client_id
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            self.bump_id.clear();
+            self.bump_version.clear();
+        }
+
+        if !self.del_id.is_empty() {
+            // `RETURNING id, version` rather than the single-row `RETURNING version` the
+            // `soft_delete_version!` macro wraps: the ids that come back are the rows the
+            // server actually had, and the ones that do not are acknowledged as already
+            // deleted exactly as before. See `crate::routes::sync::deletes` for why a
+            // delete for a missing row must not fail the batch.
+            let updated = sqlx::query!(
+                r#"
+                UPDATE grocery_items SET
+                    is_deleted = TRUE,
+                    version = version + 1,
+                    updated_at = $1,
+                    updated_by_client = $2
+                WHERE id = ANY($3)
+                RETURNING id, version
+                "#,
+                server_timestamp,
+                client_id,
+                &self.del_id
+            )
+            .fetch_all(&mut **tx)
+            .await?;
+
+            let deleted: HashMap<String, i32> =
+                updated.into_iter().map(|r| (r.id, r.version)).collect();
+
+            for (id, status_idx) in self.del_id.iter().zip(self.del_status_idx.iter()) {
+                let version = match deleted.get(id) {
+                    Some(version) => *version,
+                    None => ack_unsynced_delete("grocery item", id),
+                };
+                upload_status[*status_idx].version = version;
+            }
+
+            self.del_id.clear();
+            self.del_status_idx.clear();
+        }
+
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn process_grocery_changes(
@@ -69,6 +328,12 @@ pub async fn process_grocery_changes(
     for row in existing_store_infos {
         existing_store_info_set.insert((row.grocery_item_id, row.store_id));
     }
+
+    // Writes are buffered into runs of one kind and flushed as a single statement each.
+    // Everything above a write -- authorization, version assignment, what goes into the
+    // response and in which order -- is unchanged and still decided per item.
+    let mut runs: RunTracker<WriteKind> = RunTracker::new();
+    let mut pending = Pending::default();
 
     for change in changes {
         let string_id = change.id.clone();
@@ -175,93 +440,28 @@ pub async fn process_grocery_changes(
                                 seed_version("Grocery", &change.id, item.version)?
                             };
 
-                            sqlx::query!(
-                                r#"
-                                INSERT INTO grocery_items (
-                                    id, name, quantity, "isBought", "createdAt", position, "categoryId",
-                                    "timesBought", "userId", "isActive", "listId", unit, notes, version,
-                                    is_deleted, sync_state, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-                                ON CONFLICT (id) DO UPDATE SET
-                                    name = EXCLUDED.name,
-                                    quantity = EXCLUDED.quantity,
-                                    "isBought" = EXCLUDED."isBought",
-                                    "createdAt" = EXCLUDED."createdAt",
-                                    position = EXCLUDED.position,
-                                    "categoryId" = EXCLUDED."categoryId",
-                                    "timesBought" = EXCLUDED."timesBought",
-                                    "userId" = EXCLUDED."userId",
-                                    "isActive" = EXCLUDED."isActive",
-                                    "listId" = EXCLUDED."listId",
-                                    unit = EXCLUDED.unit,
-                                    notes = EXCLUDED.notes,
-                                    version = EXCLUDED.version,
-                                    is_deleted = EXCLUDED.is_deleted,
-                                    sync_state = EXCLUDED.sync_state,
-                                    updated_at = EXCLUDED.updated_at,
-                                    updated_by_client = EXCLUDED.updated_by_client
-                                "#,
-                                item.id,
-                                item.name,
-                                item.quantity,
-                                item.is_bought,
-                                item.created_at,
-                                item.position,
-                                item.category_id,
-                                item.times_bought,
-                                user_id, // override with authenticated user_id
-                                item.is_active,
-                                item.list_id,
-                                item.unit,
-                                item.notes,
-                                next_version,
-                                item.is_deleted,
-                                "SYNCED",
-                                server_timestamp,
-                                client_id
-                            )
-                            .execute(&mut **tx)
-                            .await?;
-
-                            // Auto-populate store mapping
-                            let existing_mappings = sqlx::query!(
-                                r#"
-                                SELECT DISTINCT gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available
-                                FROM grocery_item_store_info gsi
-                                JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
-                                JOIN grocery_list_members glm ON gi."listId" = glm."listId"
-                                WHERE LOWER(gi.name) = LOWER($1)
-                                  AND glm."userId" = $2
-                                  AND gi.is_deleted = FALSE
-                                  AND gsi.is_deleted = FALSE
-                                "#,
-                                item.name,
-                                user_id
-                            )
-                            .fetch_all(&mut **tx)
-                            .await?;
-
-                            for mapping in existing_mappings {
-                                let exists = existing_store_info_set.contains(&(item.id.clone(), mapping.store_id.clone()));
-
-                                if !exists {
-                                    sqlx::query!(
-                                        r#"
-                                        INSERT INTO grocery_item_store_info (
-                                            "groceryItemId", "storeId", price, "isAvailable", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
-                                        ) VALUES ($1, $2, $3, $4, $5, 1, FALSE, 'SYNCED', $6, NULL)
-                                        "#,
-                                        item.id,
-                                        mapping.store_id,
-                                        mapping.price,
-                                        mapping.is_available,
-                                        user_id,
-                                        server_timestamp
-                                    )
-                                    .execute(&mut **tx)
+                            if runs.needs_flush(&WriteKind::Upsert, &item.id) {
+                                pending
+                                    .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
                                     .await?;
-                                }
+                                runs.clear();
                             }
+                            runs.record(WriteKind::Upsert, item.id.clone());
+
+                            pending.up_id.push(item.id);
+                            pending.up_name.push(item.name);
+                            pending.up_quantity.push(item.quantity);
+                            pending.up_is_bought.push(item.is_bought);
+                            pending.up_created_at.push(item.created_at);
+                            pending.up_position.push(item.position);
+                            pending.up_category_id.push(item.category_id);
+                            pending.up_times_bought.push(item.times_bought);
+                            pending.up_is_active.push(item.is_active);
+                            pending.up_list_id.push(item.list_id);
+                            pending.up_unit.push(item.unit);
+                            pending.up_notes.push(item.notes);
+                            pending.up_version.push(next_version);
+                            pending.up_is_deleted.push(item.is_deleted);
 
                             upload_status.push(SuccessResult {
                                 id: string_id.clone(),
@@ -299,15 +499,17 @@ pub async fn process_grocery_changes(
 
                         // Bounded like every other version bump here; see `crate::routes::sync::versioning`.
                         let next_version = advance_version("Grocery", &change.id, row.version)?;
-                        sqlx::query!(
-                            "UPDATE grocery_items SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
-                            next_version,
-                            server_timestamp,
-                            client_id,
-                            change.id
-                        )
-                        .execute(&mut **tx)
-                        .await?;
+
+                        if runs.needs_flush(&WriteKind::VersionBump, &change.id) {
+                            pending
+                                .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+                                .await?;
+                            runs.clear();
+                        }
+                        runs.record(WriteKind::VersionBump, change.id.clone());
+
+                        pending.bump_id.push(change.id.clone());
+                        pending.bump_version.push(next_version);
 
                         upload_status.push(SuccessResult {
                             id: string_id.clone(),
@@ -347,24 +549,32 @@ pub async fn process_grocery_changes(
                 // Outside the guard above, which only decides authorization: a delete for
                 // a row the server never had is acknowledged rather than left pending, so
                 // the client can stop resending it. See `crate::routes::sync::deletes`.
-                let version = soft_delete_version!(
-                    tx,
-                    "grocery item",
-                    &change.id,
-                    "UPDATE grocery_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
-                    server_timestamp,
-                    client_id,
-                    change.id,
-                );
+                if runs.needs_flush(&WriteKind::Delete, &change.id) {
+                    pending
+                        .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+                        .await?;
+                    runs.clear();
+                }
+                runs.record(WriteKind::Delete, change.id.clone());
+
+                pending.del_id.push(change.id.clone());
+                pending.del_status_idx.push(upload_status.len());
 
                 upload_status.push(SuccessResult {
                     id: string_id.clone(),
-                    version,
+                    // Patched by the flush that issues this delete, which is what learns
+                    // the row's new version.
+                    version: 0,
                     sync_state: "SYNCED".to_string(),
                 });
                 success_ids.push(string_id);
             }
         }
     }
+
+    pending
+        .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+        .await?;
+
     Ok(())
 }

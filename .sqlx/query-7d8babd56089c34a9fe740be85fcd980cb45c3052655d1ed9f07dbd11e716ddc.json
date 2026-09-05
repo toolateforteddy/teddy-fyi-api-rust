@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    INSERT INTO grocery_item_store_info (\n                        \"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_at, updated_by_client\n                    )\n                    SELECT v.item_id, v.store_id, v.price, v.is_available, $5, 1, FALSE, 'SYNCED', $6, NULL\n                    FROM UNNEST($1::text[], $2::text[], $3::float8[], $4::bool[])\n                        AS v(item_id, store_id, price, is_available)\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Float8Array",
+        "BoolArray",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d8babd56089c34a9fe740be85fcd980cb45c3052655d1ed9f07dbd11e716ddc"
+}

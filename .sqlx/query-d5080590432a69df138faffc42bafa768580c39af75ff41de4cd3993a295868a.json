@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO grocery_items (\n                    id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\",\n                    \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version,\n                    is_deleted, sync_state, updated_at, updated_by_client\n                )\n                SELECT\n                    v.id, v.name, v.quantity, v.is_bought, v.created_at, v.position,\n                    v.category_id, v.times_bought, $15, v.is_active, v.list_id, v.unit,\n                    v.notes, v.version, v.is_deleted, 'SYNCED', $16, $17\n                FROM UNNEST(\n                    $1::text[], $2::text[], $3::text[], $4::bool[], $5::int8[], $6::int4[],\n                    $7::text[], $8::int4[], $9::bool[], $10::text[], $11::text[],\n                    $12::text[], $13::int4[], $14::bool[]\n                ) AS v(\n                    id, name, quantity, is_bought, created_at, position, category_id,\n                    times_bought, is_active, list_id, unit, notes, version, is_deleted\n                )\n                ON CONFLICT (id) DO UPDATE SET\n                    name = EXCLUDED.name,\n                    quantity = EXCLUDED.quantity,\n                    \"isBought\" = EXCLUDED.\"isBought\",\n                    \"createdAt\" = EXCLUDED.\"createdAt\",\n                    position = EXCLUDED.position,\n                    \"categoryId\" = EXCLUDED.\"categoryId\",\n                    \"timesBought\" = EXCLUDED.\"timesBought\",\n                    \"userId\" = EXCLUDED.\"userId\",\n                    \"isActive\" = EXCLUDED.\"isActive\",\n                    \"listId\" = EXCLUDED.\"listId\",\n                    unit = EXCLUDED.unit,\n                    notes = EXCLUDED.notes,\n                    version = EXCLUDED.version,\n                    is_deleted = EXCLUDED.is_deleted,\n                    sync_state = EXCLUDED.sync_state,\n                    updated_at = EXCLUDED.updated_at,\n                    updated_by_client = EXCLUDED.updated_by_client\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "BoolArray",
+        "Int8Array",
+        "Int4Array",
+        "TextArray",
+        "Int4Array",
+        "BoolArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int4Array",
+        "BoolArray",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d5080590432a69df138faffc42bafa768580c39af75ff41de4cd3993a295868a"
+}

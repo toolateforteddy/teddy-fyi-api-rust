@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) VALUES ($1, $2, $3, $4, $5, false, 1, 'SYNCED'::sync_state, 1000, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0574f2ce2b96ed16fceb15cf2148c2f0fd2e645c167b48ec6aafc5f4dbca894"
+}

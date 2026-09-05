@@ -1,5 +1,6 @@
 use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
 use crate::routes::sync::types::*;
+use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -11,10 +12,13 @@ pub struct ConfigBroadcast {
 }
 
 /// A config row already on the server that an incoming write should land on.
+///
+/// Its `version` is the sole input to the row's next version; the row's stored
+/// `last_modified` is not read here at all any more, because nothing compares it — see
+/// [`crate::routes::sync::versioning`].
 struct ExistingConfig {
     id: Uuid,
     version: i32,
-    last_modified: i64,
 }
 
 /// Where an incoming config write should land.
@@ -39,7 +43,7 @@ async fn resolve_config_target(
     key: &str,
 ) -> Result<ConfigTarget, AppError> {
     let by_key = sqlx::query!(
-        "SELECT id, version, last_modified FROM configs WHERE user_id = $1 AND device_uuid = $2 AND key = $3",
+        "SELECT id, version FROM configs WHERE user_id = $1 AND device_uuid = $2 AND key = $3",
         user_id,
         device_uuid,
         key
@@ -52,7 +56,7 @@ async fn resolve_config_target(
     // tablet's row to the writer. Reading across devices is a separate concern — see the
     // `device_filter` the fetch functions below still take.
     let by_id = sqlx::query!(
-        "SELECT id, version, last_modified FROM configs \
+        "SELECT id, version FROM configs \
          WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
         submitted_id,
         user_id,
@@ -77,13 +81,11 @@ async fn resolve_config_target(
         .map(|row| ExistingConfig {
             id: row.id,
             version: row.version,
-            last_modified: row.last_modified,
         })
         .or_else(|| {
             by_id.map(|row| ExistingConfig {
                 id: row.id,
                 version: row.version,
-                last_modified: row.last_modified,
             })
         });
 
@@ -110,7 +112,12 @@ async fn write_config(
     target: &ConfigTarget,
     version: i32,
     is_deleted: bool,
-    last_modified: i64,
+    // The server's stamp for this write, and the client's own claim about when the edit
+    // happened. Only the first is stored in `last_modified` — it is what the download
+    // cursor and the conflict policy are defined in — and the second is kept beside it
+    // where nothing compares it. See `crate::routes::sync::versioning`.
+    server_ms: i64,
+    client_last_modified: i64,
     key: &str,
     value: &str,
     broadcasts: &mut Vec<ConfigBroadcast>,
@@ -118,15 +125,16 @@ async fn write_config(
     if let Some(ref existing) = target.existing {
         sqlx::query!(
             "UPDATE configs SET id = $1, device_uuid = $2, client_uuid = $3, version = $4, \
-                 is_deleted = $5, last_modified = $6, sync_state = $7::text::sync_state, \
-                 key = $8, value = $9 \
-             WHERE id = $10 AND user_id = $11",
+                 is_deleted = $5, last_modified = $6, client_last_modified = $7, \
+                 sync_state = $8::text::sync_state, key = $9, value = $10 \
+             WHERE id = $11 AND user_id = $12",
             target.new_id,
             device_uuid,
             client_id,
             version,
             is_deleted,
-            last_modified,
+            server_ms,
+            client_last_modified,
             "SYNCED",
             key,
             value,
@@ -137,15 +145,16 @@ async fn write_config(
         .await?;
     } else {
         sqlx::query!(
-            "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, key, value) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10)",
+            "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, key, value) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::sync_state, $10, $11)",
             target.new_id,
             user_id,
             device_uuid,
             client_id,
             version,
             is_deleted,
-            last_modified,
+            server_ms,
+            client_last_modified,
             "SYNCED",
             key,
             value
@@ -164,7 +173,9 @@ async fn write_config(
             sync_state: "SYNCED".to_string(),
             version,
             is_deleted,
-            last_modified,
+            // The broadcast carries what was stored, so a listening stream and a polling
+            // client end up holding the same stamp for the same row.
+            last_modified: server_ms,
         },
     });
     Ok(())
@@ -175,6 +186,8 @@ pub async fn process_config_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    // This request's server clock reading, in epoch milliseconds. See `write_config`.
+    server_ms: i64,
     device_rule: &ItemDeviceRule,
     device_filter: Option<Uuid>,
     changes: &[ConfigChangeDelta],
@@ -252,36 +265,21 @@ pub async fn process_config_changes(
                             )
                             .await?;
 
-                            let next_version = if let Some(ref row) = target.existing {
-                                if item.version == row.version {
-                                    row.version + 1
-                                } else if item.version < row.version {
-                                    if item.last_modified >= row.last_modified {
+                            // Server row decides the number; the client's clock decides
+                            // nothing. Identical to the drawing path, deliberately — see
+                            // `crate::routes::sync::versioning` for the one policy both
+                            // now follow.
+                            let next_version = match target.existing {
+                                Some(ref row) => {
+                                    if item.version < row.version {
                                         tracing::warn!(
-                                            "MVCC Conflict for config {}. Client version: {}, Server version: {}. Resolving via LWW (Client wins: client last_modified {} >= server last_modified {}). Overwriting server state.",
-                                            change_id, item.version, row.version, item.last_modified, row.last_modified
+                                            "Conflicting write for config {} (client version {}, server version {}); accepting it as the later arrival",
+                                            change_id, item.version, row.version
                                         );
-                                        row.version + 1
-                                    } else {
-                                        tracing::warn!(
-                                            "MVCC Conflict for config {}. Client version: {}, Server version: {}. Resolving via LWW (Server wins: client last_modified {} < server last_modified {}). Rejecting client update.",
-                                            change_id, item.version, row.version, item.last_modified, row.last_modified
-                                        );
-                                        // Server has a newer write. Reject incoming update, return current server state version
-                                        upload_status.push(SuccessResult {
-                                            id: change_id.to_string(),
-                                            version: row.version,
-                                            sync_state: "SYNCED".to_string(),
-                                        });
-                                        success_ids.push(change_id.to_string());
-                                        continue;
                                     }
-                                } else {
-                                    // Client is ahead
-                                    item.version + 1
+                                    advance_version("Config", change_id, row.version)?
                                 }
-                            } else {
-                                item.version
+                                None => seed_version("Config", change_id, item.version)?,
                             };
 
                             tracing::info!(
@@ -301,6 +299,7 @@ pub async fn process_config_changes(
                                 &target,
                                 next_version,
                                 item.is_deleted,
+                                server_ms,
                                 item.last_modified,
                                 &item.key,
                                 &item.value,
@@ -341,14 +340,18 @@ pub async fn process_config_changes(
                     .await?;
 
                     if let Some(row) = existing {
-                        let next_version = row.version + 1;
+                        let next_version = advance_version("Config", change_id, row.version)?;
                         tracing::info!("Applying config metadata update for {}. Next version: {}", change_id, next_version);
+                        // `last_modified` moves with the write: it is the cursor the
+                        // account's other devices poll against, so a row that changes
+                        // without it changing is a change they never see.
                         let written = sqlx::query!(
-                            "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' \
-                             WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
+                            "UPDATE configs SET version = $1, client_uuid = $2, last_modified = $3, sync_state = 'SYNCED' \
+                             WHERE id = $4 AND user_id = $5 AND device_uuid = $6 \
                              RETURNING device_uuid, is_deleted, last_modified, key, value",
                             next_version,
                             client_id,
+                            server_ms,
                             change_uuid,
                             user_id,
                             device_uuid
@@ -402,14 +405,17 @@ pub async fn process_config_changes(
                 .await?;
 
                 if let Some(row) = existing {
-                    let next_version = row.version + 1;
+                    let next_version = advance_version("Config", change_id, row.version)?;
                     tracing::info!("Applying config soft-delete for {}. Next version: {}", change_id, next_version);
+                    // Stamped for the same reason as the update above: a soft-delete the
+                    // cursor cannot see is a deletion the sibling tablet never applies.
                     let written = sqlx::query!(
-                        "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE' \
-                         WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
+                        "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE' \
+                         WHERE id = $4 AND user_id = $5 AND device_uuid = $6 \
                          RETURNING device_uuid, last_modified, key, value",
                         next_version,
                         client_id,
+                        server_ms,
                         change_uuid,
                         user_id,
                         device_uuid
@@ -508,6 +514,8 @@ pub async fn process_config_sync_items(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    // This request's server clock reading, in epoch milliseconds. See `write_config`.
+    server_ms: i64,
     device_rule: &ItemDeviceRule,
     items: &[ConfigSyncItem],
     success_uuids: &mut Vec<Uuid>,
@@ -539,15 +547,16 @@ pub async fn process_config_sync_items(
             .await?;
 
             if let Some(row) = existing {
-                let next_version = row.version + 1;
+                let next_version = advance_version("Config", &item.id.to_string(), row.version)?;
                 tracing::info!("Applying config soft-delete for {}. Next version: {}", item.id, next_version);
                 let written = sqlx::query!(
-                    "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, \
+                    "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, \
                          sync_state = 'PENDING_DELETE'::text::sync_state \
-                     WHERE id = $3 AND user_id = $4 AND device_uuid = $5 \
+                     WHERE id = $4 AND user_id = $5 AND device_uuid = $6 \
                      RETURNING device_uuid, last_modified, key, value",
                     next_version,
                     client_id,
+                    server_ms,
                     item.id,
                     user_id,
                     device_uuid
@@ -577,30 +586,18 @@ pub async fn process_config_sync_items(
                 resolve_config_target(tx, user_id, device_uuid, item.id, &item.key)
                     .await?;
 
-            let next_version = if let Some(ref row) = target.existing {
-                if item.version == row.version {
-                    row.version + 1
-                } else if item.version < row.version {
-                    if item.last_modified >= row.last_modified {
+            // Same policy as every other write path here.
+            let next_version = match target.existing {
+                Some(ref row) => {
+                    if item.version < row.version {
                         tracing::warn!(
-                            "MVCC Conflict for config {}. Client version: {}, Server version: {}. Resolving via LWW (Client wins: client last_modified {} >= server last_modified {}). Overwriting server state.",
-                            item.id, item.version, row.version, item.last_modified, row.last_modified
+                            "Conflicting write for config {} (client version {}, server version {}); accepting it as the later arrival",
+                            item.id, item.version, row.version
                         );
-                        row.version + 1
-                    } else {
-                        tracing::warn!(
-                            "MVCC Conflict for config {}. Client version: {}, Server version: {}. Resolving via LWW (Server wins: client last_modified {} < server last_modified {}). Rejecting client update.",
-                            item.id, item.version, row.version, item.last_modified, row.last_modified
-                        );
-                        // Server has a newer write. Accept the server's state, but count as success so client receives server state
-                        success_uuids.push(item.id);
-                        continue;
                     }
-                } else {
-                    item.version + 1
+                    advance_version("Config", &item.id.to_string(), row.version)?
                 }
-            } else {
-                item.version
+                None => seed_version("Config", &item.id.to_string(), item.version)?,
             };
 
             tracing::info!(
@@ -620,6 +617,7 @@ pub async fn process_config_sync_items(
                 &target,
                 next_version,
                 item.is_deleted,
+                server_ms,
                 item.last_modified,
                 &item.key,
                 &item.value,

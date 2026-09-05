@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT version, last_modified FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+  "query": "SELECT version, data FROM drawings WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -10,14 +10,12 @@
       },
       {
         "ordinal": 1,
-        "name": "last_modified",
-        "type_info": "Int8"
+        "name": "data",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
         "Uuid"
       ]
     },
@@ -26,5 +24,5 @@
       false
     ]
   },
-  "hash": "8ff31a45554892c613ec279cb0a7c3bc1407d6f57238f8ee42664f9fb5434858"
+  "hash": "e62cf9708c25ff3d7d161d21387c97f52f097d88fca244522e38e149d8b620d8"
 }

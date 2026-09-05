@@ -1,4 +1,5 @@
 use crate::routes::sync::types::*;
+use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
@@ -129,16 +130,21 @@ pub async fn process_category_changes(
                                 }
                             }
 
+                            // One policy for every synced row: the server's stored version is the only
+                            // input to the next one, and a row the server has never seen takes a bounded
+                            // seed. `max(row.version, item.version) + 1` let a single request carrying an
+                            // enormous `version` move this row's counter there permanently -- for a shared
+                            // list, for every member of it. See `crate::routes::sync::versioning`.
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
                                     tracing::warn!(
-                                        "MVCC Conflict for category {}. Client version: {}, Server version: {}. Resolving via LWW.",
+                                        "Conflicting write for category {} (client version {}, server version {}); accepting it as the later arrival",
                                         change.id, change.version, row.version
                                     );
                                 }
-                                std::cmp::max(row.version, item.version) + 1
+                                advance_version("Category", &change.id, row.version)?
                             } else {
-                                item.version
+                                seed_version("Category", &change.id, item.version)?
                             };
 
                             sqlx::query!(
@@ -205,7 +211,8 @@ pub async fn process_category_changes(
                             return Err(AppError::Forbidden(format!("User is not authorized to update category {}", change.id)));
                         }
 
-                        let next_version = row.version + 1;
+                        // Bounded like every other version bump here; see `crate::routes::sync::versioning`.
+                        let next_version = advance_version("Category", &change.id, row.version)?;
                         sqlx::query!(
                             "UPDATE categories SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE id = $4",
                             next_version,

@@ -479,3 +479,150 @@ fn unconfigured_lookup_falls_back_to_the_default_page() {
     );
     assert_eq!(verification_uri(None), DEFAULT_VERIFICATION_URI);
 }
+
+/// A tablet asking for a code while it already holds live ones is normal — the app
+/// restarted, or a response was lost — so the first few requests are simply served.
+#[sqlx::test]
+async fn starts_under_the_cap_are_served(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-under-cap";
+
+    for _ in 0..MAX_OUTSTANDING_PER_CLIENT {
+        start(&state, client_uuid).await;
+    }
+
+    let outstanding = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM device_authorizations WHERE client_uuid = $1"#,
+        client_uuid
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(outstanding, MAX_OUTSTANDING_PER_CLIENT);
+}
+
+/// Past the cap `/start` refuses rather than minting another row: this endpoint is
+/// unauthenticated, so an insert loop here is otherwise unbounded table growth that the
+/// reaper — which only sweeps rows that have already expired — cannot keep up with.
+#[sqlx::test]
+async fn starts_at_the_cap_are_refused(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-at-cap";
+
+    for _ in 0..MAX_OUTSTANDING_PER_CLIENT {
+        start(&state, client_uuid).await;
+    }
+
+    let refused = start_handler(
+        State(state.clone()),
+        Json(StartRequest {
+            client_uuid: client_uuid.to_string(),
+            app: Some("SCRIBBLE_KEEP".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(refused.unwrap_err(), StatusCode::TOO_MANY_REQUESTS);
+
+    // Refused means no row was written, not merely no code returned.
+    let rows = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM device_authorizations WHERE client_uuid = $1"#,
+        client_uuid
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, MAX_OUTSTANDING_PER_CLIENT);
+
+    // The cap is per client: the tablet next to it pairs normally.
+    start(&state, "fire-tablet-innocent-neighbour").await;
+}
+
+/// The cap counts only what is still live. A tablet whose code timed out before the parent
+/// got to it must be able to ask for another one immediately.
+#[sqlx::test]
+async fn expired_rows_do_not_count_toward_the_cap(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-lapsed";
+
+    for _ in 0..MAX_OUTSTANDING_PER_CLIENT {
+        start(&state, client_uuid).await;
+    }
+    sqlx::query!(
+        "UPDATE device_authorizations
+            SET expires_at = now() - interval '1 minute'
+          WHERE client_uuid = $1",
+        client_uuid
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    start(&state, client_uuid).await;
+}
+
+/// A consumed row belongs to a pairing that already finished, so re-pairing the same
+/// tablet — a factory reset, a parent switching accounts — is not blocked by its history.
+#[sqlx::test]
+async fn consumed_rows_do_not_count_toward_the_cap(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-repaired";
+
+    for _ in 0..MAX_OUTSTANDING_PER_CLIENT {
+        start(&state, client_uuid).await;
+    }
+    sqlx::query!(
+        "UPDATE device_authorizations SET consumed_at = now() WHERE client_uuid = $1",
+        client_uuid
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    start(&state, client_uuid).await;
+}
+
+/// `client_uuid` is attacker-chosen on an unauthenticated route and lands in both the
+/// database and the log line, so its length is checked before either sees it.
+#[sqlx::test]
+async fn over_long_client_uuid_is_rejected(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    let result = start_handler(
+        State(state.clone()),
+        Json(StartRequest {
+            client_uuid: "u".repeat(MAX_CLIENT_UUID_LEN + 1),
+            app: Some("SCRIBBLE_KEEP".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+
+    let rows = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!" FROM device_authorizations"#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// `app` is bounded for the same reason, and a real build-flavour name is nowhere near the
+/// limit.
+#[sqlx::test]
+async fn over_long_app_is_rejected(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    let result = start_handler(
+        State(state.clone()),
+        Json(StartRequest {
+            client_uuid: "fire-tablet-verbose-app".to_string(),
+            app: Some("A".repeat(MAX_APP_LEN + 1)),
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+
+    let rows = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!" FROM device_authorizations"#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}

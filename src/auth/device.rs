@@ -80,6 +80,26 @@ const APP_VERIFICATION_URIS: &[(&str, &str)] = &[
     ("TEDDY_FYI_GROCERY", "https://teddy.fyi/link"),
 ];
 
+/// Outstanding — unexpired, unconsumed — authorizations one `client_uuid` may hold at
+/// once. A real tablet needs exactly one: it asks for a code, shows it, and polls until
+/// the parent redeems it. Three leaves room for the ways that goes wrong in the field —
+/// the app restarted mid-pairing, a request whose response never arrived and was retried —
+/// while turning an unauthenticated insert loop into a wall the attacker hits on the
+/// fourth call. Without it `/start` mints a row per request forever: the reaper only
+/// sweeps rows that have already *expired*, so a sustained insert rate outruns it and the
+/// table grows without bound. Expired and consumed rows do not count, so a tablet whose
+/// code timed out can immediately ask for another.
+const MAX_OUTSTANDING_PER_CLIENT: i64 = 3;
+
+/// Longest `client_uuid` and `app` this endpoint will accept. Both are attacker-chosen
+/// strings on an unauthenticated route, and both are written to the database and into log
+/// lines, so they are bounded before either happens. A `client_uuid` is a UUID-shaped
+/// string (36 characters formatted, 32 bare) and an `app` is a build-flavour enum name
+/// like `SCRIBBLE_KEEP`; 128 bytes is far more than either needs and still small enough
+/// that no caller can push megabytes through here.
+const MAX_CLIENT_UUID_LEN: usize = 128;
+const MAX_APP_LEN: usize = 128;
+
 /// Attempts to land a unique `user_code` before giving up. Each attempt is a fresh draw
 /// from a space of ~1.1e11, so more than one is already vanishingly unlikely.
 const CODE_GENERATION_ATTEMPTS: usize = 8;
@@ -206,10 +226,49 @@ fn audience_is_allowed(allowed: &std::collections::HashSet<String>, aud: &str) -
 
 /// `POST /auth/device/start` — unauthenticated. Hands the tablet a code to display and a
 /// device code to poll with.
+/// Over-long input is a `400` before anything is written or logged, and a client holding
+/// [`MAX_OUTSTANDING_PER_CLIENT`] live codes is a `429`.
 pub async fn start_handler(
     State(state): State<AppState>,
     Json(payload): Json<StartRequest>,
 ) -> Result<Response, StatusCode> {
+    // Length first, and before any `tracing` call: these are unauthenticated,
+    // caller-chosen strings, and neither the database nor the log should be the thing
+    // that discovers how long they are. Counted in bytes rather than characters because
+    // bytes are what the storage and the log line actually cost.
+    if payload.client_uuid.len() > MAX_CLIENT_UUID_LEN {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if payload.app.as_ref().is_some_and(|app| app.len() > MAX_APP_LEN) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Only live rows count: expired ones are the reaper's, and consumed ones belong to a
+    // pairing that already finished. A tablet that let a code lapse is not penalised for
+    // asking again.
+    let outstanding = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!"
+             FROM device_authorizations
+            WHERE client_uuid = $1
+              AND expires_at > now()
+              AND consumed_at IS NULL"#,
+        payload.client_uuid
+    )
+    .fetch_one(&state.db_pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to count outstanding device authorizations: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if outstanding >= MAX_OUTSTANDING_PER_CLIENT {
+        tracing::warn!(
+            client_uuid = %payload.client_uuid,
+            "Device start refused: outstanding authorization cap reached"
+        );
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
     let device_code: String = rand::rng()
         .sample_iter(Alphanumeric)
         .take(64)

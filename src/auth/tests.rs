@@ -98,10 +98,14 @@ mod tests {
         assert_eq!(token, Some(""));
     }
 
+    /// Only compiles in a `dev-auth` build, because a `mock.` token is the only way to reach
+    /// `login_handler`'s success path without a real Google ID token. It no longer clears
+    /// `cookie_domain` to get there: the bypass is a property of the build, not of the
+    /// cookie configuration, so the state left here is the ordinary `.teddy.fyi` one.
+    #[cfg(feature = "dev-auth")]
     #[sqlx::test]
     async fn test_login_handler_custom_duration(pool: PgPool) {
-        let mut state = setup_state(pool.clone());
-        state.cookie_domain = "".to_string(); // bypass Google OAuth validation via dev/mock token
+        let state = setup_state(pool.clone());
 
         // Login with 10 seconds custom expiration, requesting a cookie
         let payload = LoginRequest {
@@ -808,5 +812,127 @@ mod tests {
             &[sibling],
         )
         .await;
+    }
+
+    /// The regression this whole change exists to prevent.
+    ///
+    /// `COOKIE_DOMAIN` used to be the gate on the `mock.` bypass, so setting it to the empty
+    /// string — a legitimate configuration meaning "no Domain attribute on the cookie", which
+    /// is what a single-host deployment wants — silently turned `POST /auth/login` into
+    /// "mint a session for any `user_id` you can name". Cookie configuration must have no
+    /// bearing on authentication, so both spellings are asserted here: in a build without
+    /// `dev-auth` a `mock.` token is rejected either way, and nothing is written.
+    ///
+    /// (This drives the handler rather than `dev_bypass_identity` directly, so it covers the
+    /// wiring too. Rejection happens inside `validate_id_token`, which cannot parse
+    /// `mock.token` as a JWT and so fails before it would reach out to Google's certs.)
+    #[cfg(not(feature = "dev-auth"))]
+    #[sqlx::test]
+    async fn test_mock_token_is_rejected_whatever_the_cookie_domain(pool: PgPool) {
+        for cookie_domain in ["", ".teddy.fyi"] {
+            let mut state = setup_state(pool.clone());
+            state.cookie_domain = cookie_domain.to_string();
+
+            let payload = LoginRequest {
+                user_id: "victim-user-id".to_string(),
+                client_uuid: "attacker-client".to_string(),
+                google_auth_token: "mock.token".to_string(),
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            };
+
+            let status = login_handler(State(state), Json(payload))
+                .await
+                .expect_err("a `mock.` token must not authenticate in a production build");
+            assert_eq!(
+                status,
+                axum::http::StatusCode::UNAUTHORIZED,
+                "COOKIE_DOMAIN={cookie_domain:?} must not change this"
+            );
+        }
+
+        // Nothing was minted on the way to those rejections. These use the runtime query
+        // API rather than `sqlx::query!` on purpose: a macro query inside a `cfg`-gated
+        // test is only visible to `cargo sqlx prepare` in the configuration it compiles in,
+        // so it would make the checked-in `.sqlx` cache correct for one build and wrong for
+        // the other.
+        let user_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
+            .bind("victim-user-id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(user_rows, 0, "a rejected login must not upsert a user");
+
+        let session_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = $1")
+                .bind("victim-user-id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(session_rows, 0, "a rejected login must not create a session");
+    }
+
+    /// The other half of the same property, in the build that *does* carry the bypass: a
+    /// `mock.` token works, and it works with the production-shaped `COOKIE_DOMAIN` set,
+    /// proving the two are no longer coupled in either direction.
+    #[cfg(feature = "dev-auth")]
+    #[sqlx::test]
+    async fn test_mock_token_is_accepted_with_a_non_empty_cookie_domain(pool: PgPool) {
+        let mut state = setup_state(pool.clone());
+        state.cookie_domain = ".teddy.fyi".to_string();
+
+        let payload = LoginRequest {
+            user_id: "dev-user-id".to_string(),
+            client_uuid: "dev-client".to_string(),
+            google_auth_token: "mock.token".to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = login_handler(State(state), Json(payload))
+            .await
+            .expect("a dev-auth build must still accept `mock.` tokens");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        // Runtime query rather than the macro, for the `.sqlx`-cache reason noted on the
+        // sibling test above.
+        let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+            .bind("dev-user-id")
+            .fetch_one(&pool)
+            .await
+            .expect("the dev login should have upserted the user");
+        assert_eq!(
+            email.as_deref(),
+            Some(crate::auth::dev_bypass::DEV_USER_EMAIL)
+        );
+    }
+
+    /// An empty `COOKIE_DOMAIN` still has to do its actual job — omit the `Domain`
+    /// attribute — in both build configurations, since that is the setting the old gate
+    /// made unsafe to choose.
+    #[test]
+    fn test_session_cookie_shape_with_and_without_a_domain() {
+        let with_domain = crate::auth::handlers::session_cookie(".teddy.fyi", "tok", 10);
+        assert_eq!(
+            with_domain,
+            "access_token=tok; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=10"
+        );
+
+        let host_only = crate::auth::handlers::session_cookie("", "tok", 10);
+        assert_eq!(
+            host_only,
+            "access_token=tok; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=10"
+        );
+        assert!(!host_only.contains("Domain"));
+
+        // The logout spelling: same attributes, empty value, immediate expiry.
+        assert_eq!(
+            crate::auth::handlers::session_cookie("", "", 0),
+            "access_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"
+        );
+        assert_eq!(
+            crate::auth::handlers::session_cookie(".teddy.fyi", "", 0),
+            "access_token=; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=0"
+        );
     }
 }

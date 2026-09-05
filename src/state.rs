@@ -18,6 +18,13 @@ pub struct AppState {
     /// [`crate::routes::ai::gemini::build_http_client`], which also sets the
     /// outbound timeout.
     pub http_client: reqwest::Client,
+    /// `Domain` attribute for the `access_token` cookie, from `COOKIE_DOMAIN`. Empty means
+    /// no `Domain` attribute at all — a host-only cookie, and a perfectly ordinary
+    /// single-host deployment.
+    ///
+    /// Read only by [`crate::auth::handlers::session_cookie`], and it must stay that way.
+    /// It used to double as the gate on the `mock.` login bypass, which made "empty" a
+    /// silent switch for impersonating any account; see [`crate::auth::dev_bypass`].
     pub cookie_domain: String,
     /// Live `/api/sync/stream` counts, per account and per process.
     ///

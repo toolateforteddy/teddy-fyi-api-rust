@@ -46,9 +46,24 @@ jobs:
       - name: Run Clippy
         run: cargo clippy -- -D warnings
 
+      # The local-development build. `dev-auth` is off by default and therefore off in every
+      # step above, so without this the configuration developers actually run — and the
+      # `mock.` login bypass it compiles in — is never built or tested by CI, and rots.
+      - name: Run Clippy (dev-auth)
+        run: cargo clippy --features dev-auth -- -D warnings
+
       # Run Cargo tests (requires SQLx offline mode for query verification and a running Postgres instance)
       - name: Run Tests
         env:
           SQLX_OFFLINE: true
           DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
         run: make test
+
+      # Each feature configuration compiles tests the other does not: `make test` proves the
+      # shipped binary rejects `mock.` tokens whatever COOKIE_DOMAIN is, and this proves the
+      # bypass still works for developers who rely on it.
+      - name: Run Tests (dev-auth)
+        env:
+          SQLX_OFFLINE: true
+          DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
+        run: make test-dev-auth

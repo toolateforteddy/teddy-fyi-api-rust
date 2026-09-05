@@ -72,7 +72,7 @@ Ensure you have the following environment variables configured:
 * `GOOGLE_IOS_CLIENT_IDS`: Comma-separated client IDs of the iOS apps. Google's iOS sign-in flow issues ID tokens whose `aud` is the app's own client ID, so each of these is also accepted as an audience.
 * `GOOGLE_CLIENT_IDS`: Comma-separated client IDs for everything that is not an iOS app.
 
-  Between them these two form the accepted-audience allowlist, and at least one must be set in a real deployment; local dev can omit both and sign in with `mock.` tokens. The legacy single-value vars `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID_GROCERY_WEB`, and `SCRIBBLEROUTE_API_CLIENT_ID` are still honored.
+  Between them these two form the accepted-audience allowlist, and at least one **must** be set in a real deployment — a normal build now refuses to start with the allowlist empty, because it could never authenticate anybody and used to say so only in a single log line at boot. The legacy single-value vars `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID_GROCERY_WEB`, and `SCRIBBLEROUTE_API_CLIENT_ID` are still honored and count towards it. Local dev omits all of them and signs in with `mock.` tokens instead; see [The `dev-auth` feature](#the-dev-auth-feature) below.
 
   Device pairing has no bypass of its own: `POST /auth/device/claim` always validates the ID token, so the ScribbleRoute **web** client ID must be in this allowlist or every parent's claim returns `401`. It is currently supplied by `SCRIBBLEROUTE_API_CLIENT_ID`.
 * `CORS_ALLOWED_ORIGINS` (optional): Comma-separated browser origins allowed to call this API. Defaults to `https://teddy.fyi,https://scribbleroute.com,https://www.scribbleroute.com`. Never a wildcard — `allow_credentials` is on, which makes one invalid anyway.
@@ -80,6 +80,31 @@ Ensure you have the following environment variables configured:
 * `AUTH_RATE_LIMIT_BURST` / `AUTH_RATE_LIMIT_REPLENISH_MS` (optional): Per-IP rate limit across all of `/auth/*`. Defaults to a burst of `30` with one request returned every `500` ms. Sized for a household behind one NAT address with several tablets polling `/auth/device/poll`; raise it only if that stops being true.
 * `DEVICE_START_RATE_LIMIT_BURST` / `DEVICE_START_RATE_LIMIT_REPLENISH_MS` (optional): The tighter bucket on `/auth/device/start` alone, which stacks on top of the general one. Defaults to a burst of `5` with one request returned every `15000` ms — that endpoint runs an Argon2id hash (~19 MiB, tens of ms) before it has authenticated anything, so it is the one that turns a flood into an outage. These four exist so an incident can be ridden out with a rollout restart instead of a rebuild; a missing, zero or unparseable value falls back to the default rather than disabling the limiter. Note the limits key on `X-Forwarded-For`, which means they trust the ingress to set it.
 * `DEVICE_VERIFICATION_URI` (optional): The redemption page for a caller that named no app, or an app this build does not know. Defaults to `https://scribbleroute.com/link`. It does **not** override the per-app pages above.
+* `COOKIE_DOMAIN` (optional): The `Domain` attribute put on the `access_token` cookie. Defaults to `.teddy.fyi`. Empty is a legitimate value and means *no* `Domain` attribute — a host-only cookie, which is what a single-host deployment wants. It affects the cookie and nothing else. It used to double as the gate on the development login bypass, so choosing the empty value silently turned on impersonation of any account; that coupling is gone, and the bypass is now a compile-time feature (below).
+
+### The `dev-auth` feature
+
+`POST /auth/login` normally validates a Google ID token. There is one bypass, for local development: a token beginning `mock.` is accepted without verification and mints a session for whatever `user_id` the request body names. That is total impersonation, so it is gated at **compile time** by the `dev-auth` cargo feature and is simply not present in any build that does not name the feature — including `cargo build --release`, which is what the `Dockerfile` runs. No environment variable, header or request can re-enable it in a shipped binary.
+
+What this means in practice:
+
+| | `dev-auth` build (`make dev`) | Normal build (`make run`, release, Docker) |
+| --- | --- | --- |
+| `mock.` tokens | accepted, logged at `warn` | rejected like any other invalid token |
+| Google client IDs configured | **must be none** — the process refuses to start otherwise | **at least one required** — the process refuses to start otherwise |
+
+Both start-up assertions are deliberate belt-and-braces (`src/auth/dev_bypass.rs`). A dev-auth binary that also carries real Google client IDs is what a development build escaping onto a real deployment looks like, and a normal binary with no client IDs can never authenticate anybody — better a failed rollout than a running service where every login 401s.
+
+**Running locally.** `make dev` (via `scripts/dev.sh`) enables the feature for you and is the supported path. If you are not using that script:
+
+```bash
+cargo run --features dev-auth              # or: make run-dev-auth
+cargo watch -x 'run --features dev-auth'   # hot reload
+```
+
+Leave `GOOGLE_CLIENT_IDS`, `GOOGLE_IOS_CLIENT_IDS` and the three legacy single-value vars unset in your `.env` when you do. If you specifically want to exercise *real* Google sign-in locally, drop the feature instead and configure a client ID — that is then the same binary shape production runs.
+
+**Testing.** `make test` runs the production feature set, which is what CI runs and what proves a shipped binary rejects `mock.` tokens. `make test-dev-auth` runs the other half; a few tests exist only in one configuration or the other, so a change to `src/auth/dev_bypass.rs` wants both.
 
 ### 2. Run with Automated Dev Script
 The easiest way to start development is to run:
@@ -94,7 +119,7 @@ The underlying development script ([scripts/dev.sh](file:///Users/teddymartin/sr
 5. Configures your local `.env` file with the connection string.
 6. Boots up a local Redis/Valkey Docker container (`teddy-redis-dev`) if it's not already running.
 7. Automatically applies all database migrations in `/migrations`.
-8. Starts the Axum server using `cargo watch` for hot-reloading (falls back to `cargo run` if not installed).
+8. Starts the Axum server with `--features dev-auth` (see [The `dev-auth` feature](#the-dev-auth-feature)) using `cargo watch` for hot-reloading (falls back to `cargo run` if not installed).
 
 ---
 

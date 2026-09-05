@@ -75,11 +75,13 @@ async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn init_app_state() -> AppState {
     let google_client_ids = auth::client_ids::load_google_client_ids();
-    if google_client_ids.is_empty() {
-        // Not fatal: local dev signs in with `mock.` tokens, which skip the
-        // audience check. In a real deployment this means every login fails.
-        tracing::error!("No Google client IDs configured; set GOOGLE_IOS_CLIENT_IDS");
-    }
+    // Fatal, in both directions and for opposite reasons: a shipped binary with no
+    // audience allowlist can never authenticate anybody, and a `dev-auth` binary that has
+    // one is a development build wearing production credentials. Both used to be survivable
+    // — the first was one `tracing::error!` line and then every login failing for the life
+    // of the process. Crashing here is confined to start-up, so it fails a rollout rather
+    // than a request. The full argument is on `assert_startup_config`.
+    auth::dev_bypass::assert_startup_config(&google_client_ids);
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");

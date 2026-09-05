@@ -152,10 +152,15 @@ echo "Dev database setup successfully for branch: ${NEW_BRANCH_NAME}!"
 echo "Starting development server..."
 export $(grep -v '^#' .env | xargs)
 
+# `--features dev-auth` compiles in the `mock.` login bypass (src/auth/dev_bypass.rs), which
+# is what lets you sign in here without Google credentials. It is deliberately not a default
+# feature, so the release build and the Docker image do not contain it at all; this script is
+# the supported way to get it. Note the flip side: a dev-auth build refuses to start if real
+# Google client IDs are configured, so leave GOOGLE_*CLIENT_ID* unset in .env.
 if command -v cargo-watch &> /dev/null || cargo --list | grep -q "watch"; then
-  echo "cargo-watch detected! Running server with hot-reload..."
-  exec cargo watch -x run
+  echo "cargo-watch detected! Running server with hot-reload (dev-auth enabled)..."
+  exec cargo watch -x 'run --features dev-auth'
 else
-  echo "cargo-watch not found. Starting development server without hot-reload..."
-  exec cargo run
+  echo "cargo-watch not found. Starting development server without hot-reload (dev-auth enabled)..."
+  exec cargo run --features dev-auth
 fi

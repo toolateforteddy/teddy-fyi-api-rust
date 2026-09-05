@@ -3,8 +3,8 @@
 //!
 //! Everything here is about survivability rather than correctness. The handlers are
 //! written as if the caller is a well-behaved Android client on a good network; these
-//! layers are what stands between that assumption and a client that is neither. Four
-//! separate failure modes, four layers:
+//! layers are what stands between that assumption and a client that is neither. Five
+//! separate failure modes, five sets of layers:
 //!
 //! * **No request deadline.** A stalled client held a handler — and the Postgres
 //!   connection it borrowed from a pool of five — for as long as it cared to. A handful
@@ -18,6 +18,10 @@
 //!   when a million futures are in flight: memory climbs, latency climbs with it, and
 //!   the process is OOM-killed mid-transaction. Shedding early is strictly kinder than
 //!   dying late.
+//! * **No response security headers.** Nothing told a browser this host is HTTPS-only,
+//!   that it must not sniff a content type, or that no response here belongs in a frame
+//!   — and there is no shared place in front of this service that could. See
+//!   [`security_headers`].
 //! * **No panic guard.** A panicking handler unwound into hyper and killed the whole
 //!   connection, taking any other in-flight request on it with it. This was not
 //!   hypothetical: `auth::tokens::verify_refresh_token` used to `.expect(...)` on the
@@ -30,6 +34,8 @@
 //! Every bound is environment-tunable, because the right number is an operational
 //! question that changes with the instance size, and re-deploying a binary to change a
 //! constant is how limits end up staying wrong.
+
+pub mod security_headers;
 
 use axum::{
     error_handling::HandleErrorLayer,
@@ -72,6 +78,10 @@ pub struct Guardrails {
     pub request_timeout: Duration,
     pub max_body_bytes: usize,
     pub max_concurrent_requests: usize,
+    /// Lifetime advertised in `Strict-Transport-Security`. See
+    /// [`security_headers::DEFAULT_HSTS_MAX_AGE_SECS`] for why it starts as small as it
+    /// does and how it is meant to be ramped.
+    pub hsts_max_age: Duration,
 }
 
 impl Default for Guardrails {
@@ -80,13 +90,15 @@ impl Default for Guardrails {
             request_timeout: Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
+            hsts_max_age: Duration::from_secs(security_headers::DEFAULT_HSTS_MAX_AGE_SECS),
         }
     }
 }
 
 impl Guardrails {
-    /// Reads `REQUEST_TIMEOUT_SECS`, `MAX_REQUEST_BODY_BYTES` and
-    /// `MAX_CONCURRENT_REQUESTS`, falling back to the defaults above.
+    /// Reads `REQUEST_TIMEOUT_SECS`, `MAX_REQUEST_BODY_BYTES`,
+    /// `MAX_CONCURRENT_REQUESTS` and `HSTS_MAX_AGE_SECS`, falling back to the defaults
+    /// above.
     ///
     /// A junk or zero value logs and falls back rather than panicking: a typo in a
     /// deployment manifest should not be the reason the service refuses to boot, and a
@@ -106,6 +118,16 @@ impl Guardrails {
                 "MAX_CONCURRENT_REQUESTS",
                 defaults.max_concurrent_requests as u64,
             ) as usize,
+            // Tunable for the same reason as the rest, and with one extra: the HSTS ramp
+            // is a sequence of value changes held for weeks at a time, and doing that
+            // through a manifest edit rather than a rebuild is what makes each step
+            // cheap enough to actually take. `env_positive` refuses zero, so this knob
+            // can lengthen or shorten the lifetime but not switch the header off; that
+            // would be a code change, and deliberately so.
+            hsts_max_age: Duration::from_secs(env_positive(
+                "HSTS_MAX_AGE_SECS",
+                security_headers::DEFAULT_HSTS_MAX_AGE_SECS,
+            )),
         }
     }
 
@@ -124,20 +146,28 @@ impl Guardrails {
     ///
     /// Returned outermost-first, which is also the order a request meets them:
     ///
-    /// 1. `HandleError` + `LoadShed` + `ConcurrencyLimit` — the ceiling. Load shedding is
+    /// 1. `SetResponseHeader` x5 — the response security headers. Outermost of
+    ///    everything here on purpose: they must land on the responses no handler
+    ///    produced as well as the ones one did — the shed `503`, the oversized `413`,
+    ///    the caught `500`. They are also outermost of the CORS layer, which sits
+    ///    further in, in `serve()`: these five header names and the `Access-Control-*`
+    ///    set are disjoint, and every layer here is `if_not_present`, so a preflight
+    ///    answered entirely by `CorsLayer` keeps every header it wrote and simply gains
+    ///    five more. See [`security_headers`].
+    /// 2. `HandleError` + `LoadShed` + `ConcurrencyLimit` — the ceiling. Load shedding is
     ///    what makes the ceiling a limit instead of a queue: without it a request over
     ///    the cap waits for a permit forever, which is unbounded queueing wearing a
     ///    limit's clothes. With it, the excess is refused immediately with `503` and the
     ///    client's own backoff does the rest. `HandleError` is needed because shedding
     ///    produces a tower error and axum routers are infallible.
-    /// 2. `CatchPanic` — outside every handler and every layer below it, because a guard
+    /// 3. `CatchPanic` — outside every handler and every layer below it, because a guard
     ///    that sits inside the thing it is guarding catches nothing. It is deliberately
     ///    *inside* the concurrency limit so that a panicking request still releases its
     ///    permit through the normal response path.
-    /// 3. `RequestBodyLimit` — the body cap. Cheapest rejection in the stack, so it goes
+    /// 4. `RequestBodyLimit` — the body cap. Cheapest rejection in the stack, so it goes
     ///    above the handlers but below the ceiling; a request that is refused here never
     ///    reaches a handler at all.
-    /// 4. `DefaultBodyLimit` — axum's extractor-side cap, pinned to the same number.
+    /// 5. `DefaultBodyLimit` — axum's extractor-side cap, pinned to the same number.
     ///
     /// Both body limits are set, and that is load-bearing rather than belt-and-braces.
     /// `routes::sync::types::AppJson` is a custom extractor built on
@@ -152,7 +182,7 @@ impl Guardrails {
     /// limit and fails to parse, which `AppJson` reports as a deserialization error:
     /// the body is still bounded, only the status code is less precise.
     pub fn apply(&self, router: Router) -> Router {
-        router
+        let bounded = router
             // `Router::layer` makes the *last* call the outermost, so this list reads
             // bottom-up: innermost first.
             .layer(DefaultBodyLimit::max(self.max_body_bytes))
@@ -175,7 +205,9 @@ impl Guardrails {
                     // *body*, which is why an idle SSE stream does not sit on one: the
                     // handler returns its `Sse` response promptly and streams after.
                     .layer(GlobalConcurrencyLimitLayer::new(self.max_concurrent_requests)),
-            )
+            );
+
+        security_headers::apply(bounded, self.hsts_max_age)
     }
 }
 

@@ -70,8 +70,8 @@ Rules that keep concurrent work from colliding:
 | 4 | No foreign keys to `users`; deletion is 16 ordered DELETEs | 9 | Phase 4 |
 | 5 | `deploy.yml` uses a long-lived GCP service-account key | 9 | Now |
 | 6 | Deployment pins `:latest`; rollout is `rollout restart` | 9 | Now |
-| 7 | Any list member can grant membership to any account | 8 | Now |
-| 8 | `role` is client-supplied and gates list deletion | 8 | Now |
+| 7 | ~~Any list member can grant membership to any account~~ **landed** | 8 | Now |
+| 8 | ~~`role` is client-supplied and gates list deletion~~ **landed** | 8 | Now |
 | 9 | Audience set is flat; no client-id → product mapping | 8 | Now |
 | 10 | Refresh tokens are Argon2-hashed | 8 | Now |
 | 11 | A Gemini HTTP call runs inside an open Postgres transaction | 8 | Anytime |
@@ -229,7 +229,7 @@ fixes the rollback story and, as a side effect, makes the fork's push to `:lates
 changing what is running here. It is the cheapest available mitigation for the plan's own
 worst-case, and it is one line.
 
-## 7. Any list member can grant membership to any account — **8**, Now
+## 7. Any list member can grant membership to any account — **8**, Now — **LANDED**
 
 `process_grocery_list_member_changes` (`src/routes/sync/grocery/grocery_list_members.rs:155-182`)
 writes `item.user_id` and `item.role` straight from the request body. The only gate is:
@@ -251,7 +251,17 @@ by `/api/lists/join` and by nothing else; sync only ever reflects a membership t
 exists."* The code does not implement that sentence. Make the member processor refuse to create
 rows and refuse to change `userId`, and let `join_handler` be the only writer.
 
-## 8. `role` is client-supplied and gates list deletion — **8**, Now
+**Landed together with item 8** ([#56](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/56)). The insert/update path in
+`process_grocery_list_member_changes` no longer upserts: it looks the row up by id and refuses
+anything that is not already there, so `join_handler` and the list-creation seed in
+`grocery_lists.rs` are the only writers of a membership. `"listId"`, `"userId"`, `role` and
+`"joinedAt"` are gone from the statement entirely — a payload that disagrees about the first two
+is refused rather than applied, and un-deleting a membership is refused too, since that is a
+grant by another name. The one accommodation is the offline-first batch: a client that created a
+list offline and invented a local membership row for *itself* gets a no-op plus the server's
+canonical row echoed back, rather than a 403 on every list it makes.
+
+## 8. `role` is client-supplied and gates list deletion — **8**, Now — **LANDED**
 
 Same upsert, `role = EXCLUDED.role`. And `grocery_lists.rs` reads it:
 
@@ -265,6 +275,11 @@ the list, which soft-deletes every item, store and category on it for the whole 
 the only place `role` is read today, which is what makes it survivable — and exactly why it
 should be fixed before anyone adds a second reader. `role` should be server-assigned, and it
 should be in the "never taken from the payload" set alongside `userId`.
+
+**Landed with item 7** ([#56](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/56)). `role` is now server-assigned: sync ignores what
+the payload says and echoes the stored role back as a remote change so the client stops
+disagreeing. `test_sync_member_cannot_promote_self_to_owner` pins both halves — the promotion is
+dropped, and the list delete it existed for is still refused.
 
 ## 9. The audience set is flat — **8**, Now
 

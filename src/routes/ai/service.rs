@@ -11,7 +11,11 @@ pub const TODO_ICONS: &[&str] = &[
     "MenuBook", "Movie", "Palette", "MusicNote", "Pets", "Flight", "Eco", "Lock",
 ];
 
+/// `http_client` is the shared, timeout-bounded client from
+/// [`crate::state::AppState`] — see [`super::gemini::build_http_client`] for why
+/// this is threaded through rather than built here.
 pub async fn assign_todo_icon(
+    http_client: &reqwest::Client,
     gemini_api_key: &str,
     todo_title: &str,
 ) -> Result<String, AppError> {
@@ -24,6 +28,7 @@ pub async fn assign_todo_icon(
     let model = "gemini-3.1-flash-lite";
 
     let response: AssignTodoIconResponse = call_gemini(
+        http_client,
         gemini_api_key,
         Some(&system_prompt),
         &user_prompt,

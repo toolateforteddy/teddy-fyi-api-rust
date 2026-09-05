@@ -1,5 +1,10 @@
 -- Which product a session belongs to, so a refresh can re-mint the product claim.
 --
+-- Versioned 20260908160000 rather than ...120000: that slot was taken by
+-- 20260908120000_sync_hot_path_indexes.sql while this branch was open, and two files
+-- sharing a version is a duplicate key on `_sqlx_migrations` when both land -- which is
+-- how it was found, on the merge commit CI builds rather than on either branch alone.
+--
 -- The claim itself lives in the access token (auth::tokens::Claims::product), which is
 -- good for fifteen minutes. The session behind it is good for seven days and is rotated by
 -- POST /auth/refresh, which is unauthenticated: the request body carries a refresh token

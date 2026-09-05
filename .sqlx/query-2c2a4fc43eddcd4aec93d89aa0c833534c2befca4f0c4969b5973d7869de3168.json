@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state, updated_at, updated_by_client)\n               VALUES ($1, $2, $3, $4, 0, 1, false, 'SYNCED', $5, 'seed')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c2a4fc43eddcd4aec93d89aa0c833534c2befca4f0c4969b5973d7869de3168"
+}

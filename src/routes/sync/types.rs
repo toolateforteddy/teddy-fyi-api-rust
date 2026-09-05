@@ -203,6 +203,39 @@ pub struct SyncRequest {
     pub drawings: Vec<DrawingSyncItem>,
 }
 
+/// One request body, three readers.
+///
+/// `sync_handler` fans out into three concurrent futures (todo, grocery, config/drawing) and
+/// each of them needs the whole request: the client id, `last_synced_at`, and its own slice
+/// of the change vectors. Each future used to take its own `payload.clone()`, which deep-copies
+/// the entire `SyncRequest` — including `drawings`, whose vector data is the bulk of the body
+/// and can run to megabytes under the request body limit. Three futures meant three full
+/// copies of that on every sync.
+///
+/// Nothing writes to the request, so one allocation shared behind an `Arc` serves all three.
+/// This is a memory change only: the futures are still built the same way and still handed to
+/// the same `try_join!`, so concurrency is untouched.
+pub struct SharedRequest(std::sync::Arc<SyncRequest>);
+
+impl SharedRequest {
+    pub fn new(payload: SyncRequest) -> Self {
+        Self(std::sync::Arc::new(payload))
+    }
+
+    /// A handle for one future to move into itself. Bumps a refcount; copies no payload.
+    pub fn handle(&self) -> std::sync::Arc<SyncRequest> {
+        std::sync::Arc::clone(&self.0)
+    }
+}
+
+impl std::ops::Deref for SharedRequest {
+    type Target = SyncRequest;
+
+    fn deref(&self) -> &SyncRequest {
+        &self.0
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SuccessResult {
     pub id: String,

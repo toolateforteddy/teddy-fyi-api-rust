@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE grocery_list_members SET is_deleted = true WHERE \"userId\" = 'user-b'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "fac41d4fa1e997eb3ab36d45bce8c100f2dbf7f89db5774eed74f66828a85ce0"
+}

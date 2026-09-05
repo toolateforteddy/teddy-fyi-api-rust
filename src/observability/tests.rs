@@ -529,3 +529,86 @@ fn hash_user_id_is_the_hex_of_the_first_eight_digest_bytes() {
     }
     assert!(saw_leading_zero, "expected some digest to start with a zero nibble");
 }
+
+/// The probe paths in `k8s/api-rust.yaml` must be paths this binary actually serves.
+///
+/// This is the test that would have caught item 12 of the pre-split survey years earlier
+/// than reading the manifest did. Both probes and the GKE `BackendConfig` pointed at
+/// `/healthcheck` — a live route, so nothing was broken and nothing complained, but it is
+/// a handler that returns the constant string "OK". Readiness therefore reported healthy
+/// through any dependency outage the process survived, and the 355 lines of
+/// `observability::health` built to answer "can this replica serve" were dead in
+/// production.
+///
+/// Reading the YAML as text rather than parsing it: the file has no YAML dependency behind
+/// it in this crate, the three lines being checked are unambiguous, and a test that fails
+/// when the manifest is reformatted is a cost worth paying to have one that fails when the
+/// manifest and the router disagree.
+mod manifest_probe_paths {
+    use crate::observability::health::health_routes;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    const MANIFEST: &str = include_str!("../../k8s/api-rust.yaml");
+
+    /// Every `path:`/`requestPath:` under a probe or health check in the manifest.
+    ///
+    /// The leading-slash filter is doing real work: `SecretProviderClass` spells its
+    /// Secret Manager resource names with `path:` too, and those are quoted bare names
+    /// like `"jwt_secret"`. A URL path is the only kind of value here that starts with a
+    /// slash, so the filter separates them without needing to know which block each line
+    /// came from -- and it still catches the regression this test exists for, which is a
+    /// probe pointed at some other URL path.
+    fn configured_probe_paths() -> Vec<String> {
+        MANIFEST
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| {
+                line.strip_prefix("path: ")
+                    .or_else(|| line.strip_prefix("requestPath: "))
+            })
+            .filter(|value| value.starts_with('/'))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_manifest_configures_the_three_probes_this_repo_knows_about() {
+        // A guard on the guard: if a fourth probe appears, or one is deleted, the
+        // assertions below would silently stop covering it.
+        assert_eq!(
+            configured_probe_paths(),
+            vec!["/healthz/ready", "/healthz/live", "/healthz/live"],
+            "k8s/api-rust.yaml should configure readiness, liveness and the BackendConfig \
+             health check, in that order"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_configured_probe_path_is_a_route_that_answers() {
+        for path in configured_probe_paths() {
+            let response = health_routes(
+                redis::Client::open("redis://127.0.0.1:1").expect("valid url"),
+            )
+            .oneshot(
+                Request::builder()
+                    .uri(&path)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router is infallible");
+
+            // Not a status assertion: `/healthz/ready` is *supposed* to answer 503 with
+            // no Redis, and this test has none. What must never happen is a 404 -- a
+            // probe pointed at a path the binary does not serve, which the kubelet reads
+            // as a dead pod and the load balancer reads as a dead backend.
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "the manifest probes {path}, which this binary does not serve"
+            );
+        }
+    }
+}

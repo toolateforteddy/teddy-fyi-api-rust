@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, version, last_modified FROM configs WHERE user_id = $1 AND device_uuid = $2 AND key = $3",
+  "query": "SELECT id, version FROM configs WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
   "describe": {
     "columns": [
       {
@@ -12,25 +12,19 @@
         "ordinal": 1,
         "name": "version",
         "type_info": "Int4"
-      },
-      {
-        "ordinal": 2,
-        "name": "last_modified",
-        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
         "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
-      false,
       false
     ]
   },
-  "hash": "946766e8f4931fc84dd072fc580b9d4f733bf67731682774ae3307b14c17e865"
+  "hash": "996bfa89250130a97757d73e89244037e32f2d95fac63a0231e4d13fd9646673"
 }

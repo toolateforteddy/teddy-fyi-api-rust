@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE configs SET version = $1, client_uuid = $2, sync_state = 'SYNCED' WHERE id = $3 AND user_id = $4 AND device_uuid = $5 RETURNING device_uuid, is_deleted, last_modified, key, value",
+  "query": "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE'::text::sync_state WHERE id = $4 AND user_id = $5 AND device_uuid = $6 RETURNING device_uuid, last_modified, key, value",
   "describe": {
     "columns": [
       {
@@ -10,21 +10,16 @@
       },
       {
         "ordinal": 1,
-        "name": "is_deleted",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 2,
         "name": "last_modified",
         "type_info": "Int8"
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "key",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "value",
         "type_info": "Text"
       }
@@ -33,6 +28,7 @@
       "Left": [
         "Int4",
         "Uuid",
+        "Int8",
         "Uuid",
         "Uuid",
         "Uuid"
@@ -42,9 +38,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "4d32dbc858102d89e18840ef0916cf253729b9d4662f2cce192bec1564c5dba0"
+  "hash": "e00ff23e35071becf75ed44132f60a5896db78b3f613955ce8399e93a83500c0"
 }

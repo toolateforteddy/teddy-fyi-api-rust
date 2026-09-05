@@ -1,4 +1,5 @@
 use crate::routes::sync::types::*;
+use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
@@ -155,16 +156,21 @@ pub async fn process_grocery_item_store_info_changes(
                                 }
                             }
 
+                            // One policy for every synced row: the server's stored version is the only
+                            // input to the next one, and a row the server has never seen takes a bounded
+                            // seed. `max(row.version, item.version) + 1` let a single request carrying an
+                            // enormous `version` move this row's counter there permanently -- for a shared
+                            // list, for every member of it. See `crate::routes::sync::versioning`.
                             let next_version = if let Some(row) = record {
                                 if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
                                     tracing::warn!(
-                                        "MVCC Conflict for store info. Client version: {}, Server version: {}. Resolving via LWW.",
-                                        change.version, row.version
+                                        "Conflicting write for store info {} (client version {}, server version {}); accepting it as the later arrival",
+                                        change.id, change.version, row.version
                                     );
                                 }
-                                std::cmp::max(row.version, item.version) + 1
+                                advance_version("Store info", &change.id, row.version)?
                             } else {
-                                item.version
+                                seed_version("Store info", &change.id, item.version)?
                             };
 
                             sqlx::query!(
@@ -237,7 +243,8 @@ pub async fn process_grocery_item_store_info_changes(
                     let record = existing_map.get(&(change.grocery_item_id.clone(), change.store_id.clone()));
 
                     if let Some(row) = record {
-                        let next_version = row.version + 1;
+                        // Bounded like every other version bump here; see `crate::routes::sync::versioning`.
+                        let next_version = advance_version("Store info", &change.grocery_item_id, row.version)?;
                         sqlx::query!(
                             r#"UPDATE grocery_item_store_info SET version = $1, updated_at = $2, updated_by_client = $3, sync_state = 'SYNCED' WHERE "groceryItemId" = $4 AND "storeId" = $5"#,
                             next_version,

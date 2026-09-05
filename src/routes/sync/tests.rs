@@ -2,6 +2,7 @@ pub mod helpers;
 
 mod affected_users;
 mod cache;
+mod data_integrity;
 mod deserialization;
 mod devices;
 mod flat_configs_drawings;

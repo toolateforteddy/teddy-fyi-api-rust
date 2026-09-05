@@ -56,7 +56,8 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         .0;
     assert_eq!(res.success_ids, vec!["glist-1"]);
 
-    // 2. Test Update (Base Client Version = 2. DB has 1. std::cmp::max(1, 2) + 1 = 3)
+    // 2. Test Update. The client sends version 2; the server ignores it and moves its own
+    // row on by one (DB has 1, so the row becomes 2). See `crate::routes::sync::versioning`.
     let updated_list_data = GroceryListData {
         id: "glist-1".to_string(),
         name: "Updated Grocery List".to_string(),
@@ -105,7 +106,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(db_row.name, "Updated Grocery List");
-    assert_eq!(db_row.version, 3);
+    assert_eq!(db_row.version, 2);
 
     // 3. Test Delete
     let req_delete = SyncRequest {
@@ -217,7 +218,8 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         .0;
     assert_eq!(res.success_ids, vec!["member-1"]);
 
-    // 2. Test Update (Base Client Version = 2. DB has 1. std::cmp::max(1, 2) + 1 = 3)
+    // 2. Test Update. The client sends version 2; the server ignores it and moves its own
+    // row on by one (DB has 1, so the row becomes 2). See `crate::routes::sync::versioning`.
     let updated_member_data = GroceryListMemberData {
         id: "member-1".to_string(),
         list_id: "glist-2".to_string(),
@@ -267,7 +269,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(db_row.role, "MEMBER");
-    assert_eq!(db_row.version, 3);
+    assert_eq!(db_row.version, 2);
 
     // 3. Test Delete
     let req_delete = SyncRequest {

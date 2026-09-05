@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE configs SET id = $1, device_uuid = $2, client_uuid = $3, version = $4, is_deleted = $5, last_modified = $6, client_last_modified = $7, sync_state = $8::text::sync_state, key = $9, value = $10 WHERE id = $11 AND user_id = $12",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Bool",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d1f4321601c5cd3c2752f2cb880bb7bdad74b03a49fdabd45fa13cfa5fde6187"
+}

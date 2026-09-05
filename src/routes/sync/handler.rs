@@ -4,6 +4,7 @@ use super::todo::*;
 use super::types::*;
 use super::config::*;
 use super::device::*;
+use super::limits::{validate_sync_payload, SyncLimits};
 use super::drawing::*;
 use super::publisher::{publish_device_event, SyncSseEvent};
 use crate::state::AppState;
@@ -21,7 +22,17 @@ pub async fn sync_handler(
     AppJson(payload): AppJson<SyncRequest>,
 ) -> Result<Json<SyncResponse>, AppError> {
     let server_timestamp = Utc::now();
+    // The one clock reading this request is written with. Everything stamped below shares
+    // it, and it is the same instant the response reports back, so a client that stores
+    // `server_timestamp` as its cursor cannot end up either re-reading or skipping the
+    // rows this very request wrote. See `crate::routes::sync::versioning`.
+    let server_ms = server_timestamp.timestamp_millis();
     let scope = payload.scope.unwrap_or(SyncScope::All);
+
+    // Bounds first, before a transaction is opened or a row is touched: an over-large
+    // drawing blob or an over-long config value fails the whole request with a 400 that
+    // names the field, and nothing is written. See `crate::routes::sync::limits`.
+    validate_sync_payload(&payload, &SyncLimits::from_env())?;
 
     // The three futures below each read the whole request. Share one allocation rather than
     // deep-copying a body that is mostly drawing vector data. See `SharedRequest`.
@@ -338,6 +349,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            server_ms,
                             &device_rule,
                             device_filter,
                             &payload.drawings,
@@ -353,6 +365,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            server_ms,
                             &device_rule,
                             device_filter,
                             &payload.drawing_changes,
@@ -370,6 +383,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            server_ms,
                             &device_rule,
                             &payload.configs,
                             &mut success_config_uuids,
@@ -385,6 +399,7 @@ pub async fn sync_handler(
                             &mut tx,
                             &user_uuid,
                             &client_uuid,
+                            server_ms,
                             &device_rule,
                             device_filter,
                             &payload.config_changes,

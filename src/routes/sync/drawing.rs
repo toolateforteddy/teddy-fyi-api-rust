@@ -1,5 +1,6 @@
 use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
 use crate::routes::sync::types::*;
+use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -9,6 +10,11 @@ pub async fn process_drawing_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    // This request's server clock reading, in epoch milliseconds, stamped onto every row
+    // written here. It is both the ordering the conflict policy is defined in and the
+    // cursor the next download compares against, so it has to come from the server and
+    // has to be the same instant the response reports as `server_timestamp`.
+    server_ms: i64,
     device_rule: &ItemDeviceRule,
     device_filter: Option<Uuid>,
     changes: &[DrawingChangeDelta],
@@ -78,7 +84,7 @@ pub async fn process_drawing_changes(
 
                             // Fetch existing drawing from database
                             let existing = sqlx::query!(
-                                "SELECT version, last_modified FROM drawings \
+                                "SELECT version FROM drawings \
                                  WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                                 change_uuid,
                                 user_id,
@@ -87,35 +93,23 @@ pub async fn process_drawing_changes(
                             .fetch_optional(&mut **tx)
                             .await?;
 
-                            let next_version = if let Some(ref row) = existing {
-                                if item.version == row.version {
-                                    row.version + 1
-                                } else if item.version < row.version {
-                                    if item.last_modified >= row.last_modified {
+                            // The whole conflict decision, and the only place a version
+                            // number comes from: the server's row when there is one, the
+                            // bounded client seed when this drawing is new. The client's
+                            // `last_modified` is deliberately not consulted — see
+                            // `crate::routes::sync::versioning` for the policy and for why
+                            // a clock nobody can verify must not decide who wins.
+                            let next_version = match existing {
+                                Some(ref row) => {
+                                    if item.version < row.version {
                                         tracing::warn!(
-                                            "MVCC Conflict for drawing {}. Client version: {}, Server version: {}. Resolving via LWW (Client wins: client last_modified {} >= server last_modified {}). Overwriting server state.",
-                                            change_id, item.version, row.version, item.last_modified, row.last_modified
+                                            "Conflicting write for drawing {} (client version {}, server version {}); accepting it as the later arrival",
+                                            change_id, item.version, row.version
                                         );
-                                        row.version + 1
-                                    } else {
-                                        tracing::warn!(
-                                            "MVCC Conflict for drawing {}. Client version: {}, Server version: {}. Resolving via LWW (Server wins: client last_modified {} < server last_modified {}). Rejecting client update.",
-                                            change_id, item.version, row.version, item.last_modified, row.last_modified
-                                        );
-                                        // Server has a newer write. Reject incoming update, return current server state version
-                                        upload_status.push(SuccessResult {
-                                            id: change_id.to_string(),
-                                            version: row.version,
-                                            sync_state: "SYNCED".to_string(),
-                                        });
-                                        success_ids.push(change_id.to_string());
-                                        continue;
                                     }
-                                } else {
-                                    item.version + 1
+                                    advance_version("Drawing", change_id, row.version)?
                                 }
-                            } else {
-                                item.version
+                                None => seed_version("Drawing", change_id, item.version)?,
                             };
 
                             tracing::info!(
@@ -129,14 +123,15 @@ pub async fn process_drawing_changes(
                             // id can arrive from two different accounts. Without the guard on the conflict
                             // target, one account's upload would overwrite the other's row.
                             sqlx::query!(
-                                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10) \
+                                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, created_at, data) \
+                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::sync_state, $10, $11) \
                                  ON CONFLICT (id) DO UPDATE SET \
                                      device_uuid = EXCLUDED.device_uuid, \
                                      client_uuid = EXCLUDED.client_uuid, \
                                      version = EXCLUDED.version, \
                                      is_deleted = EXCLUDED.is_deleted, \
                                      last_modified = EXCLUDED.last_modified, \
+                                     client_last_modified = EXCLUDED.client_last_modified, \
                                      sync_state = EXCLUDED.sync_state, \
                                      data = EXCLUDED.data \
                                  WHERE drawings.user_id = EXCLUDED.user_id",
@@ -146,6 +141,7 @@ pub async fn process_drawing_changes(
                                 client_id,
                                 next_version,
                                 item.is_deleted,
+                                server_ms,
                                 item.last_modified,
                                 "SYNCED",
                                 item.created_at,
@@ -177,12 +173,16 @@ pub async fn process_drawing_changes(
                     .await?;
 
                     if let Some(row) = existing {
-                        let next_version = row.version + 1;
+                        let next_version = advance_version("Drawing", change_id, row.version)?;
                         tracing::info!("Applying drawing metadata update for {}. Next version: {}", change_id, next_version);
+                        // `last_modified` moves with the write, here as everywhere else:
+                        // it is the cursor the account's other devices poll against, so a
+                        // row that changes without it changing is a change they never see.
                         sqlx::query!(
-                            "UPDATE drawings SET version = $1, client_uuid = $2, sync_state = 'SYNCED' WHERE id = $3 AND user_id = $4",
+                            "UPDATE drawings SET version = $1, client_uuid = $2, last_modified = $3, sync_state = 'SYNCED' WHERE id = $4 AND user_id = $5",
                             next_version,
                             client_id,
+                            server_ms,
                             change_uuid,
                             user_id
                         )
@@ -209,12 +209,15 @@ pub async fn process_drawing_changes(
                 .await?;
 
                 if let Some(row) = existing {
-                    let next_version = row.version + 1;
+                    let next_version = advance_version("Drawing", change_id, row.version)?;
                     tracing::info!("Applying drawing soft-delete for {}. Next version: {}", change_id, next_version);
+                    // Stamped for the same reason as the update above: a soft-delete the
+                    // cursor cannot see is a deletion the sibling tablet never applies.
                     sqlx::query!(
-                        "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE' WHERE id = $3 AND user_id = $4",
+                        "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE' WHERE id = $4 AND user_id = $5",
                         next_version,
                         client_id,
+                        server_ms,
                         change_uuid,
                         user_id
                     )
@@ -296,6 +299,8 @@ pub async fn process_drawing_sync_items(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
+    // See `process_drawing_changes`: the server's stamp for every row this call writes.
+    server_ms: i64,
     device_rule: &ItemDeviceRule,
     device_filter: Option<Uuid>,
     items: &[DrawingSyncItem],
@@ -315,12 +320,13 @@ pub async fn process_drawing_sync_items(
             .await?;
 
             if let Some(row) = existing {
-                let next_version = row.version + 1;
+                let next_version = advance_version("Drawing", &item.id.to_string(), row.version)?;
                 tracing::info!("Applying drawing soft-delete for {}. Next version: {}", item.id, next_version);
                 sqlx::query!(
-                    "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, sync_state = 'PENDING_DELETE'::text::sync_state WHERE id = $3 AND user_id = $4",
+                    "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE'::text::sync_state WHERE id = $4 AND user_id = $5",
                     next_version,
                     client_id,
+                    server_ms,
                     item.id,
                     user_id
                 )
@@ -341,7 +347,7 @@ pub async fn process_drawing_sync_items(
 
             // Upsert drawing
             let existing = sqlx::query!(
-                "SELECT version, last_modified FROM drawings \
+                "SELECT version FROM drawings \
                  WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
                 item.id,
                 user_id,
@@ -350,30 +356,20 @@ pub async fn process_drawing_sync_items(
             .fetch_optional(&mut **tx)
             .await?;
 
-            let next_version = if let Some(ref row) = existing {
-                if item.version == row.version {
-                    row.version + 1
-                } else if item.version < row.version {
-                    if item.last_modified >= row.last_modified {
+            // Same policy as the change-delta path above: the server's row decides the
+            // numbering, the client's clock decides nothing, and a new row's seed is
+            // bounded. See `crate::routes::sync::versioning`.
+            let next_version = match existing {
+                Some(ref row) => {
+                    if item.version < row.version {
                         tracing::warn!(
-                            "MVCC Conflict for drawing {}. Client version: {}, Server version: {}. Resolving via LWW (Client wins: client last_modified {} >= server last_modified {}). Overwriting server state.",
-                            item.id, item.version, row.version, item.last_modified, row.last_modified
+                            "Conflicting write for drawing {} (client version {}, server version {}); accepting it as the later arrival",
+                            item.id, item.version, row.version
                         );
-                        row.version + 1
-                    } else {
-                        tracing::warn!(
-                            "MVCC Conflict for drawing {}. Client version: {}, Server version: {}. Resolving via LWW (Server wins: client last_modified {} < server last_modified {}). Rejecting client update.",
-                            item.id, item.version, row.version, item.last_modified, row.last_modified
-                        );
-                        // Server has a newer write. Accept server state but return success so client gets updated
-                        success_uuids.push(item.id);
-                        continue;
                     }
-                } else {
-                    item.version + 1
+                    advance_version("Drawing", &item.id.to_string(), row.version)?
                 }
-            } else {
-                item.version
+                None => seed_version("Drawing", &item.id.to_string(), item.version)?,
             };
 
             tracing::info!(
@@ -387,14 +383,15 @@ pub async fn process_drawing_sync_items(
             // id can arrive from two different accounts. Without the guard on the conflict
             // target, one account's upload would overwrite the other's row.
             sqlx::query!(
-                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state, created_at, data) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::sync_state, $9, $10) \
+                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, created_at, data) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::sync_state, $10, $11) \
                  ON CONFLICT (id) DO UPDATE SET \
                      device_uuid = EXCLUDED.device_uuid, \
                      client_uuid = EXCLUDED.client_uuid, \
                      version = EXCLUDED.version, \
                      is_deleted = EXCLUDED.is_deleted, \
                      last_modified = EXCLUDED.last_modified, \
+                     client_last_modified = EXCLUDED.client_last_modified, \
                      sync_state = EXCLUDED.sync_state, \
                      data = EXCLUDED.data \
                  WHERE drawings.user_id = EXCLUDED.user_id",
@@ -404,6 +401,7 @@ pub async fn process_drawing_sync_items(
                 client_id,
                 next_version,
                 item.is_deleted,
+                server_ms,
                 item.last_modified,
                 "SYNCED",
                 item.created_at,

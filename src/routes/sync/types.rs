@@ -284,6 +284,12 @@ pub enum AppError {
     Deserialization(String),
     /// A syntactically valid payload the server refuses on its own rules.
     BadRequest(String),
+    /// The request is well formed and the caller is entitled to make it, but the row it
+    /// targets cannot accept it in its current state — see
+    /// [`crate::routes::sync::versioning::next_version`], where a row at the version
+    /// ceiling ends up. Distinct from `BadRequest`: there is nothing to fix in the
+    /// payload, and 409 is the status clients already read as "re-read and retry".
+    Conflict(String),
     Gemini(String),
     Forbidden(String),
     NotFound(String),
@@ -332,6 +338,12 @@ impl IntoResponse for AppError {
             AppError::BadRequest(err) => {
                 tracing::warn!("Bad request: {}", err);
                 (StatusCode::BAD_REQUEST, err)
+            }
+            AppError::Conflict(err) => {
+                // Client-caused and self-explanatory, so `warn` rather than `error`: no
+                // operator action follows, and the caller is told what to do.
+                tracing::warn!("Conflict: {}", err);
+                (StatusCode::CONFLICT, err)
             }
             AppError::Gemini(err) => {
                 tracing::error!("Gemini error: {}", err);

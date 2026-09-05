@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT last_modified, client_last_modified, version FROM drawings WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "last_modified",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_last_modified",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "40bb5f09d42446a2ef6868eba15b5be103ab6dd0dc2ec4e37d07d70e63c0a435"
+}

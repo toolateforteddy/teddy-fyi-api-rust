@@ -1,3 +1,4 @@
+use crate::observability::http::log_hash_salt_from_env;
 use axum::{http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -321,7 +322,11 @@ impl IntoResponse for AppError {
                 (StatusCode::BAD_REQUEST, format!("Invalid payload: {}", err))
             }
             AppError::Deserialization(err) => {
-                tracing::error!("Deserialization error: {}", err);
+                // Client-caused 400, for the same reason as the `json_rejected` line
+                // in `AppJson::from_request` — which already logged this exact
+                // rejection one frame earlier. Nothing here is the server's fault, so
+                // it does not belong at the level operators alert on.
+                tracing::warn!("Deserialization error: {}", err);
                 (StatusCode::BAD_REQUEST, format!("Invalid JSON payload: {}", err))
             }
             AppError::BadRequest(err) => {
@@ -412,13 +417,72 @@ where
         match serde_json::from_slice::<T>(&bytes) {
             Ok(value) => Ok(AppJson(value)),
             Err(err) => {
-                let err_msg = err.to_string();
-                let body_str = String::from_utf8_lossy(&bytes);
-                tracing::error!("JSON deserialization rejection. Error: {}. Body: {}", err_msg, body_str);
+                let err_msg = truncate_parse_error(&err.to_string());
+                let digest = describe_rejected_body(&bytes, &log_hash_salt_from_env());
+                // Deliberately `warn`, not `error`. This branch is reached only when a
+                // client sends something the server cannot parse: the service is
+                // healthy, no operator action follows, and the caller already gets a
+                // 400 saying so. It is also triggerable by anyone who can reach the
+                // route, and `error` is the level that pages people — leaving it there
+                // hands a stranger the alerting channel.
+                tracing::warn!(
+                    event = "json_rejected",
+                    body_bytes = digest.len,
+                    body_hash = %digest.hash,
+                    error = %err_msg,
+                    "request body failed to deserialize"
+                );
                 Err(AppError::Deserialization(err_msg))
             }
         }
     }
+}
+
+/// What is safe to say in a log line about a body that would not parse.
+///
+/// Never the bytes. `len` is the volume — which is what distinguishes a truncated
+/// upload from a client sending nonsense — and `hash` is
+/// [`crate::observability::http::hash_log_body`]: stable per distinct payload, so a
+/// client stuck retrying one bad request collapses to a single recognisable digest,
+/// and useless to anyone holding the logs who wants to know what the child drew.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedBodyDigest {
+    pub len: usize,
+    pub hash: String,
+}
+
+/// Split out from the extractor purely so the "what may be logged" decision is a
+/// pure function a test can hold to account without standing up a subscriber.
+pub fn describe_rejected_body(bytes: &[u8], salt: &str) -> RejectedBodyDigest {
+    RejectedBodyDigest {
+        len: bytes.len(),
+        hash: crate::observability::http::hash_log_body(bytes, salt),
+    }
+}
+
+/// Upper bound on how much of a serde error message reaches the log.
+///
+/// A serde_json message is *usually* structural: it names the field, the expected
+/// type and the line/column, and quotes nothing — `missing field \`client_id\` at
+/// line 3 column 5`. Usually is not always. A type mismatch on a string renders as
+/// `invalid type: string "<the value>", expected i32`, which puts a fragment of the
+/// caller's own data into the message. Bounding the length caps both that
+/// disclosure and the log volume one oversized field can drive. A message long
+/// enough to be cut has lost its trailing `at line L column C`, which is an
+/// acceptable trade: that only happens for the pathological payloads whose contents
+/// are precisely what we are trying not to write down.
+const MAX_PARSE_ERROR_LEN: usize = 200;
+
+/// Truncates on a char boundary, so a multi-byte character is never split in half.
+pub fn truncate_parse_error(message: &str) -> String {
+    if message.len() <= MAX_PARSE_ERROR_LEN {
+        return message.to_string();
+    }
+    let mut end = MAX_PARSE_ERROR_LEN;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…(truncated)", &message[..end])
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

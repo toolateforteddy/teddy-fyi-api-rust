@@ -160,3 +160,40 @@ pub fn record_sync_completed(scope: &str, uploaded: usize, downloaded: usize) {
         "sync completed"
     );
 }
+
+/// Salted, truncated SHA-256 of a rejected request body.
+///
+/// Same reasoning as [`hash_user_id`], applied to payload bytes: Cloud Logging is
+/// outside the reach of both `DELETE /api/user/data` and `jobs::reap_stale_users`,
+/// so a request body written there is an un-erasable copy of exactly the data the
+/// sync endpoint carries — a child's drawing strokes and config values. The hash
+/// keeps the one diagnostic property that mattered about logging the body at all:
+/// identical malformed payloads correlate across requests, so a client stuck in a
+/// retry loop is still recognisable as one bug rather than N.
+///
+/// Domain-separated with its own prefix so a body digest can never collide with a
+/// user-id digest derived from the same salt, and truncated to the same 16 hex
+/// characters for the same reasons.
+pub fn hash_log_body(body: &[u8], salt: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"teddy-fyi/log-body/v1:");
+    hasher.update(salt.as_bytes());
+    hasher.update(b":");
+    hasher.update(body);
+    let digest = hasher.finalize();
+    digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// The salt, for call sites with no `AppState` in reach.
+///
+/// [`log_hash_salt`] takes the secret from state because its callers have it.
+/// An extractor runs before any handler and is generic over the state type, so it
+/// reads the same two variables straight from the environment instead — `main`
+/// already `expect`s `JWT_SECRET` at boot, so the fallback is present whenever the
+/// process is. The empty-string last resort only happens in tests, where an
+/// unsalted digest of a test fixture discloses nothing.
+pub fn log_hash_salt_from_env() -> String {
+    std::env::var("LOG_HASH_SALT")
+        .or_else(|_| std::env::var("JWT_SECRET"))
+        .unwrap_or_default()
+}

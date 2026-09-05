@@ -18,6 +18,7 @@ fn claims() -> Claims {
         sub: "user-1".to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     }
 }
 

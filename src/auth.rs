@@ -1,4 +1,5 @@
 pub mod client_ids;
+pub mod product;
 pub mod dev_bypass;
 pub mod middleware;
 pub mod tokens;

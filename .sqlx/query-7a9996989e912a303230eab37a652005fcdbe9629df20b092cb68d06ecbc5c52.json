@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+  "query": "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts, product FROM sessions WHERE user_id = $1 AND client_uuid = $2",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,11 @@
         "ordinal": 7,
         "name": "failed_refresh_attempts",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "product",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -58,8 +63,9 @@
       false,
       true,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "7c38d4048145d2d90ff3a12fe98734b849b67baad2c35e9487776fe572de7ae9"
+  "hash": "7a9996989e912a303230eab37a652005fcdbe9629df20b092cb68d06ecbc5c52"
 }

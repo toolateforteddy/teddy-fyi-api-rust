@@ -4,7 +4,7 @@ use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// The kinds of write this processor issues. A run may only contain one of them; see
 /// `crate::routes::sync::batching`.
@@ -23,6 +23,9 @@ enum WriteKind {
 /// parameter replaced by an array of the same length. Parameters that are the same for
 /// every item in the request -- the authenticated user, the server timestamp, the client
 /// -- stay scalars.
+///
+/// The auto-populated store mappings are *not* here: they are resolved before the loop and
+/// flushed once at the end of the function, and nothing in between reads them back.
 #[derive(Default)]
 struct Pending {
     up_id: Vec<String>,
@@ -58,7 +61,6 @@ impl Pending {
         user_id: &str,
         client_id: &str,
         server_timestamp: DateTime<Utc>,
-        existing_store_info_set: &HashSet<(String, String)>,
         upload_status: &mut [SuccessResult],
     ) -> Result<(), AppError> {
         if !self.up_id.is_empty() {
@@ -121,67 +123,6 @@ impl Pending {
             .execute(&mut **tx)
             .await?;
 
-            // Auto-populate store mapping. The lookup stays one query per item (it is a
-            // correlated `LOWER(name)` search, not a uniform write), but it now runs after
-            // the upsert above rather than interleaved with it, so it still sees the row
-            // it belongs to; only the inserts it produces are batched.
-            let mut si_item: Vec<String> = Vec::new();
-            let mut si_store: Vec<String> = Vec::new();
-            let mut si_price: Vec<Option<f64>> = Vec::new();
-            let mut si_available: Vec<bool> = Vec::new();
-
-            for (item_id, item_name) in self.up_id.iter().zip(self.up_name.iter()) {
-                let existing_mappings = sqlx::query!(
-                    r#"
-                    SELECT DISTINCT gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available
-                    FROM grocery_item_store_info gsi
-                    JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
-                    JOIN grocery_list_members glm ON gi."listId" = glm."listId"
-                    WHERE LOWER(gi.name) = LOWER($1)
-                      AND glm."userId" = $2
-                      AND gi.is_deleted = FALSE
-                      AND gsi.is_deleted = FALSE
-                    "#,
-                    item_name,
-                    user_id
-                )
-                .fetch_all(&mut **tx)
-                .await?;
-
-                for mapping in existing_mappings {
-                    let exists = existing_store_info_set
-                        .contains(&(item_id.clone(), mapping.store_id.clone()));
-
-                    if !exists {
-                        si_item.push(item_id.clone());
-                        si_store.push(mapping.store_id);
-                        si_price.push(mapping.price);
-                        si_available.push(mapping.is_available);
-                    }
-                }
-            }
-
-            if !si_item.is_empty() {
-                sqlx::query!(
-                    r#"
-                    INSERT INTO grocery_item_store_info (
-                        "groceryItemId", "storeId", price, "isAvailable", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
-                    )
-                    SELECT v.item_id, v.store_id, v.price, v.is_available, $5, 1, FALSE, 'SYNCED', $6, NULL
-                    FROM UNNEST($1::text[], $2::text[], $3::float8[], $4::bool[])
-                        AS v(item_id, store_id, price, is_available)
-                    "#,
-                    &si_item,
-                    &si_store,
-                    &si_price as &[Option<f64>],
-                    &si_available,
-                    user_id,
-                    server_timestamp
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-
             self.up_id.clear();
             self.up_name.clear();
             self.up_quantity.clear();
@@ -223,10 +164,10 @@ impl Pending {
 
         if !self.del_id.is_empty() {
             // `RETURNING id, version` rather than the single-row `RETURNING version` a
-            // per-item delete would use: the ids that come back are the rows the
-            // server actually had, and the ones that do not are acknowledged as already
-            // deleted exactly as before. See `crate::routes::sync::deletes` for why a
-            // delete for a missing row must not fail the batch.
+            // per-item delete would use: the ids that come back are the rows the server
+            // actually had, and the ones that do not are acknowledged as already deleted
+            // exactly as before. See `crate::routes::sync::deletes` for why a delete for a
+            // missing row must not fail the batch.
             let updated = sqlx::query!(
                 r#"
                 UPDATE grocery_items SET
@@ -328,6 +269,67 @@ pub async fn process_grocery_changes(
     for row in existing_store_infos {
         existing_store_info_set.insert((row.grocery_item_id, row.store_id));
     }
+
+    // Auto-populated store mappings, resolved for the whole batch in one query.
+    // This used to run a three-table join once per grocery change, so a payload at
+    // `SYNC_MAX_ITEMS_PER_COLLECTION` meant up to 10,000 joins on the single pooled
+    // connection this transaction holds. Only rows the server has never seen need the
+    // mapping (see the call site below), so only their names are looked up.
+    let mut mapping_lookup_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for change in changes {
+        if existing_map.contains_key(&change.id) {
+            continue;
+        }
+        if !matches!(
+            change.operation_type,
+            OperationType::Insert | OperationType::Update
+        ) {
+            continue;
+        }
+        if let Some(ref data) = change.data {
+            if let Ok(item) = serde_json::from_value::<GroceryItemData>(data.clone()) {
+                mapping_lookup_names.insert(item.name.to_lowercase());
+            }
+        }
+    }
+
+    // The lookup key is the Rust-lowercased name, and the query filters on exactly those
+    // strings, so every key the query returns is one we can look up again by that name.
+    let mut mappings_by_name: std::collections::HashMap<
+        String,
+        Vec<(String, Option<f64>, bool)>,
+    > = std::collections::HashMap::new();
+    if !mapping_lookup_names.is_empty() {
+        let mapping_names: Vec<String> = mapping_lookup_names.into_iter().collect();
+        let mapping_rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT LOWER(gi.name) as "name_key!", gsi."storeId" as store_id, gsi.price, gsi."isAvailable" as is_available
+            FROM grocery_item_store_info gsi
+            JOIN grocery_items gi ON gsi."groceryItemId" = gi.id
+            JOIN grocery_list_members glm ON gi."listId" = glm."listId"
+            WHERE LOWER(gi.name) = ANY($1)
+              AND glm."userId" = $2
+              AND gi.is_deleted = FALSE
+              AND gsi.is_deleted = FALSE
+            "#,
+            &mapping_names,
+            user_id
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+
+        for row in mapping_rows {
+            mappings_by_name
+                .entry(row.name_key)
+                .or_default()
+                .push((row.store_id, row.price, row.is_available));
+        }
+    }
+
+    // Backfill rows are collected here and written with one multi-row insert after the
+    // loop; nothing between here and there reads `grocery_item_store_info`.
+    let mut pending_store_info: Vec<(String, String, Option<f64>, bool)> = Vec::new();
 
     // Writes are buffered into runs of one kind and flushed as a single statement each.
     // Everything above a write -- authorization, version assignment, what goes into the
@@ -442,11 +444,44 @@ pub async fn process_grocery_changes(
 
                             if runs.needs_flush(&WriteKind::Upsert, &item.id) {
                                 pending
-                                    .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+                                    .flush(tx, user_id, client_id, server_timestamp, upload_status)
                                     .await?;
                                 runs.clear();
                             }
                             runs.record(WriteKind::Upsert, item.id.clone());
+
+                            // Auto-populate store mapping, but only the first time the
+                            // server sees this row: the backfill is a convenience for a
+                            // brand new item, and a row already in `existing_map` went
+                            // through it on the sync that created it.
+                            //
+                            // Deferring the upsert into a run does not move this decision.
+                            // Both of its inputs are settled before the loop -- `record`
+                            // comes from `existing_map`, and `mappings_by_name` from the
+                            // one batched lookup above -- and `existing_store_info_set` is
+                            // in-memory bookkeeping over what this batch has queued. The
+                            // insert itself already waits until the end of the function,
+                            // which is after the last run has been flushed, so the parent
+                            // rows its foreign key needs are there.
+                            if record.is_none() {
+                                if let Some(mappings) = mappings_by_name.get(&item.name.to_lowercase()) {
+                                    for (store_id, price, is_available) in mappings {
+                                        // `existing_store_info_set` also absorbs what this
+                                        // batch has already queued, so two changes naming the
+                                        // same (item, store) pair no longer both try to insert.
+                                        if existing_store_info_set
+                                            .insert((item.id.clone(), store_id.clone()))
+                                        {
+                                            pending_store_info.push((
+                                                item.id.clone(),
+                                                store_id.clone(),
+                                                *price,
+                                                *is_available,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
 
                             pending.up_id.push(item.id);
                             pending.up_name.push(item.name);
@@ -499,10 +534,9 @@ pub async fn process_grocery_changes(
 
                         // Bounded like every other version bump here; see `crate::routes::sync::versioning`.
                         let next_version = advance_version("Grocery", &change.id, row.version)?;
-
                         if runs.needs_flush(&WriteKind::VersionBump, &change.id) {
                             pending
-                                .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+                                .flush(tx, user_id, client_id, server_timestamp, upload_status)
                                 .await?;
                             runs.clear();
                         }
@@ -551,7 +585,7 @@ pub async fn process_grocery_changes(
                 // the client can stop resending it. See `crate::routes::sync::deletes`.
                 if runs.needs_flush(&WriteKind::Delete, &change.id) {
                     pending
-                        .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+                        .flush(tx, user_id, client_id, server_timestamp, upload_status)
                         .await?;
                     runs.clear();
                 }
@@ -573,8 +607,35 @@ pub async fn process_grocery_changes(
     }
 
     pending
-        .flush(tx, user_id, client_id, server_timestamp, &existing_store_info_set, upload_status)
+        .flush(tx, user_id, client_id, server_timestamp, upload_status)
         .await?;
+
+    if !pending_store_info.is_empty() {
+        let item_ids: Vec<String> = pending_store_info.iter().map(|m| m.0.clone()).collect();
+        let store_ids: Vec<String> = pending_store_info.iter().map(|m| m.1.clone()).collect();
+        let prices: Vec<Option<f64>> = pending_store_info.iter().map(|m| m.2).collect();
+        let availabilities: Vec<bool> = pending_store_info.iter().map(|m| m.3).collect();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO grocery_item_store_info (
+                "groceryItemId", "storeId", price, "isAvailable", "userId", version, is_deleted, sync_state, updated_at, updated_by_client
+            )
+            SELECT m.item_id, m.store_id, m.price, m.is_available, $5, 1, FALSE, 'SYNCED', $6, NULL::text
+            FROM UNNEST($1::text[], $2::text[], $3::double precision[], $4::bool[])
+                AS m(item_id, store_id, price, is_available)
+            ON CONFLICT ("groceryItemId", "storeId") DO NOTHING
+            "#,
+            &item_ids,
+            &store_ids,
+            &prices as &[Option<f64>],
+            &availabilities,
+            user_id,
+            server_timestamp
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
 
     Ok(())
 }

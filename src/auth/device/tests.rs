@@ -82,9 +82,9 @@ fn user_codes_round_trip_through_display_form() {
 /// client is rejected however valid its signature is.
 #[test]
 fn audience_must_be_configured() {
-    let allowed = ["test-scribbleroute-client".to_string()]
-        .into_iter()
-        .collect();
+    let allowed = crate::auth::client_ids::ClientCatalog::from_unclassified([
+        "test-scribbleroute-client".to_string()
+    ]);
 
     assert!(audience_is_allowed(&allowed, "test-scribbleroute-client"));
     assert!(!audience_is_allowed(&allowed, "some-other-client"));
@@ -109,7 +109,7 @@ async fn happy_path_pairs_the_tablet(pool: PgPool) {
     let client_uuid = "fire-tablet-1";
     let (device_code, user_code) = start(&state, client_uuid).await;
 
-    let claimed = claim_for_user(&state, "google-sub-1", Some("parent@example.com"), &user_code)
+    let claimed = claim_for_user(&state, "google-sub-1", Some("parent@example.com"), &user_code, None)
         .await
         .expect("claim should succeed");
     assert_eq!(claimed, StatusCode::NO_CONTENT);
@@ -153,7 +153,7 @@ async fn happy_path_pairs_the_tablet(pool: PgPool) {
 async fn unknown_user_code_is_not_found(pool: PgPool) {
     let state = setup_state(pool.clone());
 
-    let result = claim_for_user(&state, "google-sub-1", None, "CDFH-JKMN").await;
+    let result = claim_for_user(&state, "google-sub-1", None, "CDFH-JKMN", None).await;
     assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
 
     let failures = sqlx::query_scalar!(
@@ -182,7 +182,7 @@ async fn expired_code_cannot_be_claimed_or_polled(pool: PgPool) {
     .await
     .unwrap();
 
-    let claim = claim_for_user(&state, "google-sub-1", None, &user_code).await;
+    let claim = claim_for_user(&state, "google-sub-1", None, &user_code, None).await;
     assert_eq!(claim.unwrap_err(), StatusCode::NOT_FOUND);
 
     let poll = poll_handler(
@@ -204,7 +204,7 @@ async fn device_code_cannot_be_replayed(pool: PgPool) {
     let client_uuid = "fire-tablet-replay";
     let (device_code, user_code) = start(&state, client_uuid).await;
 
-    claim_for_user(&state, "google-sub-1", None, &user_code)
+    claim_for_user(&state, "google-sub-1", None, &user_code, None)
         .await
         .unwrap();
 
@@ -261,7 +261,7 @@ async fn client_uuid_mismatch_is_not_found(pool: PgPool) {
     let state = setup_state(pool.clone());
     let (device_code, user_code) = start(&state, "fire-tablet-owner").await;
 
-    claim_for_user(&state, "google-sub-1", None, &user_code)
+    claim_for_user(&state, "google-sub-1", None, &user_code, None)
         .await
         .unwrap();
 
@@ -327,15 +327,15 @@ async fn repeated_failures_lock_out_claiming(pool: PgPool) {
     let (_device_code, user_code) = start(&state, "fire-tablet-guessed-at").await;
 
     for _ in 0..MAX_CLAIM_FAILURES {
-        let result = claim_for_user(&state, "guesser", None, "CDFH-JKMN").await;
+        let result = claim_for_user(&state, "guesser", None, "CDFH-JKMN", None).await;
         assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
     }
 
-    let locked = claim_for_user(&state, "guesser", None, &user_code).await;
+    let locked = claim_for_user(&state, "guesser", None, &user_code, None).await;
     assert_eq!(locked.unwrap_err(), StatusCode::TOO_MANY_REQUESTS);
 
     // The lockout is per account: another parent is unaffected.
-    let other = claim_for_user(&state, "innocent-parent", None, &user_code)
+    let other = claim_for_user(&state, "innocent-parent", None, &user_code, None)
         .await
         .expect("an unrelated account should still be able to claim");
     assert_eq!(other, StatusCode::NO_CONTENT);
@@ -349,7 +349,7 @@ async fn failures_outside_the_window_do_not_count(pool: PgPool) {
     let (_device_code, user_code) = start(&state, "fire-tablet-forgiven").await;
 
     for _ in 0..MAX_CLAIM_FAILURES {
-        let _ = claim_for_user(&state, "fumbling-parent", None, "CDFH-JKMN").await;
+        let _ = claim_for_user(&state, "fumbling-parent", None, "CDFH-JKMN", None).await;
     }
     sqlx::query!(
         "UPDATE device_claim_failures SET failed_at = now() - interval '1 hour' WHERE user_id = $1",
@@ -359,7 +359,7 @@ async fn failures_outside_the_window_do_not_count(pool: PgPool) {
     .await
     .unwrap();
 
-    let claimed = claim_for_user(&state, "fumbling-parent", None, &user_code)
+    let claimed = claim_for_user(&state, "fumbling-parent", None, &user_code, None)
         .await
         .expect("claim should succeed once the failures have aged out");
     assert_eq!(claimed, StatusCode::NO_CONTENT);
@@ -372,11 +372,11 @@ async fn a_claimed_code_cannot_be_claimed_again(pool: PgPool) {
     let state = setup_state(pool.clone());
     let (_device_code, user_code) = start(&state, "fire-tablet-contested").await;
 
-    claim_for_user(&state, "first-parent", None, &user_code)
+    claim_for_user(&state, "first-parent", None, &user_code, None)
         .await
         .unwrap();
 
-    let second = claim_for_user(&state, "second-parent", None, &user_code).await;
+    let second = claim_for_user(&state, "second-parent", None, &user_code, None).await;
     assert_eq!(second.unwrap_err(), StatusCode::NOT_FOUND);
 
     let row = sqlx::query!(
@@ -507,7 +507,7 @@ async fn unknown_device_code_is_not_found(pool: PgPool) {
     let client_uuid = "fire-tablet-invented";
     let (device_code, user_code) = start(&state, client_uuid).await;
 
-    claim_for_user(&state, "google-sub-1", None, &user_code)
+    claim_for_user(&state, "google-sub-1", None, &user_code, None)
         .await
         .unwrap();
 
@@ -542,7 +542,7 @@ async fn racing_polls_mint_exactly_one_session(pool: PgPool) {
     let client_uuid = "fire-tablet-raced";
     let (device_code, user_code) = start(&state, client_uuid).await;
 
-    claim_for_user(&state, "google-sub-1", None, &user_code)
+    claim_for_user(&state, "google-sub-1", None, &user_code, None)
         .await
         .unwrap();
 

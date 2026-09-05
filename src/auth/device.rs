@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::auth::handlers::{issue_session, AuthResponse};
+use crate::auth::product::Product;
 use crate::state::AppState;
 
 /// Characters a `user_code` is drawn from, written out in the order the spec gives them
@@ -259,8 +260,8 @@ fn hash_device_code(device_code: &str) -> String {
 
 /// The audience rule from [`login_handler`](crate::auth::handlers::login_handler), lifted
 /// out so it can be exercised without a live Google token.
-fn audience_is_allowed(allowed: &std::collections::HashSet<String>, aud: &str) -> bool {
-    allowed.contains(aud)
+fn audience_is_allowed(catalog: &crate::auth::client_ids::ClientCatalog, aud: &str) -> bool {
+    catalog.is_allowed(aud)
 }
 
 /// `POST /auth/device/start` — unauthenticated. Hands the tablet a code to display and a
@@ -393,10 +394,9 @@ pub async fn claim_handler(
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    if !audience_is_allowed(&state.google_client_ids, &google_payload.aud) {
+    if !audience_is_allowed(&state.client_catalog, &google_payload.aud) {
         tracing::warn!(
-            "Audience mismatch: expected one of {:?}, got {}",
-            state.google_client_ids,
+            "Audience mismatch: {} is not a configured client ID",
             google_payload.aud
         );
         return Err(StatusCode::UNAUTHORIZED);
@@ -404,8 +404,13 @@ pub async fn claim_handler(
 
     let user_id = google_payload.sub;
     let email = google_payload.email.clone();
+    // The parent redeems the code on their product's own website, so their audience is the
+    // one thing in this handshake that *proves* which product the tablet is being paired
+    // into. It is recorded on the authorization row here and read back by the poll that
+    // mints the session, because the tablet's own request carries no proof of anything.
+    let product = state.client_catalog.product_for(&google_payload.aud);
 
-    claim_for_user(&state, &user_id, email.as_deref(), &payload.user_code).await
+    claim_for_user(&state, &user_id, email.as_deref(), &payload.user_code, product).await
 }
 
 /// The half of [`claim_handler`] that runs once the caller's identity is established.
@@ -416,6 +421,7 @@ pub async fn claim_for_user(
     user_id: &str,
     email: Option<&str>,
     raw_user_code: &str,
+    product: Option<Product>,
 ) -> Result<StatusCode, StatusCode> {
     if claim_failures_exhausted(state, user_id).await? {
         tracing::warn!(user_id = %user_id, "Device claim rate limit reached");
@@ -442,13 +448,14 @@ pub async fn claim_for_user(
 
     let claimed = sqlx::query!(
         "UPDATE device_authorizations
-            SET user_id = $1, claimed_at = now()
+            SET user_id = $1, claimed_at = now(), product = $3
           WHERE user_code = $2
             AND expires_at > now()
             AND claimed_at IS NULL
           RETURNING client_uuid",
         user_id,
-        user_code
+        user_code,
+        product.map(|p| p.as_wire().to_string())
     )
     .fetch_optional(&state.db_pool)
     .await
@@ -552,7 +559,7 @@ pub async fn poll_handler(
     // `FOR UPDATE` locks that single row for the rest of the transaction, which is what
     // keeps two tablets racing one code from both coming away with a session.
     let row = sqlx::query!(
-        "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at
+        "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at, product
            FROM device_authorizations
           WHERE device_code_hash = $1 AND client_uuid = $2
           FOR UPDATE",
@@ -637,12 +644,18 @@ pub async fn poll_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // Whatever the claiming parent proved, and nothing the tablet said about itself. An
+    // unclassified parent audience leaves this `None`, which is the ordinary
+    // "unknown, so not enforced" case described in `crate::auth::product`.
+    let product = row.product.as_deref().and_then(Product::from_wire);
+
     let auth: AuthResponse = issue_session(
         &state,
         &user_id,
         None,
         &payload.client_uuid,
         crate::auth::handlers::DEFAULT_SESSION_SECS,
+        product,
     )
     .await?;
 

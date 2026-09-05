@@ -15,6 +15,14 @@
 //! * `configs[].key` / `configs[].value` — `TEXT` columns with no bound at all. A config
 //!   is a setting; nothing about it needs to be a megabyte, and an unbounded `key` also
 //!   feeds the `(user_id, device_uuid, key)` unique index.
+//! * the *number* of items, in any of the twelve change vectors. Every one of them is
+//!   processed by a plain `for` loop issuing one statement per item inside a transaction,
+//!   so the count of items in a body is the count of round trips to Postgres it costs.
+//!   Minimal deltas serialize to a few dozen bytes each, which puts well over a hundred
+//!   thousand of them inside one 8 MiB request: trivial to send, and tens of thousands of
+//!   sequential statements holding one of sixteen pool connections open against a
+//!   scale-to-zero, per-compute-second-billed database at the other end. That asymmetry
+//!   is the abuse; the per-item size bounds above do nothing about it.
 //!
 //! # Sizing
 //!
@@ -67,10 +75,51 @@ pub const DEFAULT_MAX_CONFIG_KEY_BYTES: usize = 128;
 /// drawing, and drawings have their own table and their own bound.
 pub const DEFAULT_MAX_CONFIG_VALUE_BYTES: usize = 8 * 1024;
 
+/// Largest number of items one change vector in a request may carry.
+///
+/// Sized off what the clients actually send, with the honest admission that only one of
+/// them can be read from here. The Android engine (`RoomSyncEngine` in the toybox repo)
+/// batches drawings hard — `MAX_BATCH_DRAWINGS = 25`, or 1,000,000 chars of vector data,
+/// whichever comes first — and sends its configs unbatched, which is bounded by the
+/// number of compile-time config keys (about thirty) times the devices a
+/// ScribbleKeepCloud console speaks for: low hundreds at the very outside. The todo and
+/// grocery client is not in a repo this one can see and is assumed *not* to batch, so its
+/// worst case is the whole of a household's local history in a single body on the first
+/// sync after cloud sync is switched on. A family adding twenty grocery rows a week for
+/// five years reaches roughly five thousand; 10,000 is double that, and two orders of
+/// magnitude above anything the batched client can produce.
+///
+/// The point of the number is not to be tight. A count limit a real tablet can reach is
+/// an outage rather than a defence: the body does not get smaller on retry, so the client
+/// re-sends the same request forever and that account simply never syncs again. It only
+/// has to be far below what a body full of minimal deltas can hold.
+pub const DEFAULT_MAX_ITEMS_PER_COLLECTION: usize = 10_000;
+
+/// Largest number of items across every change vector in one request.
+///
+/// The per-collection bound alone is not a bound on the request: there are twelve
+/// vectors, so twelve times the cap — 120,000 statements — would still be reachable in
+/// one POST, which is the whole problem restated. This one is what actually bounds the
+/// work a single request can order, and it is the number to look at when reasoning about
+/// database cost.
+///
+/// 20,000 sits at twice the per-collection cap, so a legitimate first sync may bring one
+/// enormous collection *and* everything that travels with it (grocery items alongside
+/// their lists, stores and categories) and still fit. Against abuse it is roughly a
+/// seven-fold cut: minimal deltas run about sixty bytes, so 8 MiB of them is on the order
+/// of 140,000 items today.
+///
+/// Note which bound binds when. For real traffic the byte limits bite first — 20,000
+/// items of any substance is far past 8 MiB — so this only ever fires on a body that is
+/// deliberately made of nothing.
+pub const DEFAULT_MAX_ITEMS_TOTAL: usize = 20_000;
+
 const MAX_DRAWING_DATA_BYTES_ENV: &str = "SYNC_MAX_DRAWING_DATA_BYTES";
 const MAX_DRAWING_DATA_DEPTH_ENV: &str = "SYNC_MAX_DRAWING_DATA_DEPTH";
 const MAX_CONFIG_KEY_BYTES_ENV: &str = "SYNC_MAX_CONFIG_KEY_BYTES";
 const MAX_CONFIG_VALUE_BYTES_ENV: &str = "SYNC_MAX_CONFIG_VALUE_BYTES";
+const MAX_ITEMS_PER_COLLECTION_ENV: &str = "SYNC_MAX_ITEMS_PER_COLLECTION";
+const MAX_ITEMS_TOTAL_ENV: &str = "SYNC_MAX_ITEMS_TOTAL";
 
 /// The bounds one request is checked against, resolved once per request.
 ///
@@ -83,6 +132,8 @@ pub struct SyncLimits {
     pub max_drawing_data_depth: usize,
     pub max_config_key_bytes: usize,
     pub max_config_value_bytes: usize,
+    pub max_items_per_collection: usize,
+    pub max_items_total: usize,
 }
 
 impl Default for SyncLimits {
@@ -92,12 +143,14 @@ impl Default for SyncLimits {
             max_drawing_data_depth: DEFAULT_MAX_DRAWING_DATA_DEPTH,
             max_config_key_bytes: DEFAULT_MAX_CONFIG_KEY_BYTES,
             max_config_value_bytes: DEFAULT_MAX_CONFIG_VALUE_BYTES,
+            max_items_per_collection: DEFAULT_MAX_ITEMS_PER_COLLECTION,
+            max_items_total: DEFAULT_MAX_ITEMS_TOTAL,
         }
     }
 }
 
 impl SyncLimits {
-    /// Reads the four overrides, falling back to the compiled defaults.
+    /// Reads the six overrides, falling back to the compiled defaults.
     ///
     /// Zero and unparseable values fall back too, as everywhere else in this codebase: a
     /// zero bound would refuse every drawing in the product, and an operator typo must
@@ -109,6 +162,8 @@ impl SyncLimits {
             max_drawing_data_depth: read_limit(MAX_DRAWING_DATA_DEPTH_ENV, defaults.max_drawing_data_depth),
             max_config_key_bytes: read_limit(MAX_CONFIG_KEY_BYTES_ENV, defaults.max_config_key_bytes),
             max_config_value_bytes: read_limit(MAX_CONFIG_VALUE_BYTES_ENV, defaults.max_config_value_bytes),
+            max_items_per_collection: read_limit(MAX_ITEMS_PER_COLLECTION_ENV, defaults.max_items_per_collection),
+            max_items_total: read_limit(MAX_ITEMS_TOTAL_ENV, defaults.max_items_total),
         }
     }
 }
@@ -129,6 +184,7 @@ fn read_limit(var: &str, default: usize) -> usize {
 /// partial success has to work out which half landed, whereas an all-or-nothing `400`
 /// naming the offending item is something it can act on.
 pub fn validate_sync_payload(payload: &SyncRequest, limits: &SyncLimits) -> Result<(), AppError> {
+    check_item_counts(payload, limits)?;
     for item in &payload.drawings {
         check_drawing_item(item, limits)?;
     }
@@ -140,6 +196,59 @@ pub fn validate_sync_payload(payload: &SyncRequest, limits: &SyncLimits) -> Resu
     }
     for change in &payload.config_changes {
         check_config_change(change, limits)?;
+    }
+    Ok(())
+}
+
+/// Every change vector in a request, paired with the name the client knows it by.
+///
+/// Listed explicitly rather than counted off a derive, so that a vector added to
+/// `SyncRequest` and not added here is a visible omission in this file rather than a
+/// silently unbounded field. The names are the wire (camelCase) aliases, because the
+/// refusal is read by whoever is holding the request body.
+fn collections(payload: &SyncRequest) -> [(&'static str, usize); 12] {
+    [
+        ("todoListChanges", payload.todo_list_changes.len()),
+        ("todoChanges", payload.todo_changes.len()),
+        ("groceryListChanges", payload.grocery_list_changes.len()),
+        ("groceryListMemberChanges", payload.grocery_list_member_changes.len()),
+        ("storeChanges", payload.store_changes.len()),
+        ("categoryChanges", payload.category_changes.len()),
+        ("groceryChanges", payload.grocery_changes.len()),
+        ("groceryItemStoreInfoChanges", payload.grocery_item_store_info_changes.len()),
+        ("configChanges", payload.config_changes.len()),
+        ("drawingChanges", payload.drawing_changes.len()),
+        ("configs", payload.configs.len()),
+        ("drawings", payload.drawings.len()),
+    ]
+}
+
+/// Bounds how much work one request may order, per vector and in total.
+///
+/// Both, deliberately. The per-collection check is the one that can name a field, which
+/// is what makes the `400` actionable for a client that has to decide what to send
+/// instead; the total is the one that is actually a bound, since twelve collections each
+/// just under their own cap is the same request the cap was meant to refuse.
+///
+/// Checked before the size checks below, because it is the cheaper of the two — it reads
+/// twelve lengths, where the size pass serializes every drawing blob in the body.
+fn check_item_counts(payload: &SyncRequest, limits: &SyncLimits) -> Result<(), AppError> {
+    let counts = collections(payload);
+    for (field, count) in counts {
+        if count > limits.max_items_per_collection {
+            return Err(AppError::BadRequest(format!(
+                "{} carries {} items, over the {}-item limit",
+                field, count, limits.max_items_per_collection
+            )));
+        }
+    }
+
+    let total: usize = counts.iter().map(|(_, count)| count).sum();
+    if total > limits.max_items_total {
+        return Err(AppError::BadRequest(format!(
+            "request carries {} items across all change collections, over the {}-item limit",
+            total, limits.max_items_total
+        )));
     }
     Ok(())
 }
@@ -266,6 +375,8 @@ mod tests {
             max_drawing_data_depth: 3,
             max_config_key_bytes: 8,
             max_config_value_bytes: 16,
+            max_items_per_collection: 3,
+            max_items_total: 5,
         }
     }
 
@@ -315,6 +426,104 @@ mod tests {
 
         let long_value = check_config_fields("c1", "configs[]", "k", &"v".repeat(17), &tiny()).unwrap_err();
         assert!(matches!(long_value, AppError::BadRequest(ref m) if m.contains(".value")), "got {:?}", long_value);
+    }
+
+    /// An otherwise empty body, so a count test shows only the vector it is about.
+    fn blank() -> SyncRequest {
+        SyncRequest {
+            last_synced_at: None,
+            client_id: "client-1".to_string(),
+            device_uuid: None,
+            device_name: None,
+            scope: None,
+            todo_list_changes: vec![],
+            todo_changes: vec![],
+            grocery_list_changes: vec![],
+            grocery_list_member_changes: vec![],
+            store_changes: vec![],
+            category_changes: vec![],
+            grocery_changes: vec![],
+            grocery_item_store_info_changes: vec![],
+            config_changes: vec![],
+            drawing_changes: vec![],
+            configs: vec![],
+            drawings: vec![],
+        }
+    }
+
+    fn grocery_delta(n: usize) -> Vec<crate::routes::sync::types::GroceryChangeDelta> {
+        (0..n)
+            .map(|i| crate::routes::sync::types::GroceryChangeDelta {
+                id: format!("g{}", i),
+                operation_type: crate::routes::sync::types::OperationType::Delete,
+                version: 1,
+                data: None,
+            })
+            .collect()
+    }
+
+    fn todo_delta(n: usize) -> Vec<crate::routes::sync::types::TodoChangeDelta> {
+        (0..n)
+            .map(|i| crate::routes::sync::types::TodoChangeDelta {
+                id: format!("t{}", i),
+                operation_type: crate::routes::sync::types::OperationType::Delete,
+                version: 1,
+                data: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_over_full_collection_is_refused_by_name() {
+        let mut payload = blank();
+        payload.grocery_changes = grocery_delta(4);
+        let err = check_item_counts(&payload, &tiny()).unwrap_err();
+        match err {
+            AppError::BadRequest(msg) => {
+                assert!(msg.contains("groceryChanges"), "{}", msg);
+                assert!(msg.contains("items"), "{}", msg);
+                assert!(msg.contains('3'), "{}", msg);
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    /// The case a per-collection cap on its own does not catch: several collections, each
+    /// legal, adding up to a request that is not.
+    #[test]
+    fn collections_each_under_the_cap_can_still_bust_the_total() {
+        let mut payload = blank();
+        payload.grocery_changes = grocery_delta(3);
+        payload.todo_changes = todo_delta(3);
+        for (_, count) in collections(&payload) {
+            assert!(count <= tiny().max_items_per_collection);
+        }
+        let err = check_item_counts(&payload, &tiny()).unwrap_err();
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m.contains("across all change collections") && m.contains('5')),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn a_body_within_both_counts_passes() {
+        let mut payload = blank();
+        payload.grocery_changes = grocery_delta(2);
+        payload.todo_changes = todo_delta(2);
+        assert!(check_item_counts(&payload, &tiny()).is_ok());
+        assert!(validate_sync_payload(&payload, &tiny()).is_ok());
+    }
+
+    /// What the batched Android client sends is nowhere near the shipped defaults.
+    #[test]
+    fn the_default_counts_clear_a_real_client_batch_by_orders_of_magnitude() {
+        let defaults = SyncLimits::default();
+        // `RoomSyncEngine.MAX_BATCH_DRAWINGS`, plus every config key the apps define,
+        // times a generous number of devices one console might speak for.
+        assert!(defaults.max_items_per_collection > 25 * 100);
+        assert!(defaults.max_items_per_collection > 32 * 20);
+        assert!(defaults.max_items_total >= defaults.max_items_per_collection * 2);
     }
 
     #[test]

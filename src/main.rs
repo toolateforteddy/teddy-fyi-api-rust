@@ -118,6 +118,9 @@ async fn init_app_state() -> AppState {
         gemini_api_key,
         redis_client,
         cookie_domain,
+        // Read once at startup: the caps are deployment configuration, and a
+        // per-request `env::var` on a hot path buys nothing.
+        stream_slots: Arc::new(routes::sync::stream_limits::StreamSlots::from_env()),
     }
 }
 

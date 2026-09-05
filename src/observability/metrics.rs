@@ -77,11 +77,20 @@ fn register_baseline_metrics() {
         "Database errors indicating unreachability or pool exhaustion"
     );
     metrics::describe_counter!("http_requests_total", "HTTP requests, by route and status");
+    metrics::describe_counter!(
+        "sse_streams_refused_total",
+        "/api/sync/stream connections refused by a concurrency cap, by reason"
+    );
 
     metrics::gauge!("sse_connections_active").set(0.0);
     metrics::gauge!("db_connectivity_degraded").set(0.0);
     for class in ["unreachable", "saturated"] {
         metrics::counter!("db_connectivity_failures_total", "class" => class).increment(0);
+    }
+    // A cap that is never hit is the healthy state, and the series has to exist
+    // at zero for "no data" not to be indistinguishable from "no abuse".
+    for reason in ["per_user", "global"] {
+        metrics::counter!("sse_streams_refused_total", "reason" => reason).increment(0);
     }
     for site in REDIS_FALLBACK_SITES {
         metrics::counter!("redis_degraded_total", "site" => *site).increment(0);

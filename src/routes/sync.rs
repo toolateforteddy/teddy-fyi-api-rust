@@ -31,6 +31,9 @@ pub use publisher::*;
 pub mod stream;
 pub use stream::*;
 
+pub mod stream_limits;
+pub use stream_limits::*;
+
 #[cfg(test)]
 pub mod tests;
 

@@ -25,6 +25,7 @@ pub fn setup_state(pool: PgPool) -> AppState {
         )
         .unwrap(),
         cookie_domain: ".teddy.fyi".to_string(),
+        stream_slots: Arc::new(crate::routes::sync::stream_limits::StreamSlots::from_env()),
     }
 }
 

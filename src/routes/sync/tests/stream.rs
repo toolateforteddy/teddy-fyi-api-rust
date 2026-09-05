@@ -355,3 +355,171 @@ async fn test_stream_does_not_register_a_device(pool: PgPool) {
         .unwrap_or(0);
     assert_eq!(devices, 0, "opening a stream must not register a device");
 }
+
+// --- Stream concurrency caps -------------------------------------------------
+//
+// The unit tests below drive `StreamSlots` directly: slot accounting is pure, and
+// these are the assertions that have to be deterministic. The two handler tests
+// after them exist to pin the *status codes*, which is the part a client depends
+// on — and they need no Redis, because a refused stream is refused before the
+// subscribe.
+
+use crate::auth::tokens::Claims;
+use crate::routes::sync::stream::{sync_stream_handler, StreamQuery};
+use crate::routes::sync::stream_limits::{StreamRefusal, StreamSlots};
+use crate::routes::sync::AppError;
+use crate::state::AppState;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use std::sync::Arc;
+
+/// One family's tablets connect; the loop that tries to open a fourth is refused.
+#[test]
+fn test_per_user_cap_admits_up_to_the_limit_then_refuses() {
+    let slots = Arc::new(StreamSlots::with_limits(3, 100));
+
+    let held: Vec<_> = (0..3)
+        .map(|i| {
+            slots
+                .try_acquire("user-1")
+                .unwrap_or_else(|_| panic!("stream {i} is within the cap and should be admitted"))
+        })
+        .collect();
+    assert_eq!(slots.active_for_user("user-1"), 3);
+
+    assert_eq!(
+        slots.try_acquire("user-1").err(),
+        Some(StreamRefusal::PerUser),
+        "the stream past the cap must be refused, not queued"
+    );
+    drop(held);
+}
+
+/// A disconnect frees the slot. This is the property the whole guard design is
+/// for: without it the cap would count lifetime opens and lock a family out after
+/// three reconnects.
+#[test]
+fn test_closing_a_stream_frees_a_slot() {
+    let slots = Arc::new(StreamSlots::with_limits(1, 100));
+
+    let first = slots.try_acquire("user-1").expect("first stream fits");
+    assert!(slots.try_acquire("user-1").is_err());
+
+    drop(first);
+    assert_eq!(slots.active_for_user("user-1"), 0);
+    assert_eq!(slots.active_total(), 0, "the global count is released too");
+
+    slots
+        .try_acquire("user-1")
+        .expect("a slot freed by a disconnect should be reusable");
+}
+
+/// The cap is per account, so one account hitting its limit must not cost a
+/// neighbour anything.
+#[test]
+fn test_per_user_cap_does_not_leak_across_users() {
+    let slots = Arc::new(StreamSlots::with_limits(1, 100));
+
+    let _first = slots.try_acquire("user-1").expect("first account's stream");
+    assert!(slots.try_acquire("user-1").is_err());
+
+    let _second = slots
+        .try_acquire("user-2")
+        .expect("a different account must be unaffected by user-1's cap");
+    assert_eq!(slots.active_for_user("user-2"), 1);
+    assert_eq!(slots.active_total(), 2);
+}
+
+/// Many accounts, each politely under its own cap, still cannot exhaust the
+/// replica's Redis connections.
+#[test]
+fn test_global_cap_bounds_a_distributed_open() {
+    let slots = Arc::new(StreamSlots::with_limits(3, 2));
+
+    let _a = slots.try_acquire("user-1").expect("first stream");
+    let _b = slots.try_acquire("user-2").expect("second stream");
+
+    assert_eq!(
+        slots.try_acquire("user-3").err(),
+        Some(StreamRefusal::Global),
+        "a third account must hit the process cap, not its own"
+    );
+    assert_eq!(
+        slots.try_acquire("user-1").err(),
+        Some(StreamRefusal::Global),
+        "the process cap outranks a per-user allowance that still has room"
+    );
+}
+
+fn stream_claims() -> Claims {
+    Claims {
+        sub: "user-1".to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10_000_000_000,
+    }
+}
+
+/// Opens a stream through the real handler and reports the status the client
+/// would see. Cloud scope so no device lookup is needed on the admitted path.
+async fn stream_status(state: AppState) -> StatusCode {
+    match sync_stream_handler(
+        State(state),
+        axum::Extension(stream_claims()),
+        HeaderMap::new(),
+        axum::extract::Query(StreamQuery {
+            client_id: Some("client-1".to_string()),
+            device_uuid: None,
+            scope: Some("scribble_keep_cloud".to_string()),
+        }),
+    )
+    .await
+    {
+        Ok(_) => StatusCode::OK,
+        Err(err) => err.into_response().status(),
+    }
+}
+
+/// An account already at its cap gets 429 — and gets it without a Redis
+/// connection or a config query being spent on it.
+#[sqlx::test]
+async fn test_stream_handler_refuses_over_cap_with_429(pool: PgPool) {
+    let mut state = setup_state(pool);
+    state.stream_slots = Arc::new(StreamSlots::with_limits(1, 100));
+    let _held = state
+        .stream_slots
+        .try_acquire("user-1")
+        .expect("the account's one allowed stream");
+
+    assert_eq!(stream_status(state).await, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A full replica answers 503: the request is fine, this pod just has no room.
+#[sqlx::test]
+async fn test_stream_handler_refuses_at_global_cap_with_503(pool: PgPool) {
+    let mut state = setup_state(pool);
+    state.stream_slots = Arc::new(StreamSlots::with_limits(3, 1));
+    let _held = state
+        .stream_slots
+        .try_acquire("someone-else")
+        .expect("the replica's one slot, held by another account");
+
+    assert_eq!(stream_status(state).await, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// The two refusals must keep their own status codes: a 429 tells a client to
+/// stop opening streams and a 503 tells it to retry, and neither is a 403.
+#[test]
+fn test_limit_errors_map_to_their_status_codes() {
+    assert_eq!(
+        AppError::TooManyRequests("x".to_string())
+            .into_response()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        AppError::Overloaded("x".to_string())
+            .into_response()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}

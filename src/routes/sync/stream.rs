@@ -16,6 +16,7 @@ use super::config::fetch_config_snapshot;
 use super::device::existing_fallback_device;
 use super::publisher::{get_channel_name, get_device_channel_name, SyncSseEvent};
 use super::remote_mutations::parse_or_hash_uuid;
+use super::stream_limits::StreamRefusal;
 use super::types::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +114,26 @@ pub async fn sync_stream_handler(
             .and_then(|s| Uuid::parse_str(s).ok())
     });
 
+    // 0. Claim a concurrency slot before anything expensive. Each stream pins a
+    // dedicated Redis pub/sub connection for its whole lifetime, and accounts are
+    // free, so an uncapped endpoint lets one account exhaust Redis `maxclients` —
+    // which fails the Redis ping in `/healthz/ready` on *every* replica, not just
+    // the abuser's. Refusing here, ahead of the config query and the subscribe,
+    // also means a refused caller costs neither a database round trip nor a Redis
+    // connection. The guard is dropped on every exit path below, including the
+    // `?` returns, and finally by the stream itself when the client disconnects.
+    let stream_slot = state
+        .stream_slots
+        .try_acquire(&user_id)
+        .map_err(|refusal| match refusal {
+            StreamRefusal::PerUser => AppError::TooManyRequests(
+                "Too many open sync streams for this account".to_string(),
+            ),
+            StreamRefusal::Global => {
+                AppError::Overloaded("Sync stream capacity reached; retry shortly".to_string())
+            }
+        })?;
+
     let user_uuid = parse_or_hash_uuid(&user_id);
     let device_uuid =
         resolve_stream_device(&state.db_pool, &user_uuid, requested_device, query.scope.as_deref())
@@ -182,12 +203,15 @@ pub async fn sync_stream_handler(
         },
     );
 
-    // The gauge is held by the stream itself: `map` captures the guard, so it lives
-    // exactly as long as the connection and is dropped when the client goes away —
-    // which is the only moment a disconnect is actually observable here.
+    // The gauge and the concurrency slot are held by the stream itself: `map`
+    // captures both, so they live exactly as long as the connection and are
+    // dropped when the client goes away — which is the only moment a disconnect
+    // is actually observable here. Releasing the slot on that same drop is what
+    // makes the cap a cap on *concurrent* streams rather than on lifetime opens.
     let connection_guard = crate::observability::metrics::SseConnectionGuard::open();
     let stream = stream.map(move |item| {
         let _guard = &connection_guard;
+        let _slot = &stream_slot;
         item
     });
 

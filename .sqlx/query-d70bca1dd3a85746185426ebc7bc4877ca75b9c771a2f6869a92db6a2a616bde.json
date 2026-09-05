@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, version, key FROM configs WHERE user_id = $1 AND device_uuid = $2 AND key = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d70bca1dd3a85746185426ebc7bc4877ca75b9c771a2f6869a92db6a2a616bde"
+}

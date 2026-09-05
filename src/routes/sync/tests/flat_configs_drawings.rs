@@ -298,3 +298,162 @@ async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
         .unwrap();
     assert_eq!(config_count, 1);
 }
+
+/// Two configs in one payload claiming the same key.
+///
+/// The write paths prefetch what is on the server once per batch rather than once per item,
+/// which means the second of these two is resolved against a picture taken before the first
+/// one was written. The unique key is `(user_id, device_uuid, key)`, so getting that wrong
+/// is not a stale read — it is a constraint violation that fails the whole request.
+///
+/// The behaviour being pinned is the one the per-item resolution had: the second item lands
+/// on the row the first created and reconciles it onto the id it submitted.
+#[sqlx::test]
+async fn two_configs_in_one_payload_contending_for_a_key(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let first_id = uuid::Uuid::new_v4();
+    let second_id = uuid::Uuid::new_v4();
+    let config = |id: uuid::Uuid, value: &str| ConfigSyncItem {
+        id,
+        device_uuid: None,
+        key: "theme".to_string(),
+        value: value.to_string(),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let mut req = blank_request();
+    req.configs = vec![config(first_id, "dark"), config(second_id, "light")];
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a payload with two configs on one key must not fail the request");
+
+    // One row on the key, not two and not a duplicate-key error: the second item updated
+    // the row the first inserted, taking its own id and advancing the version.
+    let rows = sqlx::query!(
+        "SELECT id, value, version FROM configs WHERE user_id = $1 AND key = 'theme'",
+        user_uuid
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "expected one row on the key, got {:?}", rows.len());
+    assert_eq!(rows[0].id, second_id);
+    assert_eq!(rows[0].value, "light");
+    assert_eq!(rows[0].version, 2);
+}
+
+/// Two configs in one payload claiming the same id under different keys.
+///
+/// The mirror of the case above, and the one that trips `configs_pkey` rather than the
+/// unique key: `id` is the primary key, so the second item has to see that the first has
+/// already taken it. Per the per-item resolution, it lands on that row and renames its key.
+#[sqlx::test]
+async fn two_configs_in_one_payload_contending_for_an_id(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let shared_id = uuid::Uuid::new_v4();
+    let config = |key: &str, value: &str| ConfigSyncItem {
+        id: shared_id,
+        device_uuid: None,
+        key: key.to_string(),
+        value: value.to_string(),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let mut req = blank_request();
+    req.configs = vec![config("child_name", "ada"), config("lockout_minutes", "20")];
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a payload with two configs on one id must not fail the request");
+
+    let rows = sqlx::query!(
+        "SELECT id, key, value, version FROM configs WHERE user_id = $1",
+        user_uuid
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "expected one row on the id, got {:?}", rows.len());
+    assert_eq!(rows[0].id, shared_id);
+    assert_eq!(rows[0].key, "lockout_minutes");
+    assert_eq!(rows[0].value, "20");
+    assert_eq!(rows[0].version, 2);
+}
+
+/// The same drawing twice in one payload.
+///
+/// Same shape of trap on the drawing side: the second upload has to be versioned against
+/// what the first one wrote, not against the prefetch taken before either ran.
+#[sqlx::test]
+async fn the_same_drawing_twice_in_one_payload_versions_off_the_first(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let drawing_id = uuid::Uuid::new_v4();
+    let drawing = |stroke: i32| DrawingSyncItem {
+        id: drawing_id,
+        user_id: Some(user_uuid.to_string()),
+        device_uuid: None,
+        created_at: 1000,
+        data: serde_json::json!({ "strokes": [stroke] }),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    };
+
+    let mut req = blank_request();
+    req.scope = Some(SyncScope::ScribbleBox);
+    req.drawings = vec![drawing(1), drawing(2)];
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a payload naming one drawing twice must not fail the request");
+
+    let row = sqlx::query!(
+        "SELECT version, data FROM drawings WHERE id = $1",
+        drawing_id
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.version, 2);
+    assert_eq!(row.data, serde_json::json!({ "strokes": [2] }));
+}
+
+/// An otherwise empty ScribbleKeep request from `client-1`, for the tests above to fill in.
+fn blank_request() -> SyncRequest {
+    SyncRequest {
+        last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: Some(SyncScope::ScribbleKeep),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    }
+}

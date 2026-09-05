@@ -51,10 +51,12 @@ pub struct JoinResponse {
     pub list_id: String,
 }
 
-/// `POST /api/lists/invite` — mint a 24-hour code for a list the caller belongs to.
+/// `POST /api/lists/invite` — mint a code for a list the caller belongs to, superseding
+/// whatever code that list had before.
 ///
-/// Refused with `429` once the caller already holds
-/// [`limits::max_outstanding_invites_per_user`] live codes.
+/// A list has one live code at a time and it is good for
+/// [`limits::invite_ttl_mins`] minutes. Refused with `429` once the caller already holds
+/// [`limits::max_outstanding_invites_per_user`] live codes across their other lists.
 pub async fn invite_handler(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -63,13 +65,18 @@ pub async fn invite_handler(
     let user_id = &claims.sub;
     let list_id = &payload.list_id;
 
+    // One transaction for the whole mint. Superseding the old code and inserting the new
+    // one have to land together: a commit between them would leave the list either with
+    // two live codes or with none.
+    let mut tx = state.db_pool.begin().await?;
+
     // 1. Verify that the requesting user is a member of the grocery list
     let is_member = sqlx::query!(
         r#"SELECT 1 as dummy FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2 AND is_deleted = FALSE"#,
         list_id,
         user_id
     )
-    .fetch_optional(&state.db_pool)
+    .fetch_optional(&mut *tx)
     .await?
     .is_some();
 
@@ -80,18 +87,50 @@ pub async fn invite_handler(
         )));
     }
 
-    // 2. Refuse an account that is already sitting on its allowance of live codes.
+    // 2. Serialise mints for this list against each other.
+    //
+    // The supersede below is a `DELETE`, and a `DELETE` cannot see a row another
+    // transaction has inserted but not committed. Two people pressing "invite" on the same
+    // list at the same moment would each delete nothing and each insert a code, and the
+    // list would end up with the two live codes this endpoint exists to prevent. The lock
+    // is held to the end of the transaction and is scoped to the list, so it costs
+    // concurrent invites for *other* lists nothing.
+    //
+    // `list_invites` also carries a unique index on "listId", which makes one-code-per-list
+    // a fact about the table rather than a property of this function; the lock is what
+    // turns the race into a short wait instead of an error.
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+        list_id
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 3. Retire whatever code this list already had.
+    //
+    // Minting supersedes. A second code was never a second way in for the family — they
+    // send one code to one person — but it was a second way in for everybody else, live
+    // for as long as the first and just as good. Pressing "invite" again because the first
+    // code was mistyped, or because it went to the wrong person, now takes the old one out
+    // of circulation, which is what a person pressing that button already believes it does.
+    sqlx::query!(r#"DELETE FROM list_invites WHERE "listId" = $1"#, list_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // 4. Refuse an account that is already sitting on its allowance of live codes.
     //
     // Only unexpired rows count. A redeemed invite is deleted outright and an expired one
     // can no longer grant anything, so neither is part of the surface this cap bounds —
     // and a parent whose code lapsed unused must be able to issue another immediately.
+    // Counted after the supersede above, so re-inviting to a list the caller already has a
+    // code for is never what trips the cap: that mint adds nothing to the surface.
     let outstanding = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!"
              FROM list_invites
             WHERE "createdBy" = $1 AND "expiresAt" > now()"#,
         user_id
     )
-    .fetch_one(&state.db_pool)
+    .fetch_one(&mut *tx)
     .await?;
 
     if outstanding >= limits::max_outstanding_invites_per_user() {
@@ -104,7 +143,7 @@ pub async fn invite_handler(
         ));
     }
 
-    // 3. Draw a unique code and store it, with a 24-hour expiry.
+    // 5. Draw a unique code and store it.
     //
     // A bounded number of draws, and the uniqueness check is the insert itself rather than
     // a `SELECT` before it. The old shape — look for a collision, then insert — was both
@@ -112,7 +151,7 @@ pub async fn invite_handler(
     // both see the code free and the second would fail on the primary key. `ON CONFLICT DO
     // NOTHING RETURNING` collapses both into one atomic attempt, the same way
     // `auth::device::start_handler` does it.
-    let expires_at = Utc::now() + chrono::Duration::hours(24);
+    let expires_at = Utc::now() + chrono::Duration::minutes(limits::invite_ttl_mins());
 
     for _ in 0..limits::INVITE_CODE_GENERATION_ATTEMPTS {
         let candidate: String = rand::rng()
@@ -129,7 +168,7 @@ pub async fn invite_handler(
             r#"DELETE FROM list_invites WHERE code = $1 AND "expiresAt" < now()"#,
             candidate
         )
-        .execute(&state.db_pool)
+        .execute(&mut *tx)
         .await?;
 
         let inserted = sqlx::query!(
@@ -142,10 +181,11 @@ pub async fn invite_handler(
             user_id,
             expires_at
         )
-        .fetch_optional(&state.db_pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if inserted.is_some() {
+            tx.commit().await?;
             return Ok(Json(InviteResponse { code: candidate }));
         }
     }

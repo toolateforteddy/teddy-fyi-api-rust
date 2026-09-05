@@ -896,6 +896,248 @@ async fn test_sync_unauthorized_grocery_list_access(pool: PgPool) {
     assert!(matches!(err, AppError::Forbidden(_)));
 }
 
+/// The other half of the membership check: creating a list still works offline-first.
+///
+/// A client that makes a list on a plane sends the list and its own membership row in one
+/// batch, and that batch must survive a rule that says "you must already be a member".
+/// It does, because grocery lists are processed before members inside the same
+/// transaction and creating a list seeds the creator's row — but that ordering is now
+/// load-bearing, so it is pinned here rather than left as a coincidence.
+#[sqlx::test]
+async fn test_sync_creating_a_list_and_its_membership_in_one_batch(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    let list_data = GroceryListData {
+        id: "glist-fresh".to_string(),
+        name: "Fresh List".to_string(),
+        owner_id: Some("user-1".to_string()),
+        created_at: 123456789,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let member_data = GroceryListMemberData {
+        id: "glist-fresh-client-member".to_string(),
+        list_id: "glist-fresh".to_string(),
+        user_id: "user-1".to_string(),
+        role: "ADMIN".to_string(),
+        joined_at: 123456789,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![GroceryListChangeDelta {
+            id: "glist-fresh".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&list_data).unwrap()),
+        }],
+        grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
+            id: "glist-fresh-client-member".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        }],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect("Creating a list and joining it in one batch must succeed")
+        .0;
+    assert!(res.success_ids.contains(&"glist-fresh-client-member".to_string()));
+}
+
+/// Knowing a listId must not be enough to join somebody else's list.
+///
+/// The member-change path used to authorise any insert where the row's `userId` was the
+/// caller's own — "you are only adding yourself" — which is not a check: a listId travels
+/// in every grocery item, store and category the list owns, so a caller who ever saw one
+/// could post a membership row for it and be inside the family's data, reading and
+/// writing, without guessing anything. Membership comes from `/api/lists/join` and a code,
+/// and this pins that sync cannot mint it.
+#[sqlx::test]
+async fn test_sync_self_insert_cannot_join_a_foreign_list(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+        "glist-someone-elses",
+        "Their List",
+        0_i64,
+        1_i32,
+        false,
+        "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-someone-elses-owner", "glist-someone-elses", "user-2", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The handler's claims are user-1, who has nothing to do with this list.
+    let member_data = GroceryListMemberData {
+        id: "gatecrash-member".to_string(),
+        list_id: "glist-someone-elses".to_string(),
+        user_id: "user-1".to_string(),
+        role: "MEMBER".to_string(),
+        joined_at: 123456,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
+            id: "gatecrash-member".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        }],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let err = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect_err("Handler should fail with Forbidden");
+    assert!(matches!(err, AppError::Forbidden(_)));
+
+    let row = sqlx::query!(
+        "SELECT id FROM grocery_list_members WHERE id = $1",
+        "gatecrash-member"
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(row.is_none(), "the rejected membership must not have been written");
+}
+
+/// A membership row that already exists cannot be dragged into another list.
+///
+/// The upsert rewrites `"listId"` from the payload, so authorising on the *payload's* list
+/// alone would let a member of their own list re-point somebody else's membership row at
+/// it — or push a co-member's row out of the list they actually joined.
+#[sqlx::test]
+async fn test_sync_member_row_cannot_be_moved_between_lists(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    for (list_id, member_id, user_id) in [
+        ("glist-mine", "glist-mine-owner", "user-1"),
+        ("glist-theirs", "glist-theirs-owner", "user-2"),
+    ] {
+        sqlx::query!(
+            "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+            list_id,
+            "List",
+            0_i64,
+            1_i32,
+            false,
+            "SYNCED"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query!(
+            "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            member_id, list_id, user_id, "OWNER", 0_i64, 1_i32, false, "SYNCED"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // user-1 is a member of glist-mine, and names it as the target — but the row being
+    // rewritten belongs to a list they have never joined.
+    let member_data = GroceryListMemberData {
+        id: "glist-theirs-owner".to_string(),
+        list_id: "glist-mine".to_string(),
+        user_id: "user-2".to_string(),
+        role: "MEMBER".to_string(),
+        joined_at: 0,
+        version: 2,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
+            id: "glist-theirs-owner".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        }],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let err = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect_err("Handler should fail with Forbidden");
+    assert!(matches!(err, AppError::Forbidden(_)));
+
+    let row = sqlx::query!(
+        "SELECT \"listId\" as list_id FROM grocery_list_members WHERE id = $1",
+        "glist-theirs-owner"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.list_id, "glist-theirs");
+}
+
 #[sqlx::test]
 async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
     let state = setup_state(pool.clone());

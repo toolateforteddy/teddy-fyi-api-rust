@@ -10,7 +10,9 @@
 //!   target. A hit is not a read-only leak — it inserts a `grocery_list_members` row with
 //!   role `MEMBER`, so the guesser can also rewrite the family's list.
 //! * **Row creation.** `invite_handler` minted a 24-hour row per call, forever, for any
-//!   list the caller belongs to. One account, one loop, unbounded table.
+//!   list the caller belongs to. One account, one loop, unbounded table — and every row
+//!   left standing was another code that would open the same list. A list now holds one
+//!   live code at a time, for [`DEFAULT_INVITE_TTL_MINS`] rather than a day.
 //!
 //! The shapes here are deliberately copied from [`crate::auth::device`] — its
 //! `MAX_CLAIM_FAILURES` / `CLAIM_FAILURE_WINDOW_MINS` pair, its `device_claim_failures`
@@ -28,8 +30,8 @@
 /// list is pasting or carefully typing a code somebody sent them, so one or two failures
 /// is a bad transcription and five is somebody doing something else. At five per ten
 /// minutes an attacker gets ~720 guesses a day per account against a ~2.8e12 space, and
-/// codes only live 24 hours — the expected number of accounts they must create to land one
-/// hit stays absurd.
+/// codes only live [`DEFAULT_INVITE_TTL_MINS`] — the expected number of accounts they must
+/// create to land one hit stays absurd.
 pub const DEFAULT_MAX_JOIN_FAILURES: i64 = 5;
 
 /// The window those failures are counted over. Ten minutes, as with claims: long enough
@@ -55,11 +57,31 @@ pub const DEFAULT_MAX_INVITE_ATTEMPTS: i32 = 3;
 /// much as a storage one: the cap is the size of the attack surface an account is allowed
 /// to leave lying around. Ten covers the real case with room to spare — a household has a
 /// handful of lists and invites a partner or a grandparent, one code at a time, and each
-/// code dies on use or within 24 hours. Anything past ten in a single day is a loop.
+/// code dies on use or within [`DEFAULT_INVITE_TTL_MINS`]. Anything past ten at once is a
+/// loop.
 ///
-/// Expired and consumed invites do not count: a code is deleted when it is redeemed, and
-/// an expired one is swept, so a parent whose invite lapsed can immediately issue another.
+/// This is now the *second* bound on outstanding codes rather than the only one. A list
+/// holds at most one live invite — minting supersedes, see `invite_handler` — so an
+/// account cannot stack codes on a single list at all, and this cap is what stops it
+/// stacking them across many.
+///
+/// Expired and consumed invites do not count: a code is deleted when it is redeemed, when
+/// it is superseded, or when the reaper sweeps it, so a parent whose invite lapsed can
+/// immediately issue another.
 pub const DEFAULT_MAX_OUTSTANDING_INVITES_PER_USER: i64 = 10;
+
+/// How long a freshly minted invite code is good for, in minutes.
+///
+/// One hour, down from a day. The code's whole job is to survive the trip from one phone
+/// to another — read aloud across the kitchen, or pasted into a message — and an hour is
+/// already generous for that. The twenty-three that followed bought a real user nothing
+/// and bought a guesser a great deal: a live code is a target, and the window it is a
+/// target for was twenty-four times larger than the window anybody needed it in.
+///
+/// It also bounds what a leak costs. A code screenshotted into a group chat, or left in a
+/// notification on a lock screen, stops being a way into the family's list within the
+/// hour rather than the next day.
+pub const DEFAULT_INVITE_TTL_MINS: i64 = 60;
 
 /// Draws at a unique code before `invite_handler` gives up.
 ///
@@ -74,6 +96,7 @@ const MAX_JOIN_FAILURES_ENV: &str = "LIST_JOIN_MAX_FAILURES";
 const JOIN_FAILURE_WINDOW_ENV: &str = "LIST_JOIN_FAILURE_WINDOW_MINS";
 const MAX_INVITE_ATTEMPTS_ENV: &str = "LIST_INVITE_MAX_ATTEMPTS";
 const MAX_OUTSTANDING_INVITES_ENV: &str = "LIST_MAX_OUTSTANDING_INVITES_PER_USER";
+const INVITE_TTL_ENV: &str = "LIST_INVITE_TTL_MINS";
 
 pub fn max_join_failures() -> i64 {
     read_positive(MAX_JOIN_FAILURES_ENV, DEFAULT_MAX_JOIN_FAILURES)
@@ -92,6 +115,10 @@ pub fn max_outstanding_invites_per_user() -> i64 {
         MAX_OUTSTANDING_INVITES_ENV,
         DEFAULT_MAX_OUTSTANDING_INVITES_PER_USER,
     )
+}
+
+pub fn invite_ttl_mins() -> i64 {
+    read_positive(INVITE_TTL_ENV, DEFAULT_INVITE_TTL_MINS)
 }
 
 /// Reads a limit from the environment, falling back to the compiled default.

@@ -25,7 +25,8 @@
 //!   This is the only class that counts toward unreadiness.
 //! * **Saturated** — `PoolTimedOut` *with a populated pool*. Counted as
 //!   degradation for the metric, but deliberately **not** toward unreadiness.
-//!   Pool exhaustion is a load signal, and `max_connections` is 5; if load made
+//!   Pool exhaustion is a load signal (`max_connections` is set in
+//!   [`crate::db`]); if load made
 //!   every replica report unready at once, the load balancer would be left with
 //!   no endpoints and a slowdown would become a total outage. Shedding traffic
 //!   is the wrong response to being busy.
@@ -117,14 +118,17 @@ static LAST_FAILURE_MS: AtomicI64 = AtomicI64::new(0);
 const DEFAULT_FAILURE_THRESHOLD: u32 = 3;
 /// How recent those failures must be.
 ///
-/// **This must comfortably exceed the pool's `acquire_timeout` (sqlx's default
-/// is 30s).** During an outage every failing request burns a full acquire
-/// timeout before it errors, so serially-retried failures arrive roughly one
-/// acquire timeout apart. A window at or below that interval means each failure
-/// ages out the previous one, the streak never passes 1, and the detector can
-/// never fire — which is exactly what an end-to-end test against a stopped
-/// Postgres showed at 30s. Four times the acquire timeout leaves room for three
-/// serial failures plus slack.
+/// **This must comfortably exceed the pool's `acquire_timeout`.** During an
+/// outage every failing request burns a full acquire timeout before it errors,
+/// so serially-retried failures arrive roughly one acquire timeout apart. A
+/// window at or below that interval means each failure ages out the previous
+/// one, the streak never passes 1, and the detector can never fire — which is
+/// exactly what an end-to-end test against a stopped Postgres showed with a
+/// window equal to sqlx's 30s default acquire timeout. 120s was four times that
+/// default; the API pool now sets a 5s acquire timeout in [`crate::db`], so the
+/// margin is far wider still and this number is left alone. It is a ceiling on
+/// how long a recovered replica keeps reporting unready, so shrinking it to
+/// track the shorter timeout would buy little and risk the same starvation.
 const DEFAULT_WINDOW_MS: i64 = 120_000;
 
 /// What one `sqlx::Error` says about the database's reachability.

@@ -1,6 +1,7 @@
 pub mod guardrails;
 pub mod routes;
 pub mod state;
+pub mod db;
 pub mod auth;
 pub mod models;
 pub mod dao;
@@ -16,33 +17,9 @@ use axum::{
     routing::get,
     Router,
 };
-use sqlx::postgres::PgPoolOptions;
 use state::AppState;
 use std::sync::Arc;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-
-/// Connects the pool without touching the schema. Split out from [`init_postgres`] so the
-/// `reap-stale-users` job can reach the database without running migrations of its own.
-async fn connect_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
-    let database_url = std::env::var("DATABASE_URL")?;
-
-    // 2. Spin up the centralized thread connection pool
-    Ok(PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await?)
-}
-
-async fn init_postgres() -> Result<sqlx::Pool<sqlx::Postgres>, Box<dyn std::error::Error>> {
-    let pool = connect_postgres().await?;
-
-    // 3. FORCE RUN OUTSTANDING MIGRATIONS ON STARTUP
-    // This looks at our local `/migrations` folder and updates Neon instantly
-    sqlx::migrate!("./migrations").run(&pool).await?;
-
-    println!("🚀 Database successfully synced and serverless migrations verified!");
-    Ok(pool)
-}
 
 /// Browser origins allowed to call this API, from `CORS_ALLOWED_ORIGINS` (comma-separated).
 ///
@@ -113,7 +90,7 @@ async fn init_app_state() -> AppState {
     AppState {
         google_client_ids,
         google_client: Arc::new(google_oauth::AsyncClient::new("")),
-        db_pool: init_postgres()
+        db_pool: db::init_postgres()
             .await
             .expect("Failed to initialize PostgreSQL"),
         jwt_secret,
@@ -128,8 +105,12 @@ async fn init_app_state() -> AppState {
 
 /// One sweep of the stale-account reaper, then exit. Deliberately does not build an
 /// [`AppState`]: the job needs the database and Redis, and none of the auth or AI secrets.
+///
+/// Takes [`db::PoolConfig::reaper`] rather than the server's pool shape — a sequential
+/// batch sweep wants two connections and the patience to sit out a Neon wake-up, which
+/// is the opposite of what a request path wants. See [`crate::db`].
 async fn run_reaper() {
-    let pool = connect_postgres()
+    let pool = db::connect_postgres(&db::PoolConfig::reaper())
         .await
         .expect("Failed to connect to PostgreSQL");
     let redis_url =

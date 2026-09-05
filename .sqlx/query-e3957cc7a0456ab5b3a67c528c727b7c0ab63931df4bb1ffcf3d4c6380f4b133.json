@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE grocery_list_members SET\n                    is_deleted = TRUE,\n                    version = version + 1,\n                    updated_at = $1,\n                    updated_by_client = $2\n                WHERE id = ANY($3)\n                RETURNING id, version\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e3957cc7a0456ab5b3a67c528c727b7c0ab63931df4bb1ffcf3d4c6380f4b133"
+}

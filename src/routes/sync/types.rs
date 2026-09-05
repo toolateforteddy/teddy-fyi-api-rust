@@ -254,6 +254,13 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     Redis(redis::RedisError),
+    /// The caller is over a per-account concurrency limit. Distinct from
+    /// `Forbidden`: nothing about the request is wrong, there is just already
+    /// too much of it in flight, and it will succeed again once something closes.
+    TooManyRequests(String),
+    /// This replica is at capacity for a resource shared by every account. The
+    /// request is fine and another replica — or this one, shortly — can serve it.
+    Overloaded(String),
     Internal(String),
 }
 
@@ -291,6 +298,14 @@ impl IntoResponse for AppError {
             AppError::Redis(err) => {
                 tracing::error!("Redis error: {:?}", err);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Redis pubsub error".to_string())
+            }
+            AppError::TooManyRequests(err) => {
+                tracing::warn!("Rejected, per-account limit: {}", err);
+                (StatusCode::TOO_MANY_REQUESTS, err)
+            }
+            AppError::Overloaded(err) => {
+                tracing::warn!("Rejected, replica at capacity: {}", err);
+                (StatusCode::SERVICE_UNAVAILABLE, err)
             }
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {}", err);

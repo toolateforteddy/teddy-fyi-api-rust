@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT is_deleted, data, version FROM drawings WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bfcd49f7372fe9cdad2f2e1c375966f83eebd2439ae86c603a864cc9b56febc7"
+}

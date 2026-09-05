@@ -341,3 +341,200 @@ async fn deletes_for_rows_the_server_never_had_are_still_acknowledged(pool: PgPo
         assert_eq!(status.sync_state, "SYNCED");
     }
 }
+
+// --- Configs and drawings ---------------------------------------------------------
+//
+// These two tables batch their writes on the same run rule as the tables above, but they
+// reach it differently: their processors also *read* the server through a per-batch cache
+// (`ConfigBatch` / `DrawingBatch`) that marks a row stale once written and re-reads it for
+// the next item that names it. A buffered write is not in the database yet, so that re-read
+// would answer with the row as it was before it. The processors therefore flush the run
+// before any such lookup — see `RunTracker::contains` — and the delete-then-reinsert tests
+// below are what pin that down.
+//
+// The multi-row tests are the other half: everything else in this file uses two or three
+// items, which a mis-zipped `UNNEST` column list can still satisfy by accident. Five rows
+// with five distinct values cannot be.
+
+use crate::routes::sync::tests::helpers::seed_device;
+use crate::routes::sync::{ConfigSyncItem, DrawingSyncItem, SyncScope, parse_or_hash_uuid};
+use chrono::Utc;
+
+fn scribble_request(client_id: &str) -> SyncRequest {
+    let mut req = blank_request(client_id);
+    req.scope = Some(SyncScope::ScribbleKeep);
+    req
+}
+
+fn drawing_item(id: uuid::Uuid, marker: &str, version: i32) -> DrawingSyncItem {
+    DrawingSyncItem {
+        id,
+        user_id: None,
+        device_uuid: None,
+        created_at: 1_000,
+        data: serde_json::json!({ "marker": marker }),
+        sync_state: "PENDING_INSERT".to_string(),
+        version,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    }
+}
+
+fn config_item(id: uuid::Uuid, key: &str, value: &str) -> ConfigSyncItem {
+    ConfigSyncItem {
+        id,
+        device_uuid: None,
+        key: key.to_string(),
+        value: value.to_string(),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: Utc::now().timestamp_millis(),
+    }
+}
+
+/// Five drawings in one statement, each with its own blob.
+///
+/// The batched insert zips seven parallel column vectors back into rows; a column pushed in
+/// the wrong order, or one push missed on a branch, produces rows that are individually
+/// well-formed but carry each other's values. Distinct markers are what catch that.
+#[sqlx::test]
+async fn many_drawings_in_one_batch_each_keep_their_own_blob(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let ids: Vec<uuid::Uuid> = (0..5).map(|_| uuid::Uuid::new_v4()).collect();
+    let mut req = scribble_request("client-1");
+    req.drawings = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| drawing_item(*id, &format!("marker-{i}"), 1))
+        .collect();
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a five-drawing batch must not fail");
+
+    for (i, id) in ids.iter().enumerate() {
+        let row = sqlx::query!("SELECT data, version FROM drawings WHERE id = $1", id)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|_| panic!("drawing {i} should have been written"));
+        assert_eq!(
+            row.data,
+            serde_json::json!({ "marker": format!("marker-{i}") }),
+            "drawing {i} carries another row's blob"
+        );
+        assert_eq!(row.version, 1, "drawing {i} has the wrong version");
+    }
+}
+
+/// The same, for configs: five keys, five values, one statement.
+#[sqlx::test]
+async fn many_configs_in_one_batch_each_keep_their_own_value(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let mut req = scribble_request("client-1");
+    req.configs = (0..5)
+        .map(|i| config_item(uuid::Uuid::new_v4(), &format!("key-{i}"), &format!("value-{i}")))
+        .collect();
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a five-config batch must not fail");
+
+    for i in 0..5 {
+        let row = sqlx::query!(
+            "SELECT value FROM configs WHERE user_id = $1 AND key = $2",
+            user_uuid,
+            format!("key-{i}")
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|_| panic!("config key-{i} should have been written"));
+        assert_eq!(row.value, format!("value-{i}"), "config {i} carries another row's value");
+    }
+}
+
+/// A drawing deleted and then re-uploaded inside one payload is present at the end.
+///
+/// The delete and the upsert are different write kinds, so they cannot share a run; if the
+/// upserts were hoisted ahead of the deletes the row would end up deleted instead. The
+/// re-upload also has to see the version the delete assigned, which is only true if the
+/// delete reached the database before the upsert resolved it.
+#[sqlx::test]
+async fn drawing_deleted_then_reuploaded_in_one_batch_is_present(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let id = uuid::Uuid::new_v4();
+
+    let mut seed = scribble_request("client-1");
+    seed.drawings = vec![drawing_item(id, "original", 1)];
+    let _ = sync_handler(State(state.clone()), AppJson(seed))
+        .await
+        .expect("seeding the drawing must succeed");
+
+    let mut req = scribble_request("client-1");
+    let mut deleted = drawing_item(id, "original", 2);
+    deleted.is_deleted = true;
+    deleted.sync_state = "PENDING_DELETE".to_string();
+    req.drawings = vec![deleted, drawing_item(id, "revived", 3)];
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a delete-then-reupload payload must not fail");
+
+    let row = sqlx::query!("SELECT is_deleted, data, version FROM drawings WHERE id = $1", id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!row.is_deleted, "the re-upload must win over the delete");
+    assert_eq!(row.data, serde_json::json!({ "marker": "revived" }));
+    // Seed wrote v1, the delete advanced it to v2, the re-upload to v3. The re-upload
+    // numbering off v2 is what proves the delete had landed before it resolved.
+    assert_eq!(row.version, 3, "the re-upload did not see the delete's version");
+}
+
+/// The same shape for configs, where the row is addressed by `(device, key)` as well as by
+/// id — so the flush before the re-read has to cover the key, not only the id.
+#[sqlx::test]
+async fn config_deleted_then_rewritten_in_one_batch_is_present(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let id = uuid::Uuid::new_v4();
+
+    let mut seed = scribble_request("client-1");
+    seed.configs = vec![config_item(id, "theme", "dark")];
+    let _ = sync_handler(State(state.clone()), AppJson(seed))
+        .await
+        .expect("seeding the config must succeed");
+
+    let mut req = scribble_request("client-1");
+    let mut deleted = config_item(id, "theme", "dark");
+    deleted.is_deleted = true;
+    deleted.sync_state = "PENDING_DELETE".to_string();
+    req.configs = vec![deleted, config_item(id, "theme", "light")];
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a delete-then-rewrite payload must not fail");
+
+    let rows = sqlx::query!(
+        "SELECT value, is_deleted, version FROM configs WHERE user_id = $1 AND key = 'theme'",
+        user_uuid
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "the key must still hold exactly one row");
+    assert_eq!(rows[0].value, "light", "the rewrite must win over the delete");
+    assert!(!rows[0].is_deleted);
+    assert_eq!(rows[0].version, 3, "the rewrite did not see the delete's version");
+}

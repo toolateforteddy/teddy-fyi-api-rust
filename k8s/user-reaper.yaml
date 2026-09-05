@@ -29,9 +29,22 @@ spec:
           # matches nothing and the sweep cannot reach cache-svc to announce deletions.
           labels:
             app: api-rust-user-reaper
+        # This is the *pod* spec inside the CronJob's jobTemplate
+        # (spec.jobTemplate.spec.template.spec), which is where a pod-level
+        # securityContext has to go. Kubernetes silently ignores unknown fields at the
+        # CronJob or Job level, so one nested a step too high would look applied and
+        # enforce nothing.
         spec:
           restartPolicy: Never
           serviceAccountName: api-rust-ksa
+          # Same image as api-rust-dep, so the same uid/gid the Dockerfile creates. Kept
+          # in step with k8s/api-rust.yaml: one image, one answer.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
           containers:
           - name: user-reaper
             image: gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:latest
@@ -57,6 +70,13 @@ spec:
               name: gcp-secrets
               readOnly: true
             imagePullPolicy: Always
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+              # The sweep reads Postgres and publishes to Redis; like the API it writes
+              # nothing to disk, and its only mount is the read-only secrets volume.
+              readOnlyRootFilesystem: true
             resources:
               requests:
                 cpu: 100m

@@ -123,11 +123,24 @@ fn unique_user() -> String {
 const DAY_ONE: &str = "1999-01-01";
 const DAY_TWO: &str = "1999-01-02";
 
+/// Guards the kill switch, which is one process-wide Redis key that every budget
+/// test reads through `charge_gemini_call_on_day`.
+///
+/// Both halves matter, and an earlier version had only one: the test that *sets*
+/// the switch takes it exclusively, and every other budget test holds it shared
+/// for as long as it is charging calls. A lock only one participant takes
+/// serialises nothing — while the switch was set, any test running concurrently
+/// got `Err(BudgetRefusal::KillSwitch)` where it asserted `Ok(())`, which is an
+/// intermittent CI failure that passes on a re-run.
+static KILL_SWITCH_LOCK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 #[tokio::test]
 async fn a_user_over_budget_is_refused() {
     let Some(client) = redis_or_skip("a_user_over_budget_is_refused").await else {
         return;
     };
+    // Shared: the kill switch must stay unset for the whole of this test.
+    let _kill_switch = KILL_SWITCH_LOCK.read().await;
     let limits = BudgetLimits {
         per_user_per_day: 3,
         total_per_day: u64::MAX,
@@ -159,6 +172,8 @@ async fn one_user_over_budget_does_not_refuse_another() {
     let Some(client) = redis_or_skip("one_user_over_budget_does_not_refuse_another").await else {
         return;
     };
+    // Shared: the kill switch must stay unset for the whole of this test.
+    let _kill_switch = KILL_SWITCH_LOCK.read().await;
     let limits = BudgetLimits {
         per_user_per_day: 1,
         total_per_day: u64::MAX,
@@ -187,6 +202,8 @@ async fn the_budget_resets_on_the_next_day() {
     let Some(client) = redis_or_skip("the_budget_resets_on_the_next_day").await else {
         return;
     };
+    // Shared: the kill switch must stay unset for the whole of this test.
+    let _kill_switch = KILL_SWITCH_LOCK.read().await;
     let limits = BudgetLimits {
         per_user_per_day: 1,
         total_per_day: u64::MAX,
@@ -213,6 +230,8 @@ async fn counters_carry_a_ttl_so_they_do_not_accumulate() {
     let Some(client) = redis_or_skip("counters_carry_a_ttl_so_they_do_not_accumulate").await else {
         return;
     };
+    // Shared: the kill switch must stay unset for the whole of this test.
+    let _kill_switch = KILL_SWITCH_LOCK.read().await;
     let user = unique_user();
     assert_eq!(
         charge_gemini_call_on_day(&client, BudgetLimits::default(), &user, DAY_ONE).await,
@@ -235,6 +254,9 @@ async fn a_global_budget_refuses_even_a_quiet_user() {
     let Some(client) = redis_or_skip("a_global_budget_refuses_even_a_quiet_user").await else {
         return;
     };
+    // Shared: the kill switch must stay unset for the whole of this test.
+    let _kill_switch = KILL_SWITCH_LOCK.read().await;
+
     // A day of its own, so the shared global counter is not perturbed by the
     // other tests in this file.
     let day = format!("1999-02-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
@@ -269,9 +291,9 @@ async fn the_kill_switch_stops_calls_and_releasing_it_restores_them() {
     let user = unique_user();
     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
 
-    // Serialised against the other tests in this process: the switch is global by
-    // design, so two tests toggling it concurrently would see each other.
-    let _guard = KILL_SWITCH_LOCK.lock().await;
+    // Exclusive: the switch is global by design, so for as long as it is set no
+    // other budget test in this process may be charging a call.
+    let _guard = KILL_SWITCH_LOCK.write().await;
 
     redis::cmd("SET")
         .arg(KILL_SWITCH_KEY)
@@ -302,8 +324,6 @@ async fn the_kill_switch_stops_calls_and_releasing_it_restores_them() {
         Ok(())
     );
 }
-
-static KILL_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn an_unreachable_redis_refuses_rather_than_spending() {

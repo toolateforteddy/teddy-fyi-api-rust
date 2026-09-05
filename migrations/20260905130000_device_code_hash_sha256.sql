@@ -1,0 +1,31 @@
+-- Device codes stop being Argon2-hashed and become a domain-separated SHA-256.
+--
+-- Why the change: a device_code is 64 characters of CSPRNG `Alphanumeric` output. It
+-- has no guessable entropy and no low-entropy human-chosen part, so a memory-hard
+-- password KDF protects nothing that 256 bits of randomness does not already protect.
+-- What it did buy was two attacks, both on unauthenticated endpoints:
+--
+--   * /auth/device/start ran Argon2id at default params -- ~19 MiB and ~50ms per call
+--     -- for any stranger who asked, which is a cheap memory/CPU exhaustion primitive.
+--   * an Argon2 digest is salted, so it could not be looked up by value. /auth/device/poll
+--     therefore loaded every row for the caller's client_uuid and Argon2-verified each one
+--     in a loop, inside one transaction holding FOR UPDATE locks. client_uuid is chosen by
+--     the caller, so 10,000 /start calls under one client_uuid turned a single /poll into
+--     10,000 verifications -- minutes of CPU on one pool connection.
+--
+-- SHA-256 is deterministic, so the poll path now looks the row up directly by value on
+-- the primary key. A database dump still yields only digests, which is what the original
+-- hashing requirement was actually for.
+--
+-- Existing rows are dropped rather than migrated: their Argon2 digests cannot be
+-- recomputed under the new scheme, so no live poll could ever match one again. Nothing of
+-- value is lost -- a device code lives ten minutes -- but a tablet that is mid-pairing
+-- when this deploys must ask for a fresh code.
+DELETE FROM device_authorizations;
+
+-- No new index is needed and none is created: `device_code_hash` is already the table's
+-- PRIMARY KEY (see 20260904120000_create_device_authorizations.sql), which is a unique
+-- btree index. Under Argon2 that index was for uniqueness only, because a salted digest
+-- has no value to search for; now that the hash is deterministic the same index serves
+-- the poll path's `WHERE device_code_hash = $1` lookup directly. A second unique index on
+-- the same column would only cost writes.

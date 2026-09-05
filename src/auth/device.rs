@@ -27,8 +27,9 @@ use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
+use sha2::{Digest, Sha256};
+
 use crate::auth::handlers::{issue_session, AuthResponse};
-use crate::auth::tokens::{hash_refresh_token, verify_refresh_token};
 use crate::state::AppState;
 
 /// Characters a `user_code` is drawn from, written out in the order the spec gives them
@@ -218,6 +219,44 @@ pub fn normalize_user_code(input: &str) -> String {
         .collect()
 }
 
+/// Hashes a `device_code` for storage: a domain-separated SHA-256, hex-encoded.
+///
+/// Deliberately **not** [`hash_refresh_token`](crate::auth::tokens::hash_refresh_token),
+/// which is Argon2id. A refresh token is checked on an authenticated path and lives for
+/// months; a device code is 64 characters straight out of a CSPRNG, lives ten minutes, and
+/// is presented by anyone who can reach an unauthenticated endpoint. There is no
+/// low-entropy, human-chosen part for a memory-hard KDF to defend, so Argon2 here bought
+/// nothing and cost two things:
+///
+/// * `/auth/device/start` burned ~19 MiB and ~50ms of CPU per unauthenticated request — a
+///   memory and CPU exhaustion primitive handed to any stranger who could reach it.
+/// * An Argon2 digest is *salted*, so it cannot be looked up by value. The poll path had
+///   to load every row sharing the caller's `client_uuid` and verify them one at a time,
+///   and `client_uuid` is chosen by the caller: seeding thousands of rows under one value
+///   turned a single poll into thousands of Argon2 verifications, inside one transaction
+///   holding `FOR UPDATE` locks and one of very few pool connections.
+///
+/// The property that actually mattered — a database dump must not yield a usable code —
+/// survives: SHA-256 is not invertible, and 64 alphanumerics is far past any brute force.
+/// Being deterministic, the digest is also a direct lookup key on the table's primary key.
+///
+/// The prefix is domain separation, in the same idiom as
+/// [`hash_user_id`](crate::observability::http::hash_user_id), so this digest can never
+/// coincide with another SHA-256 this service computes over the same bytes. No secret is
+/// mixed in, on purpose: a rotating salt would silently strand every in-flight pairing on
+/// the next deployment, and there is nothing to protect here that the code's own 64
+/// characters of entropy do not already cover.
+fn hash_device_code(device_code: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"teddy-fyi/device-code/v1:");
+    hasher.update(device_code.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
 /// The audience rule from [`login_handler`](crate::auth::handlers::login_handler), lifted
 /// out so it can be exercised without a live Google token.
 fn audience_is_allowed(allowed: &std::collections::HashSet<String>, aud: &str) -> bool {
@@ -274,7 +313,7 @@ pub async fn start_handler(
         .take(64)
         .map(char::from)
         .collect();
-    let device_code_hash = hash_refresh_token(&device_code);
+    let device_code_hash = hash_device_code(&device_code);
     let expires_at = Utc::now() + Duration::seconds(CODE_TTL_SECS);
 
     for _ in 0..CODE_GENERATION_ATTEMPTS {
@@ -501,28 +540,33 @@ pub async fn poll_handler(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // `device_code_hash` is a salted Argon2 digest, so it cannot be looked up by value.
-    // Narrowing by `client_uuid` first is what makes the scan small — and it is the same
-    // check that keeps a leaked device code from being replayed by another install, so a
-    // mismatch simply finds no candidate and falls out as a `404`.
-    let candidates = sqlx::query!(
+    // One row, found by value on the primary key. [`hash_device_code`] is deterministic,
+    // so the digest of the code the tablet presents *is* the stored key — no candidate
+    // scan, and nothing the caller sends can widen the work this query does.
+    //
+    // `client_uuid` stays in the predicate as a real check, not as a narrowing device: it
+    // is what stops a device code lifted off one install being replayed by another. A
+    // mismatch matches no row and falls out as exactly the `404` an invented code gets, so
+    // the response is never an oracle for which codes exist.
+    //
+    // `FOR UPDATE` locks that single row for the rest of the transaction, which is what
+    // keeps two tablets racing one code from both coming away with a session.
+    let row = sqlx::query!(
         "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at
            FROM device_authorizations
-          WHERE client_uuid = $1
+          WHERE device_code_hash = $1 AND client_uuid = $2
           FOR UPDATE",
+        hash_device_code(&payload.device_code),
         payload.client_uuid
     )
-    .fetch_all(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| {
-        tracing::error!("Failed to load device authorizations: {:?}", e);
+        tracing::error!("Failed to load device authorization: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let Some(row) = candidates
-        .into_iter()
-        .find(|row| verify_refresh_token(&row.device_code_hash, &payload.device_code))
-    else {
+    let Some(row) = row else {
         let _ = tx.rollback().await;
         return Err(StatusCode::NOT_FOUND);
     };

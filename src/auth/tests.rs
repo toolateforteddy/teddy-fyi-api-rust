@@ -982,6 +982,123 @@ mod tests {
     /// working for at most one access-token lifetime — and that bound is what this pins. When
     /// it was 24 hours the same test would have passed while describing something nobody
     /// would call signing out.
+    /// Signs a token for `user_id`/`client_uuid` that expired `ago_secs` ago.
+    ///
+    /// Minted here rather than through `create_access_token`, which clamps every request to
+    /// [`ACCESS_TOKEN_TTL_SECS`] and so cannot produce one that is already dead. The signature
+    /// is real; only the clock is in the past.
+    fn expired_token(secret: &str, user_id: &str, client_uuid: &str, ago_secs: i64) -> String {
+        let claims = Claims {
+            sub: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            exp: (chrono::Utc::now().timestamp() - ago_secs) as usize,
+        };
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("encoding a test token should succeed")
+    }
+
+    fn bearer(token: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        headers
+    }
+
+    /// The defect this pins: signing out with an already-expired access token used to clear the
+    /// cookie and leave the session row alive, so the refresh token in it stayed good for its
+    /// remaining seven days. At a 15-minute TTL that is not a corner case -- it is what a parent
+    /// presents whenever the app has been open longer than a quarter of an hour.
+    #[sqlx::test]
+    async fn test_logout_with_an_expired_token_still_ends_the_session(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-logout-expired";
+        let client_uuid = "client-logout-expired";
+
+        crate::auth::handlers::issue_session(
+            &state,
+            user_id,
+            None,
+            client_uuid,
+            DEFAULT_SESSION_SECS,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        // An hour dead: far outside any leeway jsonwebtoken applies by default.
+        let stale = expired_token(&state.jwt_secret, user_id, client_uuid, 3600);
+
+        let response = logout_handler(State(state.clone()), bearer(&stale))
+            .await
+            .expect("logout should succeed");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let sessions = sqlx::query!(
+            "SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_uuid
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+        assert_eq!(
+            sessions, 0,
+            "an expired access token must still be able to end its own session"
+        );
+    }
+
+    /// The guard that makes relaxing `exp` safe: the *signature* is what still has to hold.
+    ///
+    /// Without this, `logout_validation` would be one step from an anonymous remote-logout hole
+    /// -- name any `user_id`/`client_uuid` and end that session. The claims are not
+    /// attacker-chosen, because a token signed with any other key does not decode at all.
+    #[sqlx::test]
+    async fn test_logout_cannot_be_forged_for_another_user(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let victim = "user-logout-victim";
+        let victim_client = "client-logout-victim";
+
+        crate::auth::handlers::issue_session(
+            &state,
+            victim,
+            None,
+            victim_client,
+            DEFAULT_SESSION_SECS,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        // Correctly shaped, correctly named, signed with a key this service never issued.
+        let forged = expired_token("not-the-servers-secret", victim, victim_client, 3600);
+
+        let response = logout_handler(State(state.clone()), bearer(&forged))
+            .await
+            .expect("logout answers OK either way; what matters is the row");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let sessions = sqlx::query!(
+            "SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            victim,
+            victim_client
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+        assert_eq!(
+            sessions, 1,
+            "a token this service did not sign must not end anyone's session"
+        );
+    }
+
     #[sqlx::test]
     async fn test_logout_ends_refresh_and_bounds_the_access_token_to_one_ttl(pool: PgPool) {
         let state = setup_state(pool.clone());

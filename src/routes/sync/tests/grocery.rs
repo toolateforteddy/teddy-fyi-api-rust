@@ -150,6 +150,11 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
     assert!(db_row.is_deleted);
 }
 
+/// Sync reflects memberships; it does not mint them, and it does not decide roles.
+///
+/// The row is seeded the way `/api/lists/join` seeds it, because that endpoint is the only
+/// writer of `"userId"` and `role`. What sync may still do to it is bump its version and
+/// delete it.
 #[sqlx::test]
 async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     let state = setup_state(pool.clone());
@@ -176,7 +181,9 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     .await
     .unwrap();
 
-    // 1. Test Insert
+    // 1. An insert naming a row the server has never seen is refused, however well
+    //    connected the caller is: user-1 is a member of this list, and that is still not
+    //    a licence to hand membership to user-123.
     let member_data = GroceryListMemberData {
         id: "member-1".to_string(),
         list_id: "glist-2".to_string(),
@@ -212,14 +219,29 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         drawings: vec![],
     };
 
-    let res = sync_handler(State(state.clone()), AppJson(req))
+    let err = sync_handler(State(state.clone()), AppJson(req))
         .await
-        .expect("Handler should succeed")
-        .0;
-    assert_eq!(res.success_ids, vec!["member-1"]);
+        .expect_err("Sync must not create a membership row");
+    assert!(matches!(err, AppError::Forbidden(_)));
+
+    let row = sqlx::query!("SELECT id FROM grocery_list_members WHERE id = $1", "member-1")
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+    assert!(row.is_none(), "the refused membership must not have been written");
+
+    // The membership as `/api/lists/join` would have written it.
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "member-1", "glist-2", "user-123", "ADMIN", 123456_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 2. Test Update. The client sends version 2; the server ignores it and moves its own
     // row on by one (DB has 1, so the row becomes 2). See `crate::routes::sync::versioning`.
+    // The `role` it sends is ignored too: roles are the server's.
     let updated_member_data = GroceryListMemberData {
         id: "member-1".to_string(),
         list_id: "glist-2".to_string(),
@@ -268,8 +290,16 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(db_row.role, "MEMBER");
+    assert_eq!(db_row.role, "ADMIN", "the payload's role must not have been applied");
     assert_eq!(db_row.version, 2);
+
+    // The client is told what the row actually says, so the two stop disagreeing.
+    let echoed = res_update
+        .remote_grocery_list_member_changes
+        .iter()
+        .find(|c| c.id == "member-1")
+        .expect("the corrected membership row should come back");
+    assert_eq!(echoed.data.as_ref().unwrap()["role"], "ADMIN");
 
     // 3. Test Delete
     let req_delete = SyncRequest {
@@ -1995,4 +2025,267 @@ async fn test_collaborator_sync_pulls_existing_items(pool: PgPool) {
     assert!(res.remote_category_changes.iter().any(|d| d.id == "cat-existing"));
     assert!(res.remote_grocery_changes.iter().any(|d| d.id == "item-existing"));
     assert!(res.remote_grocery_item_store_info_changes.iter().any(|d| d.grocery_item_id == "item-existing"));
+}
+
+/// Helper: a list plus one membership row for `user_id`, written the way the server writes
+/// them, so tests can start from a membership sync never had a hand in.
+async fn seed_list_with_member(pool: &PgPool, list_id: &str, member_id: &str, user_id: &str, role: &str) {
+    sqlx::query!(
+        "INSERT INTO grocery_lists (id, name, \"ownerId\", \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING",
+        list_id,
+        "List",
+        Option::<String>::None,
+        0_i64,
+        1_i32,
+        false,
+        "SYNCED"
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        member_id, list_id, user_id, role, 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn member_sync_request(change: GroceryListMemberChangeDelta) -> SyncRequest {
+    SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![change],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    }
+}
+
+/// Being *in* a list is not permission to put somebody else in it.
+///
+/// The insert path used to write `"userId"` straight from the payload, so any member of a
+/// list could hand an account membership of it with a fresh row id — no invite code, no
+/// TTL, no `max_outstanding_invites_per_user`, no attempt limit. Every one of those
+/// controls was optional as long as this endpoint existed.
+#[sqlx::test]
+async fn test_sync_member_cannot_grant_membership_to_another_account(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    seed_list_with_member(&pool, "glist-family", "glist-family-owner", "user-1", "OWNER").await;
+
+    let member_data = GroceryListMemberData {
+        id: "smuggled-member".to_string(),
+        list_id: "glist-family".to_string(),
+        user_id: "user-outsider".to_string(),
+        role: "MEMBER".to_string(),
+        joined_at: 123456,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let err = sync_handler(
+        State(state.clone()),
+        AppJson(member_sync_request(GroceryListMemberChangeDelta {
+            id: "smuggled-member".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        })),
+    )
+    .await
+    .expect_err("Sync must not grant membership");
+    assert!(matches!(err, AppError::Forbidden(_)));
+
+    let row = sqlx::query!(
+        "SELECT id FROM grocery_list_members WHERE \"userId\" = $1",
+        "user-outsider"
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(row.is_none(), "no membership may exist for an account that never joined");
+}
+
+/// An existing row's `"userId"` is the server's; a payload that disagrees is refused
+/// outright rather than quietly applied.
+#[sqlx::test]
+async fn test_sync_member_update_cannot_reassign_user_id(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    seed_list_with_member(&pool, "glist-family", "glist-family-owner", "user-1", "OWNER").await;
+
+    let member_data = GroceryListMemberData {
+        id: "glist-family-owner".to_string(),
+        list_id: "glist-family".to_string(),
+        user_id: "user-outsider".to_string(),
+        role: "OWNER".to_string(),
+        joined_at: 0,
+        version: 2,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let err = sync_handler(
+        State(state.clone()),
+        AppJson(member_sync_request(GroceryListMemberChangeDelta {
+            id: "glist-family-owner".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        })),
+    )
+    .await
+    .expect_err("Sync must not reassign a membership");
+    assert!(matches!(err, AppError::Forbidden(_)));
+
+    let row = sqlx::query!(
+        "SELECT \"userId\" as user_id FROM grocery_list_members WHERE id = $1",
+        "glist-family-owner"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.user_id, "user-1");
+}
+
+/// A membership given up comes back through `/api/lists/join`, not through a client
+/// syncing `isDeleted: false` over the top of the row it left behind.
+#[sqlx::test]
+async fn test_sync_member_cannot_resurrect_a_deleted_membership(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    seed_list_with_member(&pool, "glist-family", "glist-family-owner", "user-2", "OWNER").await;
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-family-ex", "glist-family", "user-1", "MEMBER", 0_i64, 1_i32, true, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let member_data = GroceryListMemberData {
+        id: "glist-family-ex".to_string(),
+        list_id: "glist-family".to_string(),
+        user_id: "user-1".to_string(),
+        role: "MEMBER".to_string(),
+        joined_at: 0,
+        version: 2,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let err = sync_handler(
+        State(state.clone()),
+        AppJson(member_sync_request(GroceryListMemberChangeDelta {
+            id: "glist-family-ex".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        })),
+    )
+    .await
+    .expect_err("Sync must not restore a membership");
+    assert!(matches!(err, AppError::Forbidden(_)));
+
+    let row = sqlx::query!(
+        "SELECT is_deleted FROM grocery_list_members WHERE id = $1",
+        "glist-family-ex"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(row.is_deleted, "the membership must stay gone");
+}
+
+/// `role` is a capability, not a field: a member who writes `OWNER` into their own row
+/// must not gain the power to delete the list and everything on it.
+///
+/// `grocery_lists` reads `role == "OWNER"` to authorise a list delete, which soft-deletes
+/// every item, store and category on it — for the whole family. This test runs both halves:
+/// the promotion is ignored, and the delete it was for is still refused.
+#[sqlx::test]
+async fn test_sync_member_cannot_promote_self_to_owner(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    seed_list_with_member(&pool, "glist-shared", "glist-shared-owner", "user-2", "OWNER").await;
+
+    sqlx::query!(
+        "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "glist-shared-guest", "glist-shared", "user-1", "MEMBER", 0_i64, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let member_data = GroceryListMemberData {
+        id: "glist-shared-guest".to_string(),
+        list_id: "glist-shared".to_string(),
+        user_id: "user-1".to_string(),
+        role: "OWNER".to_string(),
+        joined_at: 0,
+        version: 2,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let _ = sync_handler(
+        State(state.clone()),
+        AppJson(member_sync_request(GroceryListMemberChangeDelta {
+            id: "glist-shared-guest".to_string(),
+            operation_type: OperationType::Update,
+            version: 2,
+            data: Some(serde_json::to_value(&member_data).unwrap()),
+        })),
+    )
+    .await
+    .expect("a version bump on your own membership row is still allowed");
+
+    let row = sqlx::query!(
+        "SELECT role FROM grocery_list_members WHERE id = $1",
+        "glist-shared-guest"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.role, "MEMBER", "roles are server-assigned");
+
+    // And the delete the promotion existed for is refused.
+    let mut delete_req = member_sync_request(GroceryListMemberChangeDelta {
+        id: "unused".to_string(),
+        operation_type: OperationType::Update,
+        version: 1,
+        data: None,
+    });
+    delete_req.grocery_list_member_changes = vec![];
+    delete_req.grocery_list_changes = vec![GroceryListChangeDelta {
+        id: "glist-shared".to_string(),
+        operation_type: OperationType::Delete,
+        version: 2,
+        data: None,
+    }];
+
+    let _ = sync_handler(State(state.clone()), AppJson(delete_req))
+        .await
+        .expect("a non-owner delete is answered, not fatal");
+
+    let list = sqlx::query!(
+        "SELECT is_deleted FROM grocery_lists WHERE id = $1",
+        "glist-shared"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!list.is_deleted, "a member must not be able to delete a shared list");
 }

@@ -1,6 +1,6 @@
 use crate::routes::sync::deletes::soft_delete_version;
 use crate::routes::sync::types::*;
-use crate::routes::sync::versioning::{advance_version, seed_version};
+use crate::routes::sync::versioning::advance_version;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
@@ -41,8 +41,11 @@ pub async fn process_grocery_list_member_changes(
     }
     let list_ids_vec: Vec<String> = list_ids.into_iter().collect();
 
+    // The caller's own live membership rows, in full: the list ids are the permission
+    // check, and the rows themselves are what gets echoed back when a client has invented
+    // a local row for a membership the server has already granted.
     let membership_records = sqlx::query!(
-        r#"SELECT "listId" as list_id FROM grocery_list_members WHERE "userId" = $1 AND "listId" = ANY($2) AND is_deleted = FALSE"#,
+        r#"SELECT id, "listId" as list_id, "userId" as user_id, role, "joinedAt" as joined_at, version, is_deleted, sync_state FROM grocery_list_members WHERE "userId" = $1 AND "listId" = ANY($2) AND is_deleted = FALSE"#,
         user_id,
         &list_ids_vec
     )
@@ -50,8 +53,13 @@ pub async fn process_grocery_list_member_changes(
     .await?;
 
     let member_lists_set: std::collections::HashSet<String> = membership_records
+        .iter()
+        .map(|r| r.list_id.clone())
+        .collect();
+
+    let own_membership_by_list: std::collections::HashMap<String, _> = membership_records
         .into_iter()
-        .map(|r| r.list_id)
+        .map(|r| (r.list_id.clone(), r))
         .collect();
 
     for change in changes {
@@ -104,75 +112,116 @@ pub async fn process_grocery_list_member_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryListMemberData>(data.clone()) {
                         Ok(item) => {
-                            // Verify permission: the caller must already be a member of the
-                            // list this row belongs to. Both ends of it, when the row exists.
+                            // Membership is granted by `/api/lists/join` and by nothing
+                            // else; sync only ever *reflects* a membership that already
+                            // exists. So this path never creates a row, and it never takes
+                            // `"listId"`, `"userId"` or `role` from the payload.
                             //
-                            // Joining *yourself* used to be sufficient on its own, and it is
-                            // not a permission check at all: a listId is not a secret — it
-                            // rides along in every grocery item, store and category the list
-                            // owns — so knowing one was enough to insert a MEMBER row against
-                            // another family's list and start reading and writing their data.
-                            // No guessing required. Membership is granted by `/api/lists/join`
-                            // and by nothing else; sync only ever reflects a membership that
-                            // already exists.
-                            let is_member_of_target = member_lists_set.contains(&item.list_id);
+                            // Without that, the whole invite mechanism was optional: a
+                            // member of list L could sync an insert with a fresh id,
+                            // `listId = L` and `userId` set to anybody, and that account
+                            // was a member -- no code, no TTL, no attempt limit. And with
+                            // `role = EXCLUDED.role` a member could name themselves OWNER,
+                            // which `grocery_lists` reads to authorise deleting the list
+                            // and everything on it.
+                            let Some(row) = existing_map.get(&change.id) else {
+                                // A client that just created a list offline sends the list
+                                // and a membership row of its own invention in one batch.
+                                // The list processor runs first in this transaction and
+                                // seeds the creator's row, so the membership already
+                                // exists under the server's own id: accept the change as a
+                                // no-op and hand the client the canonical row to replace
+                                // its local one with. Anything else is a grant, and is
+                                // refused.
+                                if item.user_id == user_id {
+                                    if let Some(existing) = own_membership_by_list.get(&item.list_id) {
+                                        let item_data = GroceryListMemberData {
+                                            id: existing.id.clone(),
+                                            list_id: existing.list_id.clone(),
+                                            user_id: existing.user_id.clone(),
+                                            role: existing.role.clone(),
+                                            joined_at: existing.joined_at,
+                                            version: existing.version,
+                                            is_deleted: existing.is_deleted,
+                                            sync_state: existing.sync_state.clone(),
+                                        };
+                                        remote_changes.push(GroceryListMemberChangeDelta {
+                                            id: existing.id.clone(),
+                                            operation_type: OperationType::Update,
+                                            version: existing.version,
+                                            data: Some(serde_json::to_value(&item_data)?),
+                                        });
+                                        success_ids.push(change.id.clone());
+                                        continue;
+                                    }
+                                }
 
-                            // An existing row carries a list of its own, and the upsert below
-                            // rewrites `"listId"` from the payload. Without this second half a
-                            // member of list B could take a membership row belonging to list A
-                            // and move it — either dragging A's row into B, or, with someone
-                            // else's row, pushing them out of B into a list they never joined.
-                            let is_member_of_current = existing_map
-                                .get(&change.id)
-                                .map(|row| member_lists_set.contains(&row.list_id))
-                                .unwrap_or(true);
-
-                            if !is_member_of_target || !is_member_of_current {
                                 return Err(AppError::Forbidden(format!(
-                                    "User is not authorized to manage membership for list {}",
-                                    item.list_id
+                                    "Membership is granted by joining a list with an invite code; sync cannot create membership {}",
+                                    change.id
+                                )));
+                            };
+
+                            // The row's own list is the one that matters -- the payload's
+                            // is not trusted to name it. A member of list B could otherwise
+                            // take a membership row belonging to list A and move it, either
+                            // dragging A's row into B or pushing a co-member out of B.
+                            let is_self = row.user_id == user_id;
+                            if !is_self && !member_lists_set.contains(&row.list_id) {
+                                return Err(AppError::Forbidden(format!(
+                                    "User is not authorized to manage membership {}",
+                                    change.id
                                 )));
                             }
 
-                            let record = existing_map.get(&change.id);
+                            // Identity is server-owned. A payload that disagrees about who
+                            // this row is, or which list it belongs to, is not a change to
+                            // apply -- it is a rewrite of a membership, which only
+                            // `/api/lists/join` may do.
+                            if item.list_id != row.list_id || item.user_id != row.user_id {
+                                return Err(AppError::Forbidden(format!(
+                                    "User is not authorized to reassign membership {}",
+                                    change.id
+                                )));
+                            }
+
+                            // Un-deleting is granting: a membership that was given up (or
+                            // taken away) comes back through `/api/lists/join`, not by a
+                            // client syncing `isDeleted: false` over the top of it.
+                            if row.is_deleted && !item.is_deleted {
+                                return Err(AppError::Forbidden(format!(
+                                    "Membership {} can only be restored by joining the list again",
+                                    change.id
+                                )));
+                            }
 
                             // One policy for every synced row: the server's stored version is the only
-                            // input to the next one, and a row the server has never seen takes a bounded
-                            // seed. `max(row.version, item.version) + 1` let a single request carrying an
-                            // enormous `version` move this row's counter there permanently -- for a shared
-                            // list, for every member of it. See `crate::routes::sync::versioning`.
-                            let next_version = if let Some(row) = record {
-                                if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
-                                    tracing::warn!(
-                                        "Conflicting write for member {} (client version {}, server version {}); accepting it as the later arrival",
-                                        change.id, change.version, row.version
-                                    );
-                                }
-                                advance_version("Member", &change.id, row.version)?
-                            } else {
-                                seed_version("Member", &change.id, item.version)?
-                            };
+                            // input to the next one. `max(row.version, item.version) + 1` let a single
+                            // request carrying an enormous `version` move this row's counter there
+                            // permanently -- for a shared list, for every member of it. See
+                            // `crate::routes::sync::versioning`.
+                            if matches!(change.operation_type, OperationType::Update) && change.version < row.version {
+                                tracing::warn!(
+                                    "Conflicting write for member {} (client version {}, server version {}); accepting it as the later arrival",
+                                    change.id, change.version, row.version
+                                );
+                            }
+                            let next_version = advance_version("Member", &change.id, row.version)?;
 
+                            // `"listId"`, `"userId"`, `role` and `"joinedAt"` are absent
+                            // from this statement on purpose: they are the server's, and a
+                            // sync payload has no say in them.
                             sqlx::query!(
                                 r#"
-                                INSERT INTO grocery_list_members (
-                                    id, "listId", "userId", role, "joinedAt", version, is_deleted, sync_state, updated_at, updated_by_client
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                                ON CONFLICT (id) DO UPDATE SET
-                                    "listId" = EXCLUDED."listId",
-                                    "userId" = EXCLUDED."userId",
-                                    role = EXCLUDED.role,
-                                    version = EXCLUDED.version,
-                                    is_deleted = EXCLUDED.is_deleted,
-                                    sync_state = EXCLUDED.sync_state,
-                                    updated_at = EXCLUDED.updated_at,
-                                    updated_by_client = EXCLUDED.updated_by_client
+                                UPDATE grocery_list_members SET
+                                    version = $2,
+                                    is_deleted = $3,
+                                    sync_state = $4,
+                                    updated_at = $5,
+                                    updated_by_client = $6
+                                WHERE id = $1
                                 "#,
-                                item.id,
-                                item.list_id,
-                                item.user_id,
-                                item.role,
-                                item.joined_at,
+                                change.id,
                                 next_version,
                                 item.is_deleted,
                                 "SYNCED",
@@ -181,6 +230,27 @@ pub async fn process_grocery_list_member_changes(
                             )
                             .execute(&mut **tx)
                             .await?;
+
+                            // The client sent a role we ignored, so tell it what the row
+                            // actually says rather than leaving the two disagreeing.
+                            if item.role != row.role {
+                                let item_data = GroceryListMemberData {
+                                    id: row.id.clone(),
+                                    list_id: row.list_id.clone(),
+                                    user_id: row.user_id.clone(),
+                                    role: row.role.clone(),
+                                    joined_at: row.joined_at,
+                                    version: next_version,
+                                    is_deleted: item.is_deleted,
+                                    sync_state: "SYNCED".to_string(),
+                                };
+                                remote_changes.push(GroceryListMemberChangeDelta {
+                                    id: row.id.clone(),
+                                    operation_type: OperationType::Update,
+                                    version: next_version,
+                                    data: Some(serde_json::to_value(&item_data)?),
+                                });
+                            }
 
                             upload_status.push(SuccessResult {
                                 id: change.id.clone(),

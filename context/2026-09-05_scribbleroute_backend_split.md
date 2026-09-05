@@ -11,7 +11,10 @@ database and one Redis:
 * **teddy.fyi** — the personal grocery and todo apps, one household, no external users,
   no published policy, hostname `api-rust.teddy.fyi`.
 
-The goal is to separate them. This note records *what is actually entangled* (read out
+The goal is to separate them. The identity re-key that rides along in Phase 4 has its own note:
+`context/2026-09-05_identity_model.md`.
+
+This note records *what is actually entangled* (read out
 of the code, not assumed), the options considered, the option chosen, and the ordered
 steps with their rollbacks. Read the entanglement section before deciding anything —
 several of the couplings are not where you would guess, and two of them will break
@@ -210,6 +213,12 @@ Write these down now; they are the ones that are expensive to reverse.
 6. **The teddy.fyi database keeps no ScribbleRoute user rows.** Dropping the tables is not
    enough — external testers' `users` and `sessions` rows have to go too, and selecting
    them requires the Rust-side identity join (§1.2).
+7. **The identity re-key rides along in Phase 4.** `users.id` becomes an opaque surrogate
+   UUID and the Google subject becomes an attribute (`provider`, `subject`) — the design is
+   `context/2026-09-05_identity_model.md`. Added after this plan was first written: the
+   six-step dual-write migration that fix would otherwise need exists *only* because there
+   is no maintenance window, and Phase 4 is that window. Accounts are **not** linked across
+   providers; a second provider means a second account, deliberately.
 
 ---
 
@@ -232,6 +241,13 @@ until the current one has been observed healthy for at least a day of real table
 4. Write down the current row counts for `configs`, `drawings`, `devices`,
    `device_authorizations`, `device_claim_failures`, `sessions`, `users`. They are the
    check figures for Phase 3.
+5. Two questions the identity re-key in Phase 4 depends on, both cheap and both better
+   answered now than under a freeze (`context/2026-09-05_identity_model.md` §12):
+   * the **orphan audit** — `configs`/`drawings`/`devices` rows whose `user_id` is the hash
+     of no surviving `users.id`. Some are expected: those two tables predate `users` by one
+     migration. A large count makes the re-key a different conversation.
+   * whether the Android and iOS clients read `sub` from **our** JWT or take Google's `sub`
+     from the Google ID token. The second answer means a client release before Phase 4.
 
 ### Phase 1 — Carve the new repo (still not deployed)
 
@@ -247,23 +263,28 @@ In `scribbleroute/backend`:
    * The `/categorize`, `/assign-icon` and `/lists/*` routes in `main.rs`, plus
      `GEMINI_API_KEY` (note: `init_app_state` `expect`s it — the removal must reach
      `AppState`, `state.rs` and the manifest together or the pod will not boot).
-2. Trim the migrations. **Do not rewrite history in the existing files** — the new database
-   will be built by running them. Either keep all of them and drop the unused tables in a
-   new final migration, or (cleaner) collapse to a single `0001_init.sql` capturing
-   exactly the ScribbleRoute schema. Prefer the collapse: it is a new database, and the
-   legacy `TEXT`-to-UUID archaeology in the old files buys nothing there.
-3. Narrow the compiled-in defaults: `CORS_ALLOWED_ORIGINS` to the scribbleroute.com
+2. Build the migrations against the **target** identity schema, not today's — surrogate
+   `users.id`, `provider`/`subject`, real foreign keys. It is a new database, so there is no
+   add-column-and-backfill dance to write. The legacy-token shim
+   (`context/2026-09-05_identity_model.md` §6) ships and is tested here too, well before the
+   freeze that needs it.
+3. Collapse the migrations to a single `0001_init.sql` capturing exactly the ScribbleRoute
+   schema in its target shape. The identity change decides this: the inherited files create
+   `users.id` as `TEXT` and would have to be undone by a later migration in the same run, so
+   replaying history here buys nothing and costs a contradiction. The legacy `TEXT`-to-UUID
+   archaeology in the old files is likewise dead weight against a database with no rows yet.
+4. Narrow the compiled-in defaults: `CORS_ALLOWED_ORIGINS` to the scribbleroute.com
    spellings, `COOKIE_DOMAIN` to `.scribbleroute.com`, `APP_VERIFICATION_URIS` to the two
    `SCRIBBLE_*` apps.
-4. Drop `GOOGLE_CLIENT_ID_GROCERY_WEB` from `SINGLE_ID_ENV_VARS`; keep
+5. Drop `GOOGLE_CLIENT_ID_GROCERY_WEB` from `SINGLE_ID_ENV_VARS`; keep
    `SCRIBBLEROUTE_API_CLIENT_ID` and the iOS list.
-5. Rename every k8s resource (`scribbleroute-api-dep`, `-svc`, `-ksa`,
+6. Rename every k8s resource (`scribbleroute-api-dep`, `-svc`, `-ksa`,
    `scribbleroute-api-gcp-secrets`, `-be-config`), move `api-scribbleroute-cert` here, and
    add `scribbleroute-cache-dep` / `-svc` with a NetworkPolicy selecting the new API pod
    label. Point `REDIS_URL` at `scribbleroute-cache-svc:6379`.
-6. Retarget the image to `gcr.io/…/scribbleroute-api` and the rollout to the new
+7. Retarget the image to `gcr.io/…/scribbleroute-api` and the rollout to the new
    deployment name. Re-enable `deploy.yml` only after both are changed.
-7. `cargo sqlx prepare -- --tests` to regenerate `.sqlx` against the trimmed schema; `make
+8. `cargo sqlx prepare -- --tests` to regenerate `.sqlx` against the trimmed schema; `make
    test` green.
 
 **Do not yet remove `api-scribbleroute-cert` from this repo** — until the ingress moves,
@@ -304,20 +325,32 @@ scratched and nothing has moved in the database yet.
 2. **Freeze ScribbleRoute writes.** Scale `scribbleroute-api-dep` to zero, or return 503
    from the ingress for that host. Small user base, so a short real outage is cheaper than
    any dual-write scheme. Announce it if testers are active.
-3. Copy, in this order (parents before children):
+3. Copy, in this order (parents before children). **The copy is also the identity
+   re-key** — see `context/2026-09-05_identity_model.md` §8, and note that this makes the
+   copy a program, not a `pg_dump`:
    * `users` and `sessions` — **the subset selection needs the Rust identity join**. Write
      a one-shot subcommand in the new repo (mirroring `find_stale_users`: read
      `devices.user_id`/`configs.user_id`/`drawings.user_id`, hash every `users.id` with
      `parse_or_hash_uuid`, keep the matches). Do *not* try to express it in SQL, and do not
      copy the whole `users` table as a shortcut — that would move grocery-only accounts
      into the product database, which is the mirror image of the problem being solved.
+     For each row kept: mint a `gen_random_uuid()`, write it as the new `users.id` with
+     `provider = 'google'` and `subject` set to the old id, and record the mapping.
    * `configs`, `drawings`, `devices`, `device_authorizations`, `device_claim_failures` —
-     these are keyed by the derived UUID and copy wholesale with `pg_dump -t`.
+     rewritten through that mapping. The three UUID-keyed tables keep their column type and
+     change only their values; the two TEXT-keyed ones narrow to UUID.
+   * The same hash join finds the `configs`/`drawings`/`devices` rows in the first place,
+     because the old derivation cannot be inverted. Rows it cannot map are the derivation
+     note's step-2 orphans — count them in Phase 0 (below), decide before the freeze.
 4. Compare row counts against the Phase 0 figures. Spot-check one account end to end:
-   its device list, its config keys, one drawing blob.
+   its device list, its config keys, one drawing blob — and that its rows all carry the
+   *same* new `users.id`, which is the check that catches a mapping applied inconsistently
+   across tables.
 5. Swap `DATABASE_URL` on `scribbleroute-api-dep` to the new database. Restart. Unfreeze.
 6. Rollback: swap `DATABASE_URL` back and restart. The old database took no ScribbleRoute
-   writes during the freeze, so it is still authoritative and nothing is lost.
+   writes during the freeze, so it is still authoritative and nothing is lost. This reverses
+   the data move and the identity re-key together — rollback granularity here is per-window,
+   not per-change, which is why bundling the two costs no reversibility.
 
 ### Phase 5 — Decommission on this side
 
@@ -360,16 +393,20 @@ its own: `pg_dump` / `pg_restore` and one secret rotation, no code change. Rotat
 | New pod cannot reach Redis | 2 | Expected — `cache.yaml`'s NetworkPolicy selects `app: api-rust`; the new deployment gets its own Valkey and its own policy |
 | Pod will not boot after removing Gemini | 1 | `init_app_state` `expect`s `GEMINI_API_KEY`; remove code, `AppState` field and manifest env together |
 | External users' rows left behind in the personal DB | 5 | Explicit step 6; dropping tables is not sufficient |
+| A client derives `user_id` from the Google token rather than our JWT | 4 | Would break permanently at the re-key and needs a client release first — check both clients before scheduling (identity note §7) |
+| Identity re-key and data move fail together | 4 | Accepted: one window, one rollback (`DATABASE_URL`), old database untouched |
 | Two repos drift on the sync protocol | after | Accepted. The wire contract is frozen by the shipped clients, and the ScribbleRoute side is now free to evolve its own; if drift becomes painful, extract a shared crate then, not now |
 
 ## 7. What this does not solve
 
-* **The two user identities.** `parse_or_hash_uuid` comes along unchanged into the new
-  repo. The split is actually the *cheapest moment* to fix it — Phase 4 already rewrites
-  every row into a new database, so re-keying `configs`/`drawings`/`devices` to the raw
-  subject could ride along in the same freeze. It is deliberately not in this plan (one
-  irreversible change per window), but if it is ever going to happen, that is the window.
-  See `context/2026-09-05_user_identity_derivation.md`.
+* **~~The two user identities.~~** *Superseded — this is now in the plan.* The first
+  version of this note deferred the re-key on a "one irreversible change per window"
+  instinct. That instinct was wrong here: the rollback is `DATABASE_URL` back to an
+  untouched database either way, so bundling costs no reversibility, and Phase 4 is the
+  only window in which the fix is cheap. The design is
+  `context/2026-09-05_identity_model.md`; the mechanics are in Phase 4 step 3 above. Note
+  that the fix is *not* the raw-subject re-keying suggested here — a second identity
+  provider rules that out.
 * **Client-side configuration.** The tablets already talk to `api.scribbleroute.com`, so
   no client release is required for the cutover. A client that has the teddy.fyi host
   hard-coded anywhere would be, and this plan assumes none does — verify before Phase 3.

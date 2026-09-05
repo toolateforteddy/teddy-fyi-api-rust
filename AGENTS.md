@@ -106,6 +106,14 @@ endpoint shapes are already written down.
   `scribbleroute/backend`, before removing anything ScribbleRoute-shaped from this repo, and
   before changing `site-ingress` in `teddyfyi`.
 
+- **The identity model we are moving to** — `context/2026-09-05_identity_model.md`.
+  **Designed, not built.** `users.id` becomes an opaque surrogate UUID and the Google subject
+  becomes an attribute (`provider`, `subject`), which ends the two-identity split below and makes
+  room for a second sign-in provider. Accounts are deliberately *not* linked across providers. The
+  re-key rides along in Phase 4 of the split, because that freeze is the only window in which it
+  is cheap. Read it before adding a sign-in provider, before keying a new table by a user, and
+  before writing the Phase 4 copy program.
+
 - **The two user identities** — `context/2026-09-05_user_identity_derivation.md`. The same
   signed-in person is named two ways: the raw auth subject keys `users`, `sessions` and every
   todo/grocery table, while `parse_or_hash_uuid(sub)` keys `configs`, `drawings` and `devices`.

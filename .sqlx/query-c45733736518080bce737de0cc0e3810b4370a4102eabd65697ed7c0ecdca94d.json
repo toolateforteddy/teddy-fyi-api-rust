@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO grocery_item_store_info (\n                \"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_at, updated_by_client\n            )\n            SELECT m.item_id, m.store_id, m.price, m.is_available, $5, 1, FALSE, 'SYNCED', $6, NULL::text\n            FROM UNNEST($1::text[], $2::text[], $3::double precision[], $4::bool[])\n                AS m(item_id, store_id, price, is_available)\n            ON CONFLICT (\"groceryItemId\", \"storeId\") DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Float8Array",
+        "BoolArray",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c45733736518080bce737de0cc0e3810b4370a4102eabd65697ed7c0ecdca94d"
+}

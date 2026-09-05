@@ -35,6 +35,48 @@ The backend exposes a single, atomic endpoint to reconcile state.
 3. Keep the payload formats perfectly mirrored to the Android client schema requirements.
 4. **Strict Module Layout Guideline:** NEVER use the legacy `mod.rs` pattern for module entry points (this is an anti-pattern/code smell similar to Python's `__init__.py` abuse). Instead, strictly follow the modern Rust file-based module layout (e.g., declare `routes.rs` at the parent level, and place its sibling submodules inside a `routes/` directory). Keep module entry files strictly declarative, containing only `pub mod` and `pub use` statements, with zero handler logic or unit tests residing inside them.
 
+## Deployment and the `k8s/` manifests
+
+The GKE manifests for this service live in `k8s/` and are applied by
+`.github/workflows/deploy.yml` on every merge to `main`, immediately before the rollout
+restart. They used to live in the `teddyfyi` repo (the nginx/hosting repo) and be applied
+by hand from a laptop; they moved here so that a manifest change and the code that needs
+it ship in one commit.
+
+| File | What it is |
+|---|---|
+| `k8s/api-rust.yaml` | `api-rust-svc` (NodePort), `api-rust-ksa`, the `SecretProviderClass`, `api-rust-dep`, the `BackendConfig`, and the `api-rust-cert` / `api-scribbleroute-cert` ManagedCertificates. |
+| `k8s/cache.yaml` | The Valkey `cache-dep` / `cache-svc` this service uses for Redis, plus a NetworkPolicy admitting only `app: api-rust`. |
+| `k8s/user-reaper.yaml` | The daily retention CronJob. Reuses this image with the `reap-stale-users` subcommand and the same KSA and secret mount. |
+
+**What is *not* here:** `site-ingress` stays in `teddyfyi`, because it is the shared front
+door for the nginx site as well as this API. It references `api-rust-svc` and names both
+of our certificates in its `networking.gke.io/managed-certificates` annotation, so
+renaming a Service or a ManagedCertificate here is a cross-repo change. The hostnames it
+routes to us are `api-rust.teddy.fyi` and `api.scribbleroute.com`.
+
+**Secrets.** Values live in GCP Secret Manager and must never appear in `k8s/`. What lives
+here is the *wiring*, and adding one secret-backed variable is three edits to
+`api-rust.yaml`: a `parameters.secrets` entry, a `secretObjects.data` mapping, and a
+container `env.valueFrom.secretKeyRef`. Creating the secret itself is still an
+out-of-band `gcloud secrets create`.
+
+**Most tunables are unset in prod.** The code reads roughly forty environment variables;
+the manifests set eleven. Everything else — the `LIST_*` invite limits, `SSE_MAX_STREAMS_*`,
+`GEMINI_MAX_CALLS_*`, the rate-limit and guardrail knobs, `CORS_ALLOWED_ORIGINS`,
+`COOKIE_DOMAIN` — runs on the compiled-in default. That is a deliberate starting point, not
+an oversight, but it does mean the default in the Rust source *is* the production value.
+Change one and you are changing prod.
+
+**Why this matters for the planned fork.** `scribbleroute/backend` is expected to fork from
+this repo and take `api.scribbleroute.com`, leaving this one defaulting to
+`api-rust.teddy.fyi`. The fork inherits `k8s/` as its starting point. Two things to know
+when that happens: every resource name in `api-rust.yaml` is currently unqualified
+(`api-rust-dep`, `api-rust-svc`, `api-rust-ksa`), so the fork must rename or the two repos
+will apply over each other in the same cluster; and `cache.yaml` is the one file that is
+plausibly *shared* infrastructure rather than per-service, so it should end up singly
+owned rather than duplicated.
+
 ## Planned work with a written spec
 
 Before designing anything in these areas, read the note — the decisions are already made and the

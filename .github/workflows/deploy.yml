@@ -90,6 +90,17 @@ jobs:
           location: us-central1-a
           project_id: melodic-sunbeam-164916
 
+      # The manifests live in this repo (k8s/), so a change to the Deployment ships in the
+      # same commit as the code that needs it — a new env var and the `env::var` that reads
+      # it can no longer reach prod on different days.
+      #
+      # Applied before the restart rather than instead of it: `apply` reconciles spec changes
+      # but will not re-pull `:latest`, and `rollout restart` re-pulls but knows nothing about
+      # the spec. Together they cover both. When apply *does* change the spec it starts its
+      # own rollout and the restart below folds into it, so doing both costs nothing.
+      - name: Apply Kubernetes Manifests
+        run: kubectl apply -f k8s/
+
       - name: Deploy to GKE (Rollout Restart)
         run: |
           kubectl rollout restart deployment/api-rust-dep

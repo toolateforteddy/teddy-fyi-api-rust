@@ -1,0 +1,232 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-rust-svc
+  annotations:
+    cloud.google.com/backend-config: '{"default": "api-rust-be-config"}'
+spec:
+  selector:
+    app: api-rust
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: NodePort
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-rust-ksa
+  annotations:
+    iam.gke.io/gcp-service-account: api-rust-gsa@melodic-sunbeam-164916.iam.gserviceaccount.com
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: api-rust-gcp-secrets
+spec:
+  provider: gke
+  parameters:
+    secrets: |
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/api-rust-client-id/versions/latest"
+        path: "api-rust-client-id"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/api-rust-db-url/versions/latest"
+        path: "api-rust-db-url"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/jwt_secret/versions/latest"
+        path: "jwt_secret"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/gemini_api_key_free/versions/latest"
+        path: "gemini_api_key_free"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/api-rust-grocery-web-client-id/versions/latest"
+        path: "api-rust-grocery-web-client-id"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/scribbleroute-api-client-id/versions/latest"
+        path: "scribbleroute-api-client-id"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/api-rust-ios-client-ids/versions/latest"
+        path: "api-rust-ios-client-ids"
+  secretObjects:
+    - secretName: api-rust-secret-env
+      type: Opaque
+      data:
+        - objectName: api-rust-client-id
+          key: GOOGLE_CLIENT_ID
+        - objectName: api-rust-db-url
+          key: DATABASE_URL
+        - objectName: jwt_secret
+          key: JWT_SECRET
+        - objectName: gemini_api_key_free
+          key: GEMINI_API_KEY
+        - objectName: api-rust-grocery-web-client-id
+          key: GOOGLE_CLIENT_ID_GROCERY_WEB
+        - objectName: scribbleroute-api-client-id
+          key: SCRIBBLEROUTE_API_CLIENT_ID
+        - objectName: api-rust-ios-client-ids
+          key: GOOGLE_IOS_CLIENT_IDS
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-rust-dep
+spec:
+  replicas: 1
+  # A pod is only counted available once it has been Ready this long. The readiness probe
+  # says the socket answers; this says it kept answering, which is the difference between
+  # a healthy replica and one that is about to crash-loop on a bad config.
+  minReadySeconds: 10
+  # Pinned rather than left to the percentage defaults. At one replica the defaults happen
+  # to round to this same shape (25% of 1 rounds up for surge, down for unavailable), but
+  # the rounding flips the moment replicas goes to 2 — 25% of 2 rounds *up* to one
+  # unavailable, and the roll would start dropping serving capacity. Spell it out so the
+  # guarantee survives a replica count change: bring the new pod up, wait for it, only
+  # then take the old one down.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: api-rust
+  template:
+    metadata:
+      labels:
+        app: api-rust
+    spec:
+      serviceAccountName: api-rust-ksa
+      # Spread replicas across nodes, which during a rollout means the surge pod lands
+      # somewhere other than the pod it is replacing. Without this both fit on one node,
+      # and a deploy that is meant to be zero-downtime still has a single node as its
+      # single point of failure — a drain or an auto-upgrade takes old and new together.
+      #
+      # DoNotSchedule, not ScheduleAnyway: a "preference" that silently gives up is the
+      # same as not having the constraint on the days it matters. The cost is that a
+      # rollout blocks until a second node has room, which the cluster autoscaler will
+      # provide (the pool runs 1-3 nodes); today there is a second node with headroom, so
+      # the surge pod schedules immediately and deploys stay fast.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: api-rust
+      containers:
+      - name: api-rust
+        image: gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:latest
+        env:
+        - name: PORT
+          value: "8080"
+        - name: REDIS_URL
+          value: "redis://cache-svc:6379"
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: GOOGLE_CLIENT_ID
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: DATABASE_URL
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: JWT_SECRET
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: GEMINI_API_KEY
+        - name: GOOGLE_CLIENT_ID_GROCERY_WEB
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: GOOGLE_CLIENT_ID_GROCERY_WEB
+        - name: SCRIBBLEROUTE_API_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: SCRIBBLEROUTE_API_CLIENT_ID
+        - name: GOOGLE_IOS_CLIENT_IDS
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: GOOGLE_IOS_CLIENT_IDS
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - mountPath: "/var/secrets"
+          name: gcp-secrets
+          readOnly: true
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 8080
+          timeoutSeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 8080
+          initialDelaySeconds: 15
+          timeoutSeconds: 5
+          periodSeconds: 15
+        # Keep serving for a few seconds after Kubernetes decides to remove this pod.
+        #
+        # api-rust-svc is a NodePort behind the GKE ingress, so the load balancer targets
+        # nodes and it is kube-proxy that picks the pod. Endpoint removal and the iptables
+        # rewrite that follows it are asynchronous with the SIGTERM, so without this pause
+        # requests keep arriving for a moment at a process that has already begun to shut
+        # down — which the caller sees as a 502 in the middle of an otherwise clean deploy.
+        #
+        # preStop runs *before* SIGTERM, so this delays the signal rather than racing the
+        # graceful shutdown in main.rs; the 30s termination grace period still bounds the
+        # whole thing. Long-lived /api/sync/stream connections are cut regardless — clients
+        # reconnect and reconcile on their next POST /api/sync.
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sleep", "10"]
+      volumes:
+      - name: gcp-secrets
+        csi:
+          driver: secrets-store-gke.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "api-rust-gcp-secrets"
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: api-rust-be-config
+spec:
+  timeoutSec: 60
+  healthCheck:
+    checkIntervalSec: 30
+    timeoutSec: 25
+    type: HTTP
+    requestPath: /healthcheck
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: api-rust-cert
+spec:
+  domains:
+    - api-rust.teddy.fyi
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: api-scribbleroute-cert
+spec:
+  domains:
+    - api.scribbleroute.com

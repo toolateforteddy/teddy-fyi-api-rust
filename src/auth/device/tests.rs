@@ -458,6 +458,143 @@ fn each_app_redeems_on_its_own_site() {
     }
 }
 
+/// The stored `device_code_hash` is a deterministic digest of the code and nothing else —
+/// which is what lets the poll path look a row up by value instead of verifying candidates
+/// one at a time. `/start` writes this value and `/poll` reads it; if the two ever
+/// disagreed, every tablet in the field would poll forever on a `404`.
+#[test]
+fn device_codes_hash_deterministically_and_domain_separated() {
+    let digest = hash_device_code("a-device-code");
+
+    assert_eq!(digest, hash_device_code("a-device-code"));
+    assert_ne!(digest, hash_device_code("a-device-cod3"));
+    assert_eq!(digest.len(), 64);
+    assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
+
+    // Domain separation: the prefix is part of the preimage, so this is not the bare
+    // SHA-256 of the code and cannot collide with another digest this service takes.
+    let mut bare = Sha256::new();
+    bare.update(b"a-device-code");
+    let bare: String = bare.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+    assert_ne!(digest, bare);
+}
+
+/// `/start` stores the hash, never the code. A database dump is not a bag of usable
+/// pairing codes — the one property the old Argon2 hashing was actually there for.
+#[sqlx::test]
+async fn start_stores_only_the_hash(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let (device_code, _user_code) = start(&state, "fire-tablet-hashed").await;
+
+    let stored = sqlx::query_scalar!(
+        "SELECT device_code_hash FROM device_authorizations WHERE client_uuid = $1",
+        "fire-tablet-hashed"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_ne!(stored, device_code);
+    assert_eq!(stored, hash_device_code(&device_code));
+}
+
+/// A device code nobody was ever issued is a `404` — the same answer a real code presented
+/// by the wrong install gets, so polling sorts nothing. The live row for this very
+/// `client_uuid` is deliberately present: the lookup is by code, not by client.
+#[sqlx::test]
+async fn unknown_device_code_is_not_found(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-invented";
+    let (device_code, user_code) = start(&state, client_uuid).await;
+
+    claim_for_user(&state, "google-sub-1", None, &user_code)
+        .await
+        .unwrap();
+
+    let result = poll_handler(
+        State(state.clone()),
+        Json(PollRequest {
+            device_code: "not-a-code-anyone-issued".to_string(),
+            client_uuid: client_uuid.to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+
+    // And the genuine code still pairs, so the refusal above cost the tablet nothing.
+    let ok = poll_handler(
+        State(state.clone()),
+        Json(PollRequest {
+            device_code,
+            client_uuid: client_uuid.to_string(),
+        }),
+    )
+    .await
+    .expect("the genuine code should still pair");
+    assert_eq!(ok.status(), StatusCode::OK);
+}
+
+/// Two tablets polling one claimed code at the same instant. The `FOR UPDATE` on the row
+/// serialises them, so exactly one walks away with a session and the loser is refused.
+#[sqlx::test]
+async fn racing_polls_mint_exactly_one_session(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-raced";
+    let (device_code, user_code) = start(&state, client_uuid).await;
+
+    claim_for_user(&state, "google-sub-1", None, &user_code)
+        .await
+        .unwrap();
+
+    let poll = |code: String| {
+        poll_handler(
+            State(state.clone()),
+            Json(PollRequest {
+                device_code: code,
+                client_uuid: client_uuid.to_string(),
+            }),
+        )
+    };
+    let (first, second) = tokio::join!(poll(device_code.clone()), poll(device_code));
+
+    // Which one won is a race, so sort by outcome rather than by argument order.
+    let mut outcomes = [
+        first.map(|response| response.status()),
+        second.map(|response| response.status()),
+    ];
+    outcomes.sort_by_key(|outcome| outcome.is_err());
+
+    assert_eq!(outcomes[0], Ok(StatusCode::OK));
+    // The loser is refused terminally, never handed a session: `410` if it lost the row
+    // lock and found the code spent, `429` if it arrived inside the poll interval the
+    // winner had just stamped. Either way it did not pair.
+    let loser = outcomes[1].unwrap_err();
+    assert!(
+        loser == StatusCode::GONE || loser == StatusCode::TOO_MANY_REQUESTS,
+        "the losing poll should be refused, got {loser}"
+    );
+
+    let sessions = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM sessions WHERE client_uuid = $1"#,
+        client_uuid
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(sessions, 1);
+
+    let consumed = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!"
+             FROM device_authorizations
+            WHERE client_uuid = $1 AND consumed_at IS NOT NULL"#,
+        client_uuid
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(consumed, 1);
+}
+
 /// Resolution with nothing configured, which is how this runs in production: the table
 /// answers for an app it knows, and anything else gets the default page rather than an
 /// error.

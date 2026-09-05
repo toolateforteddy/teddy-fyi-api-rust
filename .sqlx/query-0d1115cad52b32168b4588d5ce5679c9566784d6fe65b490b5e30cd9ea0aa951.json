@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at\n           FROM device_authorizations\n          WHERE client_uuid = $1\n          FOR UPDATE",
+  "query": "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at\n           FROM device_authorizations\n          WHERE device_code_hash = $1 AND client_uuid = $2\n          FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -36,6 +36,7 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Text"
       ]
     },
@@ -48,5 +49,5 @@
       true
     ]
   },
-  "hash": "4b7f76810453115d1a4aa2825d83ef80324b9ab5b6be7969aebaa25b1da0b4c0"
+  "hash": "0d1115cad52b32168b4588d5ce5679c9566784d6fe65b490b5e30cd9ea0aa951"
 }

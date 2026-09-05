@@ -451,7 +451,7 @@ inside a transaction anyway.
 
 ## 12. The probes point at the deprecated endpoint — **8**, Now — **LANDED**
 
-**Landed** in [#PRNUM](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/PRNUM).
+**Landed** in [#73](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/73).
 Readiness now probes `/healthz/ready`, so `src/observability/health.rs` is load-bearing in
 production for the first time. Liveness probes `/healthz/live` and stays a static string
 deliberately: liveness failure means "kill this pod", and a liveness check on a *shared*

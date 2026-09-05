@@ -78,7 +78,7 @@ Rules that keep concurrent work from colliding:
 | 7 | ~~Any list member can grant membership to any account~~ **landed** | 8 | Now |
 | 8 | ~~`role` is client-supplied and gates list deletion~~ **landed** | 8 | Now |
 | 9 | ~~Audience set is flat; no client-id → product mapping~~ **landed, with one gap** | 8 | Now |
-| 10 | Refresh tokens are Argon2-hashed | 8 | Now |
+| 10 | ~~Refresh tokens are Argon2-hashed~~ **landed** | 8 | Now |
 | 11 | A Gemini HTTP call runs inside an open Postgres transaction | 8 | Anytime |
 | 12 | Probes point at the deprecated `/healthcheck` | 8 | Now |
 | 13 | Guardrail limits and the pod memory limit disagree by ~100× | 8 | Anytime |
@@ -395,7 +395,28 @@ Turn the set into a `HashMap<ClientId, Product>` now, while both halves are stil
 and one person's head. It is also the prerequisite for item 2 — the audience is where the product
 claim comes from.
 
-## 10. Refresh tokens are Argon2-hashed — **8**, Now
+## 10. Refresh tokens are Argon2-hashed — **8**, Now — **LANDED**
+
+**Landed** in [#65](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/65).
+`hash_refresh_token` is now a domain-separated SHA-256 (`teddy-fyi/refresh-token/v1:`), the same
+idiom `hash_device_code` already used, and `verify_refresh_token` reads **either** format so no
+device is signed out.
+
+There is no migration, and that is the interesting part: a stored Argon2 digest cannot be
+recomputed as a SHA-256 — the only input that could do it is the token itself, which the server
+has never stored. `20260905130000` could delete its rows because a device code lives ten minutes;
+a session lives seven days and deleting them signs out the estate. So the *write* side migrates
+instead: every mint and every rotation stores the new form, a session upgrades on its first
+refresh, and the Argon2 branch drains on its own within the window `expires_at` already bounds.
+It is deletable once `SELECT count(*) FROM sessions WHERE refresh_token_hash LIKE '$argon2%'` is
+zero.
+
+The `.expect("invalid hash format")` is gone — an unparseable stored hash is now a mismatch and
+an `error!` line, not a panic — so the `guardrails` module docs and its panic test no longer
+claim a live example that does not exist. `CatchPanicLayer` stays: "no handler will ever panic"
+is not a claim that survives future changes.
+
+The description below is what was there before.
 
 `hash_refresh_token` / `verify_refresh_token` (`src/auth/tokens.rs:85-96`) use `Argon2::default()`
 — Argon2id at ~19 MiB and tens of milliseconds. A refresh token is 64 characters of CSPRNG

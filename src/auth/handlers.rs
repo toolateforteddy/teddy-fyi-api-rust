@@ -182,6 +182,40 @@ pub async fn login_handler(
     }
 }
 
+/// Log threshold for consecutive failed refresh attempts against one session.
+///
+/// Crossing it does not lock the session or delete it -- a lockout would hand the attack
+/// this endpoint used to be vulnerable to straight back, since anyone can drive the counter
+/// up without a credential. It only escalates the log line, so a session under sustained
+/// guessing is loud rather than invisible.
+pub const FAILED_REFRESH_ALERT_THRESHOLD: i32 = 10;
+
+/// Exchanges a refresh token for a fresh access/refresh pair, rotating the refresh token.
+///
+/// This endpoint is unauthenticated: `user_id`, `client_uuid` and the refresh token in the
+/// body are everything it gets. That shapes what a *failure* is allowed to do to the stored
+/// session, and the rules differ by what the caller actually proved:
+///
+/// - **Neither hash matches.** The caller presented a token that was never valid, which is
+///   evidence of guessing and nothing else. The session is left completely intact and the
+///   per-session `failed_refresh_attempts` counter is bumped. Deleting here used to mean
+///   that anyone who knew a `user_id` and a `client_uuid` could permanently sign a device
+///   out with a single unauthenticated POST containing a garbage token.
+/// - **The stored OLD hash matches, inside the 30s grace window.** A retry racing its own
+///   rotation. Succeeds, as it always has.
+/// - **The stored OLD hash matches, outside the window.** A genuinely issued token is being
+///   replayed after it was superseded, which is the reuse signal refresh-token rotation
+///   exists to catch. The session is invalidated. This branch is not reachable by guessing:
+///   only a real, previously issued token matches the hash, so it cannot be used to log a
+///   stranger's device out.
+/// - **The stored OLD hash matches but `rotated_at` is NULL.** Same reasoning: a real token
+///   was presented, so this is not a guessing attack, but the row cannot tell us whether we
+///   are inside the grace window. We keep invalidating -- failing closed on the security
+///   axis costs the honest caller one sign-in, while trusting an unbounded-age old token
+///   would silently widen the reuse window to forever -- and log at error level, because the
+///   NULL is our own data-consistency bug and wants fixing at the source.
+/// - **The correct token, on an expired session.** Ordinary cleanup of a dead row. Unchanged.
+///
 // See the note on `require_auth`: the `Err` variant is an axum `Response` by contract,
 // so there is no boxing fix available here either.
 #[allow(clippy::result_large_err)]
@@ -206,7 +240,7 @@ pub async fn refresh_handler(
     // 1. Get session (locked)
     let session = sqlx::query_as!(
         crate::auth::models::Session,
-        "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at FROM sessions WHERE user_id = $1 AND client_uuid = $2 FOR UPDATE",
+        "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2 FOR UPDATE",
         payload.user_id,
         payload.client_uuid
     ).fetch_optional(&mut *tx).await.map_err(|e| {
@@ -400,10 +434,16 @@ pub async fn refresh_handler(
             .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
             .unwrap_or_default();
 
-            tracing::warn!(
+            // The old hash matched, so a genuinely issued token was presented -- this branch
+            // is unreachable by guessing and so is not the remote-logout hole the mismatch
+            // branch was. What we cannot tell is the token's age, because the row lost its
+            // `rotated_at`. We fail closed and invalidate, since the alternative is honouring
+            // an old token of unbounded age; the honest client pays one sign-in. The NULL
+            // itself is a bug on our side, hence error rather than warn.
+            tracing::error!(
                 user_id = %payload.user_id,
                 client_uuid = %payload.client_uuid,
-                "Breach mitigation: Old refresh token matched but rotated_at is NULL. Deleting single session."
+                "Data consistency: old refresh token matched but rotated_at is NULL. Cannot prove the token is inside the grace window, so invalidating this session."
             );
             sqlx::query!(
                 "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
@@ -435,27 +475,50 @@ pub async fn refresh_handler(
         .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
         .unwrap_or_default();
 
-        tracing::warn!(
-            user_id = %payload.user_id,
-            client_uuid = %payload.client_uuid,
-            provided_token_length = payload.refresh_token.len(),
-            has_old_hash = session.old_refresh_token_hash.is_some(),
-            "Breach mitigation: Provided refresh token does not match current or old hash. Deleting single session."
-        );
-        sqlx::query!(
-            "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+        // A token that matches neither hash was never issued by us, so the only thing the
+        // caller has demonstrated is that they are guessing -- and guessing must not destroy
+        // state on an endpoint that takes no credential. The session row stays exactly as it
+        // was and the device it belongs to keeps working; all we do is count the attempt, so
+        // a real brute-force is boundable and visible rather than silently tolerated.
+        //
+        // The counter is clamped before the increment so a long-running attack cannot
+        // overflow the column, and any successful rotation clears it back to zero.
+        let failed_attempts = sqlx::query_scalar!(
+            "UPDATE sessions
+             SET failed_refresh_attempts = LEAST(failed_refresh_attempts, 1000000) + 1
+             WHERE user_id = $1 AND client_uuid = $2
+             RETURNING failed_refresh_attempts",
             payload.user_id,
             payload.client_uuid
         )
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
-        .ok();
+        .unwrap_or(session.failed_refresh_attempts + 1);
+
+        if failed_attempts >= FAILED_REFRESH_ALERT_THRESHOLD {
+            tracing::warn!(
+                user_id = %payload.user_id,
+                client_uuid = %payload.client_uuid,
+                failed_refresh_attempts = failed_attempts,
+                "Refresh rejected: {} consecutive unrecognised refresh tokens for this session. Session left intact -- an unauthenticated caller must never be able to delete it -- but this looks like brute force.",
+                failed_attempts
+            );
+        } else {
+            tracing::warn!(
+                user_id = %payload.user_id,
+                client_uuid = %payload.client_uuid,
+                provided_token_length = payload.refresh_token.len(),
+                has_old_hash = session.old_refresh_token_hash.is_some(),
+                failed_refresh_attempts = failed_attempts,
+                "Refresh rejected: provided refresh token matches neither the current nor the old hash. Session left intact."
+            );
+        }
         let _ = tx.commit().await;
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
                 "error": "token_mismatch",
-                "message": "Provided refresh token does not match current or old hash (Breach mitigation triggered)",
+                "message": "Provided refresh token does not match current or old hash",
                 "client_uuid": payload.client_uuid,
                 "user_id": payload.user_id,
                 "details": {
@@ -502,8 +565,10 @@ pub async fn refresh_handler(
 
     let new_hash = hash_refresh_token(&new_refresh_token);
     sqlx::query!(
+        // A successful rotation is proof the legitimate holder is back, so the guess counter
+        // starts again from zero: it measures *consecutive* failures, not lifetime ones.
         "UPDATE sessions
-         SET refresh_token_hash = $1, old_refresh_token_hash = $2, rotated_at = $3, expires_at = $4
+         SET refresh_token_hash = $1, old_refresh_token_hash = $2, rotated_at = $3, expires_at = $4, failed_refresh_attempts = 0
          WHERE user_id = $5 AND client_uuid = $6",
         new_hash,
         session.refresh_token_hash,

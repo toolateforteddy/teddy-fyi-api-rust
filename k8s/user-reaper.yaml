@@ -24,6 +24,11 @@ spec:
       # A sweep that has not finished in an hour is wedged, not slow.
       activeDeadlineSeconds: 3600
       template:
+        metadata:
+          # Named in cache.yaml's NetworkPolicy: without a label the ingress rule
+          # matches nothing and the sweep cannot reach cache-svc to announce deletions.
+          labels:
+            app: api-rust-user-reaper
         spec:
           restartPolicy: Never
           serviceAccountName: api-rust-ksa

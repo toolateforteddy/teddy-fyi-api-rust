@@ -4,7 +4,6 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use redis::AsyncCommands;
 
 use crate::state::AppState;
 use crate::auth::tokens::Claims;
@@ -138,25 +137,29 @@ pub async fn sync_status_handler(
     let cache_key = get_cache_key(user_id, scope);
 
     // 1. Try fetching from Valkey cache
+    //
+    // Over the process-wide connection `RedisPublisher` holds, not one of this handler's
+    // own: this is the endpoint clients poll, and it used to dial a multiplexed connection
+    // — a TCP, and in production a TLS, handshake — and throw it away, once for the read
+    // and again for the backfill below. A dial failure and a command failure are no longer
+    // separable here, so the two `*_connect` counters this path used to emit are gone and
+    // the per-operation ones now cover both. What those mean is unchanged: the cache did
+    // not answer, and the database had to.
     let mut cached_timestamp: Option<DateTime<Utc>> = None;
-    match state.redis_client.get_multiplexed_tokio_connection().await {
-        Ok(mut conn) => {
-            match conn.get::<_, Option<String>>(&cache_key).await {
-                Ok(Some(ts_str)) => {
-                    if let Ok(parsed_dt) = DateTime::parse_from_rfc3339(&ts_str) {
-                        cached_timestamp = Some(parsed_dt.with_timezone(&Utc));
-                    }
-                }
-                Ok(None) => {} // Cache miss
-                Err(err) => {
-                    crate::observability::metrics::record_redis_degraded("sync_status_get");
-                    tracing::warn!("Failed to GET key '{}' from Redis: {:?}", cache_key, err);
-                }
+    match state
+        .redis_publisher
+        .query::<Option<String>>(&redis::Cmd::get(&cache_key))
+        .await
+    {
+        Ok(Some(ts_str)) => {
+            if let Ok(parsed_dt) = DateTime::parse_from_rfc3339(&ts_str) {
+                cached_timestamp = Some(parsed_dt.with_timezone(&Utc));
             }
         }
+        Ok(None) => {} // Cache miss
         Err(err) => {
-            crate::observability::metrics::record_redis_degraded("sync_status_connect");
-            tracing::warn!("Failed to connect to Redis: {:?}", err);
+            crate::observability::metrics::record_redis_degraded("sync_status_get");
+            tracing::warn!("Failed to GET key '{}' from Redis: {:?}", cache_key, err);
         }
     }
 
@@ -167,18 +170,14 @@ pub async fn sync_status_handler(
             let db_ts = get_latest_db_timestamp(&state, user_id, scope).await?;
             
             // Try populating cache with TTL 24 hours (86400 seconds)
-            match state.redis_client.get_multiplexed_tokio_connection().await {
-                Ok(mut conn) => {
-                    let ts_str = db_ts.to_rfc3339();
-                    if let Err(err) = conn.set_ex::<_, _, ()>(&cache_key, ts_str, 86400).await {
-                        crate::observability::metrics::record_redis_degraded("sync_status_backfill_set");
-                        tracing::warn!("Failed to SET key '{}' with TTL: {:?}", cache_key, err);
-                    }
-                }
-                Err(err) => {
-                    crate::observability::metrics::record_redis_degraded("sync_status_backfill_connect");
-                    tracing::warn!("Failed to connect to Redis to backfill cache: {:?}", err);
-                }
+            let ts_str = db_ts.to_rfc3339();
+            if let Err(err) = state
+                .redis_publisher
+                .query::<()>(&redis::Cmd::set_ex(&cache_key, ts_str, 86400))
+                .await
+            {
+                crate::observability::metrics::record_redis_degraded("sync_status_backfill_set");
+                tracing::warn!("Failed to SET key '{}' with TTL: {:?}", cache_key, err);
             }
             db_ts
         }

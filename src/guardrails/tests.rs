@@ -90,8 +90,10 @@ async fn a_body_under_the_limit_still_reaches_the_handler() {
 #[tokio::test]
 async fn a_panicking_handler_answers_500_instead_of_unwinding() {
     // Without `CatchPanicLayer` this panic escapes into hyper and kills the connection,
-    // taking every other in-flight request on it down as well. The live example is
-    // `auth::tokens::verify_refresh_token`, which `.expect(...)`s on a stored hash.
+    // taking every other in-flight request on it down as well. The example that motivated
+    // the layer was `auth::tokens::verify_refresh_token`, which `.expect(...)`ed on a
+    // stored hash; that one has since been removed, which is why this test panics on its
+    // own rather than through a real handler.
     //
     // The panic message is printed to stderr by the default hook while this test runs.
     // That is the test working, not the test failing.

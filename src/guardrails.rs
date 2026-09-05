@@ -19,9 +19,13 @@
 //!   the process is OOM-killed mid-transaction. Shedding early is strictly kinder than
 //!   dying late.
 //! * **No panic guard.** A panicking handler unwound into hyper and killed the whole
-//!   connection, taking any other in-flight request on it with it. This is not
-//!   hypothetical: `auth::tokens::verify_refresh_token` calls `.expect(...)` on the
-//!   stored hash, so one malformed row is one panic per refresh attempt.
+//!   connection, taking any other in-flight request on it with it. This was not
+//!   hypothetical: `auth::tokens::verify_refresh_token` used to `.expect(...)` on the
+//!   stored hash, so one malformed row was one panic per refresh attempt. That particular
+//!   `.expect` is gone — the function now returns `false` on a hash it cannot parse — but
+//!   the layer stays, because "no handler in this service will ever panic" is a claim
+//!   nobody can hold true across every future change, and the cost of being wrong is other
+//!   people's requests.
 //!
 //! Every bound is environment-tunable, because the right number is an operational
 //! question that changes with the instance size, and re-deploying a binary to change a

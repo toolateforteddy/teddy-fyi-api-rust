@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT refresh_token_hash, old_refresh_token_hash FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "refresh_token_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "old_refresh_token_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "6e91c7a6d53c96922cba33f563eba9c7537135b6df875df29d85c56db5062e3f"
+}

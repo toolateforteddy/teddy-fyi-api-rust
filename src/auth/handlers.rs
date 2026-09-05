@@ -182,6 +182,36 @@ pub async fn login_handler(
     }
 }
 
+/// Builds the *only* shape a failing [`refresh_handler`] response is allowed to take:
+/// a stable error code and nothing else.
+///
+/// `POST /auth/refresh` is unauthenticated — the request body is the whole credential,
+/// and any caller may post any `user_id` they happen to know. Everything this endpoint
+/// answers with is therefore public, so the failure body carries no `details` object, no
+/// list of the account's active `client_uuid`s, no `expires_at`/`rotated_at`/`server_time`
+/// timestamps, no `provided_token_length`, and no debug-formatted database error. Every
+/// one of those is still recorded — unchanged, and in a few places now more completely —
+/// by the `tracing` call that immediately precedes each return. They are operator
+/// diagnostics; an anonymous caller is not owed them.
+///
+/// Only two codes survive, because they are the only distinction a client can act on:
+///
+/// * `unauthorized` (401) — this refresh token will never work again, so the client must
+///   send the user back through sign-in.
+/// * `database_error` / `internal_error` (500) — the *server* failed, so the refresh token
+///   is probably still good and retrying the same request later is worthwhile.
+///
+/// The previous per-branch codes (`session_not_found`, `session_expired`,
+/// `grace_period_expired`, `session_expired_grace_period`, `rotated_at_null`,
+/// `token_mismatch`) are deliberately collapsed rather than preserved. Every one of them
+/// meant exactly one thing to the client — re-authenticate — so no legitimate client
+/// branch is lost; keeping them apart, on the other hand, would hand an anonymous prober
+/// an oracle for which `client_uuid`s exist under a given `user_id`, which is the same
+/// device-enumeration leak the `active_clients` list was.
+fn refresh_error(status: StatusCode, code: &str) -> Response {
+    (status, Json(serde_json::json!({ "error": code }))).into_response()
+}
+
 /// Log threshold for consecutive failed refresh attempts against one session.
 ///
 /// Crossing it does not lock the session or delete it -- a lockout would hand the attack
@@ -224,17 +254,13 @@ pub async fn refresh_handler(
     Json(payload): Json<RefreshRequest>,
 ) -> Result<Response, Response> {
     let mut tx = state.db_pool.begin().await.map_err(|e| {
-        tracing::error!("Failed to start transaction: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "database_error",
-                "message": "Failed to start database transaction",
-                "client_uuid": payload.client_uuid,
-                "user_id": payload.user_id,
-                "details": { "db_error": format!("{:?}", e) }
-            }))
-        ).into_response()
+        tracing::error!(
+            user_id = %payload.user_id,
+            client_uuid = %payload.client_uuid,
+            db_error = ?e,
+            "Failed to start transaction"
+        );
+        refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
     // 1. Get session (locked)
@@ -244,48 +270,25 @@ pub async fn refresh_handler(
         payload.user_id,
         payload.client_uuid
     ).fetch_optional(&mut *tx).await.map_err(|e| {
-        tracing::error!("Database error during refresh: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "database_error",
-                "message": "Database error during refresh",
-                "client_uuid": payload.client_uuid,
-                "user_id": payload.user_id,
-                "details": { "db_error": format!("{:?}", e) }
-            }))
-        ).into_response()
+        tracing::error!(
+            user_id = %payload.user_id,
+            client_uuid = %payload.client_uuid,
+            db_error = ?e,
+            "Database error during refresh"
+        );
+        refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
     let session = match session {
         Some(s) => s,
         None => {
-            let active_clients = sqlx::query!(
-                "SELECT client_uuid FROM sessions WHERE user_id = $1",
-                payload.user_id
-            )
-            .fetch_all(&mut *tx)
-            .await
-            .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
-            .unwrap_or_default();
-
             tracing::info!(
                 user_id = %payload.user_id,
                 client_uuid = %payload.client_uuid,
-                active_clients = ?active_clients,
                 "Refresh failed: No active session found in database"
             );
             let _ = tx.rollback().await;
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "error": "session_not_found",
-                    "message": "No active session found in database for this client",
-                    "client_uuid": payload.client_uuid,
-                    "user_id": payload.user_id,
-                    "details": { "active_clients": active_clients }
-                }))
-            ).into_response());
+            return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
         }
     };
 
@@ -297,19 +300,11 @@ pub async fn refresh_handler(
 
     if is_current {
         if session.expires_at < chrono::Utc::now() {
-            let active_clients = sqlx::query!(
-                "SELECT client_uuid FROM sessions WHERE user_id = $1",
-                payload.user_id
-            )
-            .fetch_all(&mut *tx)
-            .await
-            .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
-            .unwrap_or_default();
-
             tracing::info!(
                 user_id = %payload.user_id,
                 client_uuid = %payload.client_uuid,
                 expires_at = ?session.expires_at,
+                server_time = ?chrono::Utc::now(),
                 "Refresh failed: Session expired. Invalidating single session."
             );
             sqlx::query!(
@@ -321,40 +316,19 @@ pub async fn refresh_handler(
             .await
             .ok();
             let _ = tx.commit().await;
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "error": "session_expired",
-                    "message": "Session expired",
-                    "client_uuid": payload.client_uuid,
-                    "user_id": payload.user_id,
-                    "details": {
-                        "expires_at": session.expires_at,
-                        "server_time": chrono::Utc::now(),
-                        "active_clients": active_clients
-                    }
-                }))
-            ).into_response());
+            return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
         }
     } else if is_old {
         if let Some(rotated_at) = session.rotated_at {
             let age = chrono::Utc::now() - rotated_at;
             let age_secs = age.num_seconds();
             if age_secs > 30 {
-                let active_clients = sqlx::query!(
-                    "SELECT client_uuid FROM sessions WHERE user_id = $1",
-                    payload.user_id
-                )
-                .fetch_all(&mut *tx)
-                .await
-                .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
-                .unwrap_or_default();
-
                 tracing::warn!(
                     user_id = %payload.user_id,
                     client_uuid = %payload.client_uuid,
                     rotated_at = ?rotated_at,
                     age_seconds = age_secs,
+                    server_time = ?chrono::Utc::now(),
                     "Breach mitigation: Old refresh token reused outside of 30s grace period. Deleting single session."
                 );
                 sqlx::query!(
@@ -366,37 +340,16 @@ pub async fn refresh_handler(
                 .await
                 .ok();
                 let _ = tx.commit().await;
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "grace_period_expired",
-                        "message": "Refresh token grace period expired (Breach mitigation triggered)",
-                        "client_uuid": payload.client_uuid,
-                        "user_id": payload.user_id,
-                        "details": {
-                            "rotated_at": rotated_at,
-                            "age_seconds": age_secs,
-                            "server_time": chrono::Utc::now(),
-                            "active_clients": active_clients
-                        }
-                    }))
-                ).into_response());
+                return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
             }
 
             if session.expires_at < chrono::Utc::now() {
-                let active_clients = sqlx::query!(
-                    "SELECT client_uuid FROM sessions WHERE user_id = $1",
-                    payload.user_id
-                )
-                .fetch_all(&mut *tx)
-                .await
-                .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
-                .unwrap_or_default();
-
                 tracing::info!(
                     user_id = %payload.user_id,
                     client_uuid = %payload.client_uuid,
                     expires_at = ?session.expires_at,
+                    rotated_at = ?rotated_at,
+                    server_time = ?chrono::Utc::now(),
                     "Refresh failed: Session expired during old token grace period. Invalidating single session."
                 );
                 sqlx::query!(
@@ -408,32 +361,9 @@ pub async fn refresh_handler(
                 .await
                 .ok();
                 let _ = tx.commit().await;
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "session_expired_grace_period",
-                        "message": "Session expired during old token grace period",
-                        "client_uuid": payload.client_uuid,
-                        "user_id": payload.user_id,
-                        "details": {
-                            "expires_at": session.expires_at,
-                            "rotated_at": rotated_at,
-                            "server_time": chrono::Utc::now(),
-                            "active_clients": active_clients
-                        }
-                    }))
-                ).into_response());
+                return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
             }
         } else {
-            let active_clients = sqlx::query!(
-                "SELECT client_uuid FROM sessions WHERE user_id = $1",
-                payload.user_id
-            )
-            .fetch_all(&mut *tx)
-            .await
-            .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
-            .unwrap_or_default();
-
             // The old hash matched, so a genuinely issued token was presented -- this branch
             // is unreachable by guessing and so is not the remote-logout hole the mismatch
             // branch was. What we cannot tell is the token's age, because the row lost its
@@ -454,27 +384,9 @@ pub async fn refresh_handler(
             .await
             .ok();
             let _ = tx.commit().await;
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "error": "rotated_at_null",
-                    "message": "Old refresh token matched but rotated_at is NULL (Breach mitigation triggered)",
-                    "client_uuid": payload.client_uuid,
-                    "user_id": payload.user_id,
-                    "details": { "active_clients": active_clients }
-                }))
-            ).into_response());
+            return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
         }
     } else {
-        let active_clients = sqlx::query!(
-            "SELECT client_uuid FROM sessions WHERE user_id = $1",
-            payload.user_id
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map(|rows| rows.into_iter().map(|r| r.client_uuid).collect::<Vec<_>>())
-        .unwrap_or_default();
-
         // A token that matches neither hash was never issued by us, so the only thing the
         // caller has demonstrated is that they are guessing -- and guessing must not destroy
         // state on an endpoint that takes no credential. The session row stays exactly as it
@@ -514,20 +426,7 @@ pub async fn refresh_handler(
             );
         }
         let _ = tx.commit().await;
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": "token_mismatch",
-                "message": "Provided refresh token does not match current or old hash",
-                "client_uuid": payload.client_uuid,
-                "user_id": payload.user_id,
-                "details": {
-                    "provided_token_length": payload.refresh_token.len(),
-                    "has_old_refresh_token_hash": session.old_refresh_token_hash.is_some(),
-                    "active_clients": active_clients
-                }
-            }))
-        ).into_response());
+        return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
     }
 
     // 3. Rotate tokens
@@ -545,16 +444,13 @@ pub async fn refresh_handler(
         Some(duration_secs),
     )
     .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "token_generation_error",
-                "message": "Failed to generate access token",
-                "client_uuid": payload.client_uuid,
-                "user_id": payload.user_id,
-                "details": { "error": format!("{:?}", e) }
-            }))
-        ).into_response()
+        tracing::error!(
+            user_id = %payload.user_id,
+            client_uuid = %payload.client_uuid,
+            token_error = ?e,
+            "Failed to generate access token during refresh"
+        );
+        refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     })?;
 
     let new_refresh_token: String = rand::rng()
@@ -577,31 +473,23 @@ pub async fn refresh_handler(
         payload.user_id,
         payload.client_uuid
     ).execute(&mut *tx).await.map_err(|e| {
-        tracing::error!("Failed to rotate token: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "database_error",
-                "message": "Failed to rotate token",
-                "client_uuid": payload.client_uuid,
-                "user_id": payload.user_id,
-                "details": { "db_error": format!("{:?}", e) }
-            }))
-        ).into_response()
+        tracing::error!(
+            user_id = %payload.user_id,
+            client_uuid = %payload.client_uuid,
+            db_error = ?e,
+            "Failed to rotate token"
+        );
+        refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
     tx.commit().await.map_err(|e| {
-        tracing::error!("Failed to commit transaction: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "database_error",
-                "message": "Failed to commit transaction",
-                "client_uuid": payload.client_uuid,
-                "user_id": payload.user_id,
-                "details": { "db_error": format!("{:?}", e) }
-            }))
-        ).into_response()
+        tracing::error!(
+            user_id = %payload.user_id,
+            client_uuid = %payload.client_uuid,
+            db_error = ?e,
+            "Failed to commit transaction"
+        );
+        refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
     if payload.use_cookie.unwrap_or(false) {
@@ -626,16 +514,13 @@ pub async fn refresh_handler(
             header::SET_COOKIE,
             header::HeaderValue::from_str(&cookie_header_value)
                 .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": "cookie_header_error",
-                            "message": "Failed to set access token cookie header",
-                            "client_uuid": payload.client_uuid,
-                            "user_id": payload.user_id,
-                            "details": { "error": format!("{:?}", e) }
-                        }))
-                    ).into_response()
+                    tracing::error!(
+                        user_id = %payload.user_id,
+                        client_uuid = %payload.client_uuid,
+                        header_error = ?e,
+                        "Failed to set access token cookie header"
+                    );
+                    refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
                 })?,
         );
         Ok(response)

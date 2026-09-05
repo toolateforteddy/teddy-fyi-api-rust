@@ -479,5 +479,334 @@ mod tests {
             .unwrap() > 0;
         assert!(!exists, "A real old token of unknowable age should still invalidate the session");
     }
-}
 
+    /// The exhaustive list of diagnostics that used to ride along on a `refresh_handler`
+    /// failure and must never appear in a response body again. `active_clients` was the
+    /// serious one — an unauthenticated caller who knew a `user_id` got back every
+    /// `client_uuid` on that account — but the timestamps, token lengths and
+    /// debug-formatted database errors were schema and state disclosure on the same
+    /// anonymous path, so they go too. All of it is still in the `tracing` output.
+    const FORBIDDEN_IN_REFRESH_ERRORS: &[&str] = &[
+        "active_clients",
+        "details",
+        "message",
+        "expires_at",
+        "rotated_at",
+        "server_time",
+        "age_seconds",
+        "provided_token_length",
+        "has_old_refresh_token_hash",
+        "db_error",
+        "user_id",
+        "client_uuid",
+        "Database",
+        "sessions",
+    ];
+
+    /// Asserts a `refresh_handler` failure response is the whole contract from
+    /// `refresh_error`: the expected status, a body of exactly `{"error": <code>}` with
+    /// no second key, and no trace of any removed diagnostic anywhere in the raw bytes.
+    ///
+    /// `must_not_appear` carries the case-specific needles — typically the `client_uuid`
+    /// of a *sibling* session on the same account, which is exactly what the old
+    /// `active_clients` query would have handed back.
+    async fn assert_minimal_refresh_error(
+        response: axum::response::Response,
+        expected_status: axum::http::StatusCode,
+        expected_code: &str,
+        must_not_appear: &[&str],
+    ) {
+        assert_eq!(response.status(), expected_status);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("failure body should be readable");
+        let raw = String::from_utf8(bytes.to_vec()).expect("failure body should be UTF-8");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|e| panic!("body {raw:?} is not JSON: {e}"));
+        let object = json.as_object().expect("failure body should be a JSON object");
+
+        assert_eq!(
+            object.len(),
+            1,
+            "failure body must carry the error code and nothing else, got {raw}"
+        );
+        assert_eq!(object.get("error").and_then(|v| v.as_str()), Some(expected_code));
+
+        for needle in FORBIDDEN_IN_REFRESH_ERRORS {
+            assert!(
+                !raw.contains(needle),
+                "failure body leaked {needle:?}: {raw}"
+            );
+        }
+        for needle in must_not_appear {
+            assert!(
+                !raw.contains(needle),
+                "failure body leaked {needle:?}: {raw}"
+            );
+        }
+    }
+
+    /// Inserts a second, healthy session on the same account. Its `client_uuid` is the
+    /// thing the old `details.active_clients` list disclosed, so every failure-body test
+    /// below plants one and then asserts it does not come back.
+    async fn insert_sibling_session(pool: &PgPool, user_id: &str, client_uuid: &str) {
+        let hash = hash_refresh_token("sibling-refresh-token");
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_uuid,
+            hash,
+            expiration
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_error_body_session_not_found(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-body-not-found";
+        let sibling = "sibling-device-not-found";
+        insert_sibling_session(&pool, user_id, sibling).await;
+
+        // No session exists for this client_uuid: the attacker's invented device.
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: "device-that-does-not-exist".to_string(),
+            refresh_token: "anything".to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state), Json(payload)).await.unwrap_err();
+        assert_minimal_refresh_error(
+            response,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            &[sibling],
+        )
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_error_body_session_expired(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-body-expired";
+        let client_uuid = "client-body-expired";
+        let sibling = "sibling-device-expired";
+        insert_sibling_session(&pool, user_id, sibling).await;
+
+        let raw_refresh = "expired-but-current-token";
+        let hash = hash_refresh_token(raw_refresh);
+        let expiration_past = chrono::Utc::now() - chrono::Duration::seconds(10);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_uuid,
+            hash,
+            expiration_past
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            refresh_token: raw_refresh.to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state), Json(payload)).await.unwrap_err();
+        assert_minimal_refresh_error(
+            response,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            &[sibling],
+        )
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_error_body_grace_period_expired(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-body-grace";
+        let client_uuid = "client-body-grace";
+        let sibling = "sibling-device-grace";
+        insert_sibling_session(&pool, user_id, sibling).await;
+
+        let old_refresh = "old-token-outside-grace";
+        let old_hash = hash_refresh_token(old_refresh);
+        let current_hash = hash_refresh_token("current-token");
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        let rotated_at = chrono::Utc::now() - chrono::Duration::seconds(35);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            user_id,
+            client_uuid,
+            current_hash,
+            expiration,
+            old_hash,
+            rotated_at
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            refresh_token: old_refresh.to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state), Json(payload)).await.unwrap_err();
+        assert_minimal_refresh_error(
+            response,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            &[sibling],
+        )
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_error_body_session_expired_during_grace_period(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-body-expired-grace";
+        let client_uuid = "client-body-expired-grace";
+        let sibling = "sibling-device-expired-grace";
+        insert_sibling_session(&pool, user_id, sibling).await;
+
+        // Old token presented well inside the 30s grace window, but the session itself
+        // has already expired.
+        let old_refresh = "old-token-inside-grace";
+        let old_hash = hash_refresh_token(old_refresh);
+        let current_hash = hash_refresh_token("current-token");
+        let expiration_past = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let rotated_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            user_id,
+            client_uuid,
+            current_hash,
+            expiration_past,
+            old_hash,
+            rotated_at
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            refresh_token: old_refresh.to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state), Json(payload)).await.unwrap_err();
+        assert_minimal_refresh_error(
+            response,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            &[sibling],
+        )
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_error_body_rotated_at_null(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-body-rotated-null";
+        let client_uuid = "client-body-rotated-null";
+        let sibling = "sibling-device-rotated-null";
+        insert_sibling_session(&pool, user_id, sibling).await;
+
+        let old_refresh = "old-token-no-rotated-at";
+        let old_hash = hash_refresh_token(old_refresh);
+        let current_hash = hash_refresh_token("current-token");
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, $5, NULL)",
+            user_id,
+            client_uuid,
+            current_hash,
+            expiration,
+            old_hash
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            refresh_token: old_refresh.to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state), Json(payload)).await.unwrap_err();
+        assert_minimal_refresh_error(
+            response,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            &[sibling],
+        )
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_refresh_error_body_token_mismatch(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-body-mismatch";
+        let client_uuid = "client-body-mismatch";
+        let sibling = "sibling-device-mismatch";
+        insert_sibling_session(&pool, user_id, sibling).await;
+
+        let hash = hash_refresh_token("the-real-token");
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_uuid,
+            hash,
+            expiration
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            // A long wrong token: the old body echoed `provided_token_length`.
+            refresh_token: "a-completely-wrong-token-of-a-distinctive-length".to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
+
+        let response = refresh_handler(State(state), Json(payload)).await.unwrap_err();
+        assert_minimal_refresh_error(
+            response,
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            &[sibling],
+        )
+        .await;
+    }
+}

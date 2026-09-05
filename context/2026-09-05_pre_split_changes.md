@@ -251,7 +251,7 @@ by `/api/lists/join` and by nothing else; sync only ever reflects a membership t
 exists."* The code does not implement that sentence. Make the member processor refuse to create
 rows and refuse to change `userId`, and let `join_handler` be the only writer.
 
-**Landed together with item 8** (PR_LINK_PLACEHOLDER). The insert/update path in
+**Landed together with item 8** ([#56](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/56)). The insert/update path in
 `process_grocery_list_member_changes` no longer upserts: it looks the row up by id and refuses
 anything that is not already there, so `join_handler` and the list-creation seed in
 `grocery_lists.rs` are the only writers of a membership. `"listId"`, `"userId"`, `role` and
@@ -276,7 +276,7 @@ the only place `role` is read today, which is what makes it survivable — and e
 should be fixed before anyone adds a second reader. `role` should be server-assigned, and it
 should be in the "never taken from the payload" set alongside `userId`.
 
-**Landed with item 7** (PR_LINK_PLACEHOLDER). `role` is now server-assigned: sync ignores what
+**Landed with item 7** ([#56](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/56)). `role` is now server-assigned: sync ignores what
 the payload says and echoes the stored role back as a remote change so the client stops
 disagreeing. `test_sync_member_cannot_promote_self_to_owner` pins both halves — the promotion is
 dropped, and the list delete it existed for is still refused.

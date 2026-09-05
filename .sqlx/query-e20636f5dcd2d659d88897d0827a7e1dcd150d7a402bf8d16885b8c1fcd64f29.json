@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"userId\", \"isDaily\", priority, sync_state, version, updated_by_client, is_deleted)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool",
+        "Int8",
+        "Int4",
+        "Int8",
+        "Text",
+        "Bool",
+        "Int4",
+        "Text",
+        "Int4",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e20636f5dcd2d659d88897d0827a7e1dcd150d7a402bf8d16885b8c1fcd64f29"
+}

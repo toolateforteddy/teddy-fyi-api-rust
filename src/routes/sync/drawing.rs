@@ -1,4 +1,5 @@
 use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
+use crate::routes::sync::deletes::ack_unsynced_delete;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -227,6 +228,17 @@ pub async fn process_drawing_changes(
                     upload_status.push(SuccessResult {
                         id: change_id.to_string(),
                         version: next_version,
+                        sync_state: "SYNCED".to_string(),
+                    });
+                    success_ids.push(change_id.to_string());
+                } else {
+                    // Nothing to delete, so the delete has succeeded. Acknowledged rather
+                    // than dropped: a change the response never mentions stays pending on
+                    // the device and comes back on every sync forever. See
+                    // `crate::routes::sync::deletes`.
+                    upload_status.push(SuccessResult {
+                        id: change_id.to_string(),
+                        version: ack_unsynced_delete("drawing", change_id),
                         sync_state: "SYNCED".to_string(),
                     });
                     success_ids.push(change_id.to_string());

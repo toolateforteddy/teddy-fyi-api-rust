@@ -4,6 +4,8 @@ pub use types::*;
 pub mod versioning;
 pub use versioning::*;
 
+pub mod deletes;
+
 pub mod limits;
 pub use limits::*;
 

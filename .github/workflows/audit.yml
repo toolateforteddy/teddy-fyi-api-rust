@@ -1,0 +1,90 @@
+name: Dependency Audit
+
+# Watches the dependency tree for RustSec advisories. Nothing else in this repo does:
+# Dependabot is not enabled here, and a `Cargo.lock` that was safe when it was written
+# stops being safe the day an advisory is published against something already in it.
+# For a service that stores children's names and drawings, "someone eventually read a
+# newsletter" is not a detection mechanism.
+#
+# Why cargo-audit and not cargo-deny:
+#   cargo-deny does advisories *plus* licence policy plus banned/duplicate crates. The
+#   extra checks need a `deny.toml` stating a licence allow-list and a duplicate policy
+#   that nobody here has decided on, and both fail loudly on things that are not security
+#   problems — a transitive crate that dual-licences differently, or two versions of
+#   `windows-sys` in the lockfile. That is a second, unrelated gate to maintain, and the
+#   quickest way to make a security check something people route around. cargo-audit does
+#   exactly the one job asked for, reads `Cargo.lock` directly, and needs no policy file
+#   beyond the ignore list in `.cargo/audit.toml`.
+#
+# How failures behave — deliberately two different answers:
+#   * On a pull request, only when that pull request touches the dependencies
+#     (`Cargo.toml`, `Cargo.lock`) or this check's own configuration. There it is a hard
+#     gate: a change that pulls a vulnerable crate into the tree should not merge. It is
+#     path-filtered precisely so that a newly published advisory against a crate that was
+#     already there cannot block an unrelated pull request that never touched it.
+#   * On a schedule over `main`, every day, over the whole tree. That run fails loudly and
+#     gates nothing, because there is nothing to gate — it is the notification. This is
+#     where an advisory published against an existing dependency shows up.
+#
+# The `toybox` sibling gates its hourly sweep on "has main moved since the last run".
+# That is the right shape there and the wrong shape here: the input to this job is the
+# advisory database, not the commit, so a sweep that skips because main is unchanged skips
+# exactly the case it exists for. The schedule is daily rather than hourly for the same
+# reason — the advisory database does not move fast enough to be worth 24 runs a day.
+#
+# Advisories judged and deliberately not failing the build live in `.cargo/audit.toml`,
+# each with its reasoning and the condition that retires it.
+
+on:
+  schedule:
+    # Not on the hour: GitHub queues :00 crons from the whole platform at once and drops
+    # them under load.
+    - cron: '41 7 * * *'
+  pull_request:
+    branches:
+      - master
+      - main
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/audit.toml'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+
+# Read-only. This job clones the repo and reads Cargo.lock; it writes nothing.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      # Compiled once and then restored from the toolchain action's cache, which keeps
+      # ~/.cargo/bin. `--locked` so the audit tool itself is a reproducible build.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version ^0.22
+
+      # cargo-audit exits non-zero for *vulnerabilities* and merely prints "warnings"
+      # (unmaintained, unsound, yanked). That split is the behaviour we want and is why
+      # there is no `--deny warnings` here: an unsound-but-unexploited transitive crate is
+      # worth reading in the log, not worth blocking a deploy over. Read the warnings.
+      - name: Run cargo audit
+        run: |
+          if ! cargo audit; then
+            echo "::error::cargo audit found a security advisory against a crate in Cargo.lock. Try 'cargo update -p <crate>' if a fixed version exists. If there is no fix and the advisory genuinely does not apply to this service, add it to .cargo/audit.toml with the reasoning and the condition that retires the entry."
+            exit 1
+          fi

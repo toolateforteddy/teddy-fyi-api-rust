@@ -1,0 +1,23 @@
+# cargo-audit configuration. Read by `cargo audit` when it runs from the repository root
+# (see .github/workflows/audit.yml). Cargo itself ignores this file — only
+# `.cargo/config.toml` would change how anything builds.
+
+[advisories]
+# Advisories that are known, judged, and deliberately not failing the audit. Every entry
+# needs a reason and a way out; an ignore with neither is how a real vulnerability gets
+# parked here forever. Anything not listed here fails the job.
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin Attack" timing sidechannel in `rsa` 0.9.x. There is no
+    # fixed release: the fix lands in `rsa` 0.10, and we do not pick the version. `rsa`
+    # arrives twice, both times transitively — `google-oauth` and `jsonwebtoken` pull it in
+    # to *verify* RSA signatures, on Google's ID tokens and on our own JWTs respectively.
+    #
+    # The attack recovers an RSA *private* key from an attacker's ability to time that
+    # key's decrypt or sign operations. This service holds no RSA private key and performs
+    # neither: it only verifies signatures made by keys Google holds, using public keys.
+    # There is no secret in the timing to leak.
+    #
+    # Revisit when `jsonwebtoken` and `google-oauth` ship releases built on `rsa` 0.10 —
+    # at which point this entry gets deleted, not renewed.
+    "RUSTSEC-2023-0071",
+]

@@ -140,6 +140,14 @@ Run these commands from the project root:
 | `make docker-run` | Runs the API container on port `8080` |
 | `make clean` | Cleans up the target directory |
 
+> **If you add, remove or edit a `sqlx::query!` — run `make prepare` and commit `.sqlx/`.**
+> CI compiles with `SQLX_OFFLINE=true`, so the query macros are checked against the
+> committed `.sqlx/` descriptors rather than a database; a descriptor that no longer
+> matches the schema would otherwise compile green and fail against real Postgres. The
+> "Check SQLx Offline Cache" step in CI regenerates the descriptors against a live
+> database with the migrations applied and fails if they differ from what is committed.
+> `make prepare` needs `DATABASE_URL` pointing at a database with every migration run.
+
 ---
 
 ## 🔌 API Endpoint Documentation

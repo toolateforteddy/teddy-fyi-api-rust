@@ -3,15 +3,15 @@
 *Written 2026-09-05, against `07aa0fb`. A survey, not a plan — nothing here is scheduled.*
 
 Companion docs: [`2026-09-05_scribbleroute_backend_split.md`](2026-09-05_scribbleroute_backend_split.md)
-(the split itself), [`2026-09-05_identity_model.md`](2026-09-05_identity_model.md) (the Phase 4
+(the split itself), [`2026-09-05_identity_model.md`](2026-09-05_identity_model.md) (the
 re-key), [`2026-09-05_user_identity_derivation.md`](2026-09-05_user_identity_derivation.md)
 (what is true today).
 
 The premise: after the fork, every change to code or schema that both products share costs
 two pull requests, two review cycles, two deploys, and a decision about whether the two
-copies are allowed to diverge. Phase 4 also supplies the only write-freeze this service will
-ever get. So there is a window — now, and Phase 4 — in which some changes are cheap and after
-which they are not.
+copies are allowed to diverge. The data cut also supplies the only write-freeze this service
+will ever get. So there is a window — now, and that freeze — in which some changes are cheap and
+after which they are not.
 
 Each item is scored 1–10. **10** means "do this weekend regardless of the split". **1** means
 "you asked for fifty".
@@ -19,9 +19,14 @@ Each item is scored 1–10. **10** means "do this weekend regardless of the spli
 The **When** column is one of:
 
 * **Now** — before the fork exists, because after it the change is two changes.
-* **Phase 1** — into the new repo's `0001_init.sql` / defaults, where it costs nothing.
-* **Phase 4** — needs the freeze, or needs the re-key to have happened.
+* **At the fork** — into the new repo's defaults and manifests, where it costs nothing.
+* **At the freeze** — needs the write freeze, or needs the re-key to have happened. This is also
+  where the schema collapse to `0001_init.sql` lands, so schema shapes belong here.
 * **Anytime** — genuinely independent of the split; listed because it is worth doing.
+
+These are deliberately *not* phase numbers. The split plan was renumbered on 2026-09-05 when the
+fork stopped coming first, and pinning fifty rows to a numbering that moves is how a survey rots.
+Where a specific step genuinely matters, the prose names it; the **When** column never does.
 
 ## Working these in parallel
 
@@ -43,10 +48,9 @@ Rules that keep concurrent work from colliding:
     refusing client-written `role` leaves the privilege escalation open, and vice versa.
   * **5 + 6** — the deploy workflow. Both edit `deploy.yml`'s auth and rollout steps and will
     conflict trivially.
-* **Do not start a Phase 4 item.** Items 4, 17, 26, 38 and 43 need the write freeze and the
-  re-key to have happened. Writing them now produces a migration that Phase 4 then has to undo,
-  which is the mistake the split plan's Phase 1 step 3 already calls out. Design work on them is
-  welcome; migrations are not.
+* **Do not start an "at the freeze" item.** Items 4, 17, 26, 38 and 43 need the write freeze and
+  the re-key to have happened. Writing them now produces a migration the freeze then has to undo.
+  Design work on them is welcome; migrations are not.
 * **Three items are decisions, not implementations**, and want a human answer before code:
   13 (which of the three numbers is the one that is right?), 14 (is the reaper armed?), 27
   (what does a partially committed sync mean to a client?). Bring the options, not a patch.
@@ -65,10 +69,10 @@ Rules that keep concurrent work from colliding:
 
 | # | Change | Score | When |
 |---|---|--:|---|
-| 1 | Phase 1 step 3 stops the fork booting in Phase 2 | 10 | Now |
+| 1 | A collapsed `0001_init.sql` stops the fork booting — **landed** | 10 | Now |
 | 2 | JWT carries no product/audience claim | 9 | Now |
 | 3 | Delete of an unknown id 500s the whole sync request | 9 | Now |
-| 4 | No foreign keys to `users`; deletion is 16 ordered DELETEs | 9 | Phase 4 |
+| 4 | No foreign keys to `users`; deletion is 16 ordered DELETEs | 9 | At the freeze |
 | 5 | `deploy.yml` uses a long-lived GCP service-account key | 9 | Now |
 | 6 | Deployment pins `:latest`; rollout is `rollout restart` | 9 | Now |
 | 7 | ~~Any list member can grant membership to any account~~ **landed** | 8 | Now |
@@ -81,7 +85,7 @@ Rules that keep concurrent work from colliding:
 | 14 | The retention reaper has never deleted anything | 8 | Now |
 | 15 | No index on any tenancy column on the grocery/todo side | 8 | Now |
 | 16 | `SyncScope` is not bound to anything the caller proved | 8 | Now |
-| 17 | Tenancy columns are nullable | 7 | Phase 4 |
+| 17 | Tenancy columns are nullable | 7 | At the freeze |
 | 18 | `grocery_list_members.id` embeds the raw Google subject | 7 | Now |
 | 19 | Sessions have no absolute lifetime | 7 | Anytime |
 | 20 | One bad item fails the whole batch | 7 | Now |
@@ -90,7 +94,7 @@ Rules that keep concurrent work from colliding:
 | 23 | Valkey has no `maxmemory` or eviction policy | 7 | Now |
 | 24 | `GEMINI_API_KEY` is `expect`ed at boot for a teddy.fyi-only feature | 7 | Now |
 | 25 | The log-hashing privacy invariant holds in exactly one place | 7 | Anytime |
-| 26 | Row ids are client-chosen and globally unique across accounts | 6 | Phase 4 |
+| 26 | Row ids are client-chosen and globally unique across accounts | 6 | At the freeze |
 | 27 | Three sync futures, three independent transactions | 6 | Now |
 | 28 | N+1 store-mapping queries inside the grocery transaction | 6 | Anytime |
 | 29 | `delete_user_data` misses `list_join_failures` and the AI counters | 6 | Now |
@@ -102,21 +106,26 @@ Rules that keep concurrent work from colliding:
 | 35 | Prod runs on compiled-in defaults, two of which are wrong | 6 | Now |
 | 36 | `require_auth` returns the JWT library's error text to the caller | 5 | Anytime |
 | 37 | `LOG_HASH_SALT` is unset, so the salt is `JWT_SECRET` | 5 | Now |
-| 38 | `stores`/`categories` are dual-scoped with no stated precedence | 5 | Phase 4 |
+| 38 | `stores`/`categories` are dual-scoped with no stated precedence | 5 | At the freeze |
 | 39 | No per-account row quotas on grocery/todo tables | 5 | Anytime |
 | 40 | Initial sync is unpaginated | 5 | Anytime |
 | 41 | Nothing checks that the manifest and the code agree on env vars | 5 | Now |
 | 42 | `LoginRequest.user_id` is accepted and ignored | 5 | Now |
-| 43 | `sync_state` is an ENUM on two tables and TEXT on seven | 4 | Phase 4 |
+| 43 | `sync_state` is an ENUM on two tables and TEXT on seven | 4 | At the freeze |
 | 44 | Login is a two-statement, non-transactional upsert | 4 | Anytime |
 | 45 | Rate limiting is per-process | 4 | Anytime |
 
 ---
 
-## 1. Phase 1 step 3 stops the fork booting in Phase 2 — **10**, Now
+## 1. A collapsed `0001_init.sql` stops the fork booting — **10**, Now — **landed**
+
+**Landed 2026-09-05** in the split plan revision that reordered the phases: the plan now states
+the auto-migration fact in its §1.3, keeps the collapse out of the fork (Phase 4 step 5), moves it
+to the freeze (Phase 5 step 1), and carries the no-migrations constraint as Phase 4 step 10. The
+analysis below is kept because the mechanics are what make those steps make sense.
 
 `db::init_postgres` runs `sqlx::migrate!("./migrations").run(&pool)` on every start
-(`src/db.rs:202`), and `init_app_state` calls it. The split plan says the opposite:
+(`src/db.rs:202`), and `init_app_state` calls it. The split plan used to say the opposite:
 
 > Prod migrations are applied **by hand**. Nothing in `deploy.yml` or the binary runs
 > `sqlx migrate run` against production… So the "two services racing migrations on boot"
@@ -137,12 +146,11 @@ things that matter here, both by default:
 So the failure mode is a **crashloop, not corruption**, which is the good direction to fail in.
 What it costs is the plan:
 
-**Phase 1 step 3 and Phase 2 are mutually incompatible as written.** Step 3 collapses the fork
-to a single `0001_init.sql`; Phase 2 points that binary at the *existing* database, whose
+**Collapsing the fork's migrations while it still shares the database cannot work.** A collapse
+to a single `0001_init.sql` in a binary pointed at the *existing* database, whose
 `_sqlx_migrations` table holds eighteen rows and no version 1. The fork gets
 `VersionMissing(20260610182740)`, `init_postgres` returns `Err`, and
-`.expect("Failed to initialize PostgreSQL")` panics. The pod never serves. Phase 2 as written
-does not run.
+`.expect("Failed to initialize PostgreSQL")` panics. The pod never serves.
 
 The worse direction is the same mechanism pointed the other way. If the fork instead *keeps*
 its history and later adds a migration of its own, that migration applies cleanly to the shared
@@ -153,22 +161,21 @@ next deploy, which is the shared-image-tag hazard in a second costume.
 ### What to do
 
 **Keep auto-migration.** It is the right shape for this service and for the destination the
-plan is heading to: after Phase 4 there are two databases and two migration directories, each
+plan is heading to: after the freeze there are two databases and two migration directories, each
 binary owns its own, and the schema change ships in the same commit as the code that needs it —
 which is the argument `AGENTS.md` already makes for keeping `k8s/` in this repo. Building a
 separate migration job to serve a hazard that exists for a few days would be machinery to own
 forever.
 
-**Resequence instead.** Move the collapse out of Phase 1 step 3 and into Phase 4, where the fork
-creates its own database and the single `0001_init.sql` is exactly right. Through Phases 2–3 the
-fork carries the *identical eighteen files*: checksums match, neither binary has anything to
-apply, and neither can surprise the other.
+**Resequence instead.** Move the collapse to the freeze, where the fork creates its own database
+and the single `0001_init.sql` is exactly right. Until then the fork carries the *identical*
+files: checksums match, neither binary has anything to apply, and neither can surprise the other.
 
-The price is one constraint, and it belongs in the plan explicitly: **no migrations in either
-repo during Phases 2–3.** A genuinely urgent one has to land in both repos byte-identically —
-same filename, same content, same checksum — before either deploys. For a window the plan
-already describes as a few days, that is far lighter than the Phase 4 write freeze it has
-already accepted.
+The price is one constraint, and it now sits in the plan explicitly: **no migrations in either
+repo while two repos share one database.** A genuinely urgent one has to land in both repos
+byte-identically — same filename, same content, same checksum — before either deploys. The
+profile-first ordering shortens that window to the gap between the fork and the freeze, where the
+fork-first ordering spanned two whole phases.
 
 ### The consequence that stays
 
@@ -178,7 +185,7 @@ release for the length of the rollout. That has been true all along and the exis
 mostly respect it — nullable adds, `IF NOT EXISTS`, and a `DELETE FROM` on a table whose rows
 live ten minutes.
 
-Phase 5 step 5 is where it stops being free: dropping `configs`, `drawings` and `devices` in the
+Phase 6 step 5 is where it stops being free: dropping `configs`, `drawings` and `devices` in the
 same deploy that removes the code means the new pod drops the tables while the old pod, still
 carrying the ScribbleRoute query paths, is serving requests against them. That step wants to be
 **two deploys** — ship the code that no longer references the tables, wait for the rollout, then
@@ -190,8 +197,8 @@ ship the drop.
 with a bare `Validation::new(Algorithm::HS256)` (`src/auth/middleware.rs:68`) — signature and
 `exp`, nothing else. There is no `aud`, no `iss`, no product.
 
-Split decision #2 keeps `JWT_SECRET` identical across the cutover and does not rotate it until
-Phase 6. So for the whole span of Phases 3–5 — weeks, by the plan's own pacing — an external
+Split decision #3 keeps `JWT_SECRET` identical across the cutover and does not rotate it until
+Phase 7. So from the traffic flip until decommissioning — weeks, by the plan's own pacing — an external
 ScribbleRoute tester's access token is structurally valid at `api-rust.teddy.fyi`, and can drive
 `scope: Grocery` writes into the household database. Today that is invisible because it is one
 backend; the moment there are two hostnames it is a live cross-product boundary with nothing on
@@ -235,7 +242,7 @@ item did it, so it retries the same batch forever and that device stops syncing.
 the point: this is copy-pasted authorization code that has already drifted, and after the fork
 it is the same bug in two repositories.
 
-## 4. No foreign keys to `users` — **9**, Phase 4
+## 4. No foreign keys to `users` — **9**, At the freeze
 
 Nothing references `users(id)`. Not `sessions.user_id`, not any `"userId"`/`"ownerId"` column,
 not `devices.user_id`, not `device_authorizations.user_id`. Migration `20260901120000` states
@@ -245,7 +252,7 @@ the reason honestly:
 > from it via parse_or_hash_uuid, so the types genuinely do not line up.
 
 The re-key removes that obstacle. Identity note §3 already spots the consequence — "`ON DELETE
-CASCADE` … instead of eleven ordered deletes" — but the Phase 4 step list only specifies column
+CASCADE` … instead of eleven ordered deletes" — but the freeze's step list only specifies column
 *types* and values, not constraints. Write the constraints into the target schema.
 
 The prize is `delete_user_data` (`src/routes/user/deletion.rs:56-210`): sixteen hand-ordered
@@ -266,7 +273,7 @@ permissions:
 The step's own comment recommends WIF. The key it uses instead can push to GCR and `kubectl
 apply` against the production cluster, and it does not expire.
 
-Phase 0 creates a second repository that needs the same access. Under the current scheme that
+The fork creates a second repository that needs the same access. Under the current scheme that
 means copying a static, cluster-reaching credential into a second GitHub secret store — and the
 new repo is the one the plan describes as "a repo whose contents you would not mind an outside
 contributor reading". Switch to WIF **before** the fork exists, so the fork is provisioned with
@@ -350,8 +357,9 @@ dropped, and the list delete it existed for is still refused.
 `GOOGLE_IOS_CLIENT_IDS` into one `HashSet<String>`, and `login_handler` checks membership. The
 set does not record which client belongs to which product.
 
-Phase 1 step 5 says to "drop `GOOGLE_CLIENT_ID_GROCERY_WEB` from `SINGLE_ID_ENV_VARS`; keep
-`SCRIBBLEROUTE_API_CLIENT_ID` and the iOS list." But `GOOGLE_IOS_CLIENT_IDS` is a comma-separated
+The split plan's Phase 1 step 6 now narrows the audience set **per profile**, which pulls this
+forward: the product profile cannot pick the right ids without a map, so this is a prerequisite of
+that step rather than a tidy-up at the fork. But `GOOGLE_IOS_CLIENT_IDS` is a comma-separated
 secret containing *both* products' iOS apps, and nothing in the repo says which id is which. That
 step cannot be executed correctly from the code alone.
 
@@ -377,8 +385,8 @@ tokens were left behind. What it costs:
   the `guardrails` module docs cite as the reason `CatchPanicLayer` exists at all. A deterministic
   hash makes that `.expect` disappear rather than needing a guard.
 
-Do it before the split: it is a stored-format change on `sessions`, and Phase 4 copies `sessions`
-rows.
+Do it before the split: it is a stored-format change on `sessions`, and the freeze copies
+`sessions` rows.
 
 ## 11. A billed HTTP call inside an open transaction — **8**, Anytime
 
@@ -405,7 +413,8 @@ replica actually serve", with a held Redis connection, a cached verdict and a ca
 path — is dead in production, and liveness is `get(|| async { "OK" })`: a constant string that
 stays green through any dependency failure the process survives.
 
-Phase 1 step 6 hands `k8s/` to the fork as its starting point, so the fork inherits this. Also
+Phase 2 stands up the second deployment's manifests and Phase 4 hands them to the fork, so both
+inherit this. Also
 note `/api/ready`, the deep readiness check with a real database ping, sits behind `require_auth`
 and is therefore unreachable by a probe.
 
@@ -462,7 +471,7 @@ from the token's product claim, and 403 anything outside it. It is also the chan
 split plan's §1.1 claim ("the seam that is already clean") true at runtime rather than only by
 convention.
 
-## 17. Tenancy columns are nullable — **7**, Phase 4
+## 17. Tenancy columns are nullable — **7**, At the freeze
 
 `todo_lists."userId"`, `todo_items."userId"`, `grocery_lists."ownerId"`, `grocery_items."userId"`,
 `stores."userId"`, `categories."userId"` and `grocery_item_store_info."userId"` are all `TEXT`
@@ -475,7 +484,7 @@ NULL. A row with a NULL there is:
 
 That is permanently orphaned user data that no erase path can reach, which is the same category
 of problem the log-hashing in `observability::http` exists to avoid. Count them, decide what they
-are, and make the columns NOT NULL. Phase 4 is the window; the re-key rewrites these columns
+are, and make the columns NOT NULL. The freeze is the window; the re-key rewrites these columns
 anyway.
 
 ## 18. Membership row ids embed the raw Google subject — **7**, Now
@@ -551,8 +560,8 @@ The split plan names eviction pressure as one of the three real shared-Redis ris
 `maxmemory` below the container limit and `maxmemory-policy allkeys-lru` — everything in there
 (sync watermarks, AI counters) is reconstructible, which is what makes LRU correct here.
 
-Now rather than later, because Phase 1 step 6 duplicates this file into the fork, and Phase 2's
-new Valkey starts cold and empty — the worst moment to discover the memory behaviour.
+Now rather than later, because Phase 2 stands up a second Valkey cold and empty — the worst
+moment to discover the memory behaviour — and Phase 4 duplicates this file into the fork.
 
 ## 24. `GEMINI_API_KEY` is `expect`ed at boot — **7**, Now
 
@@ -585,7 +594,7 @@ it is not, in which case the hashing is buying complexity for nothing. Worth res
 answer has to be maintained in two repositories with two privacy postures (identity note §10 is
 explicit that they diverge).
 
-## 26. Row ids are client-chosen and globally unique — **6**, Phase 4
+## 26. Row ids are client-chosen and globally unique — **6**, At the freeze
 
 `todo_items.id`, `todo_lists.id`, `grocery_lists.id`, `stores.id`, `categories.id` are TEXT
 primary keys taken from the request body, in a single namespace shared by every account. The
@@ -695,7 +704,7 @@ to it did not.
 
 ## 37. `LOG_HASH_SALT` is unset, so the salt is `JWT_SECRET` — **5**, Now
 
-`log_hash_salt` falls back to `JWT_SECRET` (`src/observability/http.rs:61`). Phase 6 rotates
+`log_hash_salt` falls back to `JWT_SECRET` (`src/observability/http.rs:61`). Phase 7 rotates
 `JWT_SECRET` on the ScribbleRoute side; on that day every historical `user_hash` in Cloud Logging
 becomes uncorrelatable with every future one, and the log-based metrics the observability roadmap
 built on them silently discontinue.
@@ -704,7 +713,7 @@ Set `LOG_HASH_SALT` explicitly in the manifest now. One line, and it also lets t
 log hashes be deliberately different (or deliberately the same) rather than incidentally coupled
 to a secret with its own rotation schedule.
 
-## 38. `stores` and `categories` are dual-scoped — **5**, Phase 4
+## 38. `stores` and `categories` are dual-scoped — **5**, At the freeze
 
 Both carry a nullable `"userId"` *and* a nullable `"listId"`, and the authorization checks OR them
 (`src/routes/sync/grocery/stores.rs:248-258`). A store can belong to a user, to a list, to both,
@@ -747,10 +756,10 @@ cannot be dropped. That makes this field, with the same name and the opposite tr
 the one a future reader will confuse. Remove it from `LoginRequest` (the dev bypass can take a
 differently-named field) before the re-key makes the distinction subtle.
 
-## 43. `sync_state` is an ENUM on two tables, TEXT on seven — **4**, Phase 4
+## 43. `sync_state` is an ENUM on two tables, TEXT on seven — **4**, At the freeze
 
 `configs` and `drawings` use the Postgres `sync_state` enum. Every grocery/todo table stores the
-same four values as free `TEXT DEFAULT 'SYNCED'`. Phase 5 step 5 proposes dropping the enum "if
+same four values as free `TEXT DEFAULT 'SYNCED'`. Phase 6 step 5 proposes dropping the enum "if
 nothing else uses it"; the honest position is that the two halves of this schema have disagreed
 since migration `20260623120000`. Pick one per repo and stop carrying both.
 
@@ -758,7 +767,7 @@ since migration `20260623120000`. Pick one per repo and stop carrying both.
 
 `issue_session` (`src/auth/handlers.rs:147-179`) upserts `users` and then upserts `sessions`, both
 directly on the pool. A failure between them leaves a `users` row with no session. Harmless today
-— the next login fixes it — but the Phase 4 copy program selects its subset by reading `users` and
+— the next login fixes it — but the freeze's copy program selects its subset by reading `users` and
 `sessions` together, so a population of session-less rows is one more thing to explain during a
 freeze.
 
@@ -775,7 +784,7 @@ before the replica count changes.
 
 * **Anything the split plan or the identity note already covers** — the `COOKIE_DOMAIN` fix
   (except as item 35's manifest half), the k8s resource renames, the audience narrowing, the
-  `parse_or_hash_uuid` rename. Those are in Phase 1 and Phase 4 already.
+  `parse_or_hash_uuid` rename. Those are in the plan's Phases 1, 4 and 5 already.
 * **Test coverage.** The suite is substantial (roughly a third of the tree) and its shape —
   characterisation tests that are *supposed* to go red, log-hygiene assertions, a dev-auth
   build matrix — is better than the code it covers in several places. There is no gap here

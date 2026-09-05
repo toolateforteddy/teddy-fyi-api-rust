@@ -106,7 +106,7 @@ impl Pending {
                 INSERT INTO grocery_list_members (id, "listId", "userId", role, "joinedAt", version, sync_state, updated_at, updated_by_client)
                 SELECT v.id, v.list_id, $4, 'ADMIN', v.joined_at, 1, 'SYNCED', $5, NULL
                 FROM UNNEST($1::text[], $2::text[], $3::int8[]) AS v(id, list_id, joined_at)
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT ("listId", "userId") DO NOTHING
                 "#,
                 &self.mem_id,
                 &self.mem_list_id,
@@ -387,9 +387,14 @@ pub async fn process_grocery_list_changes(
                             let member_exists = membership_map.contains_key(&item.id);
 
                             if !member_exists {
-                                pending
-                                    .mem_id
-                                    .push(format!("{}-member-{}", item.id, user_id));
+                                // Random, not derived from the subject: see the note on
+                                // the same insert in `routes::lists::handlers::join_handler`
+                                // and migration 20260909120000. The creator's own row is
+                                // the one case where the id never reaches anybody else --
+                                // a list with one member has no co-members yet -- but a
+                                // second derivation of the same string is exactly how the
+                                // first one would come back.
+                                pending.mem_id.push(uuid::Uuid::new_v4().to_string());
                                 pending.mem_list_id.push(item.id.clone());
                                 pending.mem_joined_at.push(item.created_at);
                             }

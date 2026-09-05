@@ -354,3 +354,149 @@ fn limits_default_when_the_environment_is_silent() {
         limits::DEFAULT_JOIN_FAILURE_WINDOW_MINS
     );
 }
+
+/// The disclosure this id derivation used to be.
+///
+/// `id` was `format!("{}-member-{}", list_id, user_id)`, and a membership row syncs to
+/// every other member of the list -- so joining a shared grocery list told everyone else
+/// on it the joiner's raw Google subject. The id is now random and says nothing about who
+/// the row is for.
+#[sqlx::test]
+async fn a_joined_membership_id_does_not_contain_the_subject(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let joiner = "google-subject-of-the-joiner";
+    seed_list(&pool, "list-1", "owner-1").await;
+
+    let code = invite(&state, "owner-1", "list-1").await.unwrap();
+    join(&state, joiner, &code).await.unwrap();
+
+    let id = sqlx::query_scalar!(
+        r#"SELECT id FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2"#,
+        "list-1",
+        joiner
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert!(
+        !id.contains(joiner),
+        "the membership id discloses the joiner's subject: {id}"
+    );
+    assert!(
+        uuid::Uuid::parse_str(&id).is_ok(),
+        "expected a random uuid, got {id}"
+    );
+}
+
+/// What the derived id was silently buying, and what the unique index now buys instead: a
+/// re-join revives the row this account already has rather than adding a second one.
+///
+/// Before the index, taking the derivation away would have made this test produce two
+/// membership rows for one person on one list -- which is the failure the `ON CONFLICT`
+/// target existed to prevent, not a cosmetic detail of the id.
+#[sqlx::test]
+async fn re_joining_revives_the_existing_row_rather_than_adding_a_second(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let joiner = "user-rejoiner";
+    seed_list(&pool, "list-1", "owner-1").await;
+
+    let first_code = invite(&state, "owner-1", "list-1").await.unwrap();
+    join(&state, joiner, &first_code).await.unwrap();
+
+    let first_id = sqlx::query_scalar!(
+        r#"SELECT id FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2"#,
+        "list-1",
+        joiner
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // Leave, the way a client does: the row is soft-deleted, never removed.
+    sqlx::query!(
+        r#"UPDATE grocery_list_members SET is_deleted = TRUE WHERE id = $1"#,
+        first_id
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let second_code = invite(&state, "owner-1", "list-1").await.unwrap();
+    join(&state, joiner, &second_code).await.unwrap();
+
+    let rows = sqlx::query!(
+        r#"SELECT id, is_deleted, version FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2"#,
+        "list-1",
+        joiner
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(rows.len(), 1, "re-joining created a second membership row");
+    assert_eq!(rows[0].id, first_id, "the surviving row should be the original");
+    assert!(!rows[0].is_deleted, "re-joining should revive the row");
+    assert!(rows[0].version > 1, "reviving is a change and must bump the version");
+}
+
+/// A membership row written before this change keeps its old id -- rewriting a
+/// client-visible primary key underneath devices that hold it would leave a ghost row on
+/// every one of them. The pair, not the id, is what the upsert matches on now, so the old
+/// row is still found.
+#[sqlx::test]
+async fn a_legacy_derived_id_is_matched_by_the_pair_and_kept(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let joiner = "user-legacy";
+    seed_list(&pool, "list-1", "owner-1").await;
+
+    let legacy_id = format!("list-1-member-{joiner}");
+    sqlx::query!(
+        r#"INSERT INTO grocery_list_members (id, "listId", "userId", role, "joinedAt", is_deleted)
+           VALUES ($1, $2, $3, 'MEMBER', 0, TRUE)"#,
+        legacy_id,
+        "list-1",
+        joiner
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let code = invite(&state, "owner-1", "list-1").await.unwrap();
+    join(&state, joiner, &code).await.unwrap();
+
+    let rows = sqlx::query!(
+        r#"SELECT id, is_deleted FROM grocery_list_members WHERE "listId" = $1 AND "userId" = $2"#,
+        "list-1",
+        joiner
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, legacy_id, "the existing row should be revived in place");
+    assert!(!rows[0].is_deleted);
+}
+
+/// The database now refuses what only a pre-#56 sync payload could have written: two rows
+/// for one person on one list.
+#[sqlx::test]
+async fn two_membership_rows_for_one_pair_are_refused(pool: PgPool) {
+    seed_list(&pool, "list-1", "owner-1").await;
+
+    let second = sqlx::query!(
+        r#"INSERT INTO grocery_list_members (id, "listId", "userId", role, "joinedAt")
+           VALUES ($1, $2, $3, 'MEMBER', 0)"#,
+        "a-second-row-for-the-owner",
+        "list-1",
+        "owner-1"
+    )
+    .execute(&pool)
+    .await;
+
+    assert!(
+        second.is_err(),
+        "the unique index on (listId, userId) should have refused this"
+    );
+}

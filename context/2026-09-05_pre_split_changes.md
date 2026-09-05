@@ -86,7 +86,7 @@ Rules that keep concurrent work from colliding:
 | 15 | No index on any tenancy column on the grocery/todo side | 8 | Now |
 | 16 | ~~`SyncScope` is not bound to anything the caller proved~~ **landed** | 8 | Now |
 | 17 | Tenancy columns are nullable | 7 | At the freeze |
-| 18 | `grocery_list_members.id` embeds the raw Google subject | 7 | Now |
+| 18 | ~~`grocery_list_members.id` embeds the raw Google subject~~ **landed; `userId` still does** | 7 | Now |
 | 19 | Sessions have no absolute lifetime | 7 | Anytime |
 | 20 | One bad item fails the whole batch | 7 | Now |
 | 21 | No caps on grocery/todo field sizes — ~~batch length~~ **landed** | 7 | Now |
@@ -583,7 +583,37 @@ of problem the log-hashing in `observability::http` exists to avoid. Count them,
 are, and make the columns NOT NULL. The freeze is the window; the re-key rewrites these columns
 anyway.
 
-## 18. Membership row ids embed the raw Google subject — **7**, Now
+## 18. Membership row ids embed the raw Google subject — **7**, Now — **LANDED, and incomplete**
+
+**Landed** in [#PRNUM](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/PRNUM).
+Both writers — `/api/lists/join` and the creator's ADMIN row in the list sync processor —
+now mint `gen_random_uuid()`.
+
+**The derivation was load-bearing, which the item did not say.** Both writers upsert
+`ON CONFLICT (id)`: that is how re-joining a list you left revives your row instead of
+adding a second one, and it only worked because the id was derivable from the pair. Taking
+the derivation away without replacing the conflict target would have produced two
+membership rows per person per list. Migration `20260909120000` moves the constraint to
+where it belonged — a unique index on `("listId", "userId")` — and both upserts now conflict
+on the pair. It also drops the plain `("listId", "userId")` index from `20260908120000`,
+which the unique one supersedes, and de-duplicates first: rows predating PR #56 could have
+been created by sync with any client-chosen id, so a pair may have more than one row in a
+database that has been running since June.
+
+Existing rows **keep their old ids**. Rewriting a client-visible primary key underneath
+devices that hold it, with no tombstone for the old value, is a ghost row on every phone in
+the household; the pair-matched upsert finds and revives the old row instead.
+
+**The disclosure is not actually closed, and this is worth knowing before ticking the item
+off.** `GroceryListMemberData.user_id` carries the raw subject to every co-member on every
+sync (`remote_mutations.rs:70-100`), independently of the id. The id was one of two
+channels and this closes the one the item named. Closing the other is a **wire-contract
+change** — clients read `userId` to identify who a membership row is for — so it needs the
+two client families in the loop, which is precisely the coordination this window exists to
+avoid. Worth its own item; it is cheaper now than after the fork, for exactly the reason
+given below.
+
+The description below is what was there before.
 
 `join_handler` builds `format!("{}-member-{}", list_id, user_id)`
 (`src/routes/lists/handlers.rs:276`), and that id syncs verbatim to every member of the list. So

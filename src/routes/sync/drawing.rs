@@ -1,11 +1,212 @@
-use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
+use crate::routes::sync::device::{
+    ItemDeviceRule, registered_device_set, resolve_item_device_cached,
+};
 use crate::routes::sync::deletes::ack_unsynced_delete;
 use crate::routes::sync::paging::{trim_page, Page};
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
+
+/// A `drawings` row with its `data` blob, for the one path that echoes the whole row back.
+#[derive(Clone)]
+struct CachedDrawing {
+    id: Uuid,
+    user_id: Uuid,
+    device_uuid: Uuid,
+    client_uuid: Uuid,
+    version: i32,
+    is_deleted: bool,
+    last_modified: i64,
+    sync_state: Option<String>,
+    created_at: i64,
+    data: serde_json::Value,
+}
+
+/// The `SELECT`s a batch of drawing writes would otherwise make one item at a time.
+///
+/// Every one of them reads the same row under the same predicate — `id`, this account, and
+/// the request's `device_filter` — so the whole batch's rows come back in one statement and
+/// the loop reads a `HashMap`.
+///
+/// # The `data` blob is fetched separately, and only for the path that reads it
+///
+/// Three of the four per-item statements only ever looked at `version`; the fourth, the
+/// need-update delta, echoes the entire row including `data`. That blob is bounded at
+/// [`crate::routes::sync::limits::DEFAULT_MAX_DRAWING_DATA_BYTES`] — half a megabyte — and a
+/// collection may carry ten thousand items, so prefetching it for the whole batch would
+/// trade an N+1 for gigabytes of heap. Only the ids that actually ask for it are fetched
+/// with it; the rest of the batch gets `id -> version` and nothing else.
+///
+/// # Staleness
+///
+/// The loop writes as it goes, and a payload may name the same drawing twice. An id this
+/// batch has written is marked stale and re-read with the original per-item statement,
+/// which is the only way for the second write to see the version the first one assigned.
+struct DrawingBatch {
+    user_id: Uuid,
+    device_filter: Option<Uuid>,
+    versions: HashMap<Uuid, i32>,
+    rows: HashMap<Uuid, CachedDrawing>,
+    /// What the two prefetches asked about. An id outside them has no cached answer, so a
+    /// miss must not be read as "no such row".
+    prefetched_versions: HashSet<Uuid>,
+    prefetched_rows: HashSet<Uuid>,
+    stale: HashSet<Uuid>,
+}
+
+impl DrawingBatch {
+    async fn load(
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: &Uuid,
+        device_filter: Option<Uuid>,
+        ids: &[Uuid],
+        blob_ids: &[Uuid],
+    ) -> Result<Self, AppError> {
+        let mut batch = DrawingBatch {
+            user_id: *user_id,
+            device_filter,
+            versions: HashMap::new(),
+            rows: HashMap::new(),
+            prefetched_versions: ids.iter().copied().collect(),
+            prefetched_rows: blob_ids.iter().copied().collect(),
+            stale: HashSet::new(),
+        };
+
+        if !ids.is_empty() {
+            let rows = sqlx::query!(
+                "SELECT id, version FROM drawings \
+                 WHERE id = ANY($1) AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+                ids,
+                user_id,
+                device_filter
+            )
+            .fetch_all(&mut **tx)
+            .await?;
+            batch.versions = rows.into_iter().map(|row| (row.id, row.version)).collect();
+        }
+
+        if !blob_ids.is_empty() {
+            let rows = sqlx::query!(
+                "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+                 FROM drawings WHERE id = ANY($1) AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+                blob_ids,
+                user_id,
+                device_filter
+            )
+            .fetch_all(&mut **tx)
+            .await?;
+            for row in rows {
+                batch.rows.insert(
+                    row.id,
+                    CachedDrawing {
+                        id: row.id,
+                        user_id: row.user_id,
+                        device_uuid: row.device_uuid,
+                        client_uuid: row.client_uuid,
+                        version: row.version,
+                        is_deleted: row.is_deleted,
+                        last_modified: row.last_modified,
+                        sync_state: row.sync_state,
+                        created_at: row.created_at,
+                        data: row.data,
+                    },
+                );
+            }
+        }
+
+        Ok(batch)
+    }
+
+    /// The version of the row `id` names, or `None` when there is no such row to write on
+    /// top of.
+    async fn version_of(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+    ) -> Result<Option<i32>, AppError> {
+        if self.prefetched_versions.contains(&id) && !self.stale.contains(&id) {
+            return Ok(self.versions.get(&id).copied());
+        }
+
+        let row = sqlx::query!(
+            "SELECT version FROM drawings \
+             WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+            id,
+            self.user_id,
+            self.device_filter
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(row.map(|row| row.version))
+    }
+
+    /// The whole row, `data` included, for the need-update path.
+    async fn row_for(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+    ) -> Result<Option<CachedDrawing>, AppError> {
+        if self.prefetched_rows.contains(&id) && !self.stale.contains(&id) {
+            return Ok(self.rows.get(&id).cloned());
+        }
+
+        let row = sqlx::query!(
+            "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+             FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
+            id,
+            self.user_id,
+            self.device_filter
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(row.map(|row| CachedDrawing {
+            id: row.id,
+            user_id: row.user_id,
+            device_uuid: row.device_uuid,
+            client_uuid: row.client_uuid,
+            version: row.version,
+            is_deleted: row.is_deleted,
+            last_modified: row.last_modified,
+            sync_state: row.sync_state,
+            created_at: row.created_at,
+            data: row.data,
+        }))
+    }
+
+    /// Marks a row this batch has written, so a later item naming the same drawing reads
+    /// what was written rather than what was prefetched.
+    fn note_write(&mut self, id: Uuid) {
+        self.stale.insert(id);
+    }
+}
+
+/// Whether a delta is the "tell me what you have" shape: an update that carries no data.
+///
+/// Factored out so the prefetch pass and the loop cannot disagree about which deltas read
+/// the `data` blob — if they did, the prefetch would silently miss and the loop would fall
+/// back per item, which is the cost this change exists to remove.
+fn delta_is_need_update(change: &DrawingChangeDelta) -> bool {
+    matches!(change.operation_type, OperationType::Update)
+        && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false))
+}
+
+/// The device a change delta names, without deserializing its payload.
+///
+/// Only used to build the batch's registered-device set, where a `None` costs one fallback
+/// statement rather than a wrong answer — which is why peeking at the JSON is good enough.
+fn peek_delta_device(explicit: Option<Uuid>, data: Option<&serde_json::Value>) -> Option<Uuid> {
+    explicit.or_else(|| {
+        data?
+            .get("device_uuid")
+            .and_then(|v| v.as_str())
+            .and_then(|v| Uuid::parse_str(v).ok())
+    })
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn process_drawing_changes(
@@ -24,6 +225,27 @@ pub async fn process_drawing_changes(
     upload_status: &mut Vec<SuccessResult>,
     remote_changes: &mut Vec<DrawingChangeDelta>,
 ) -> Result<(), AppError> {
+    // One pass over the batch to work out what the loop will ask for, then one statement
+    // each instead of one per item. The `data` blob is only prefetched for the deltas that
+    // read it — see `DrawingBatch`.
+    let mut ids: Vec<Uuid> = Vec::with_capacity(changes.len());
+    let mut blob_ids: Vec<Uuid> = Vec::new();
+    let mut devices: HashSet<Uuid> = HashSet::new();
+    for change in changes {
+        let change_uuid = super::remote_mutations::parse_or_hash_uuid(&change.id);
+        ids.push(change_uuid);
+        if delta_is_need_update(change) {
+            blob_ids.push(change_uuid);
+        }
+        if let Some(device_uuid) = peek_delta_device(change.device_uuid, change.data.as_ref()) {
+            devices.insert(device_uuid);
+        }
+    }
+    let devices: Vec<Uuid> = devices.into_iter().collect();
+
+    let registered = registered_device_set(tx, user_id, device_rule, &devices).await?;
+    let mut batch = DrawingBatch::load(tx, user_id, device_filter, &ids, &blob_ids).await?;
+
     for change in changes {
         let change_id = &change.id;
         let change_uuid = super::remote_mutations::parse_or_hash_uuid(change_id);
@@ -31,19 +253,10 @@ pub async fn process_drawing_changes(
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing drawing {}", change_id);
 
-                let is_need_update = matches!(change.operation_type, OperationType::Update)
-                    && (change.data.is_none() || change.data.as_ref().map(|v| v.is_null()).unwrap_or(false));
+                let is_need_update = delta_is_need_update(change);
 
                 if is_need_update {
-                    let existing = sqlx::query!(
-                        "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
-                         FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
-                        change_uuid,
-                        user_id,
-                        device_filter
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
+                    let existing = batch.row_for(tx, change_uuid).await?;
 
                     if let Some(row) = existing {
                         let item_data = DrawingData {
@@ -74,26 +287,19 @@ pub async fn process_drawing_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<DrawingData>(data.clone()) {
                         Ok(item) => {
-                            let device_uuid = resolve_item_device(
+                            let device_uuid = resolve_item_device_cached(
                                 tx,
                                 user_id,
                                 change.device_uuid.or(item.device_uuid),
                                 device_rule,
                                 "Drawing",
                                 change_id,
+                                &registered,
                             )
                             .await?;
 
-                            // Fetch existing drawing from database
-                            let existing = sqlx::query!(
-                                "SELECT version FROM drawings \
-                                 WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
-                                change_uuid,
-                                user_id,
-                                device_filter
-                            )
-                            .fetch_optional(&mut **tx)
-                            .await?;
+                            // Fetch existing drawing from the batch prefetch
+                            let existing = batch.version_of(tx, change_uuid).await?;
 
                             // The whole conflict decision, and the only place a version
                             // number comes from: the server's row when there is one, the
@@ -102,14 +308,14 @@ pub async fn process_drawing_changes(
                             // `crate::routes::sync::versioning` for the policy and for why
                             // a clock nobody can verify must not decide who wins.
                             let next_version = match existing {
-                                Some(ref row) => {
-                                    if item.version < row.version {
+                                Some(version) => {
+                                    if item.version < version {
                                         tracing::warn!(
                                             "Conflicting write for drawing {} (client version {}, server version {}); accepting it as the later arrival",
-                                            change_id, item.version, row.version
+                                            change_id, item.version, version
                                         );
                                     }
-                                    advance_version("Drawing", change_id, row.version)?
+                                    advance_version("Drawing", change_id, version)?
                                 }
                                 None => seed_version("Drawing", change_id, item.version)?,
                             };
@@ -152,6 +358,8 @@ pub async fn process_drawing_changes(
                             .execute(&mut **tx)
                             .await?;
 
+                            batch.note_write(change_uuid);
+
                             upload_status.push(SuccessResult {
                                 id: change_id.to_string(),
                                 version: next_version,
@@ -165,17 +373,10 @@ pub async fn process_drawing_changes(
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {
-                    let existing = sqlx::query!(
-                        "SELECT version FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
-                        change_uuid,
-                        user_id,
-                        device_filter
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
+                    let existing = batch.version_of(tx, change_uuid).await?;
 
-                    if let Some(row) = existing {
-                        let next_version = advance_version("Drawing", change_id, row.version)?;
+                    if let Some(version) = existing {
+                        let next_version = advance_version("Drawing", change_id, version)?;
                         tracing::info!("Applying drawing metadata update for {}. Next version: {}", change_id, next_version);
                         // `last_modified` moves with the write, here as everywhere else:
                         // it is the cursor the account's other devices poll against, so a
@@ -191,6 +392,8 @@ pub async fn process_drawing_changes(
                         .execute(&mut **tx)
                         .await?;
 
+                        batch.note_write(change_uuid);
+
                         upload_status.push(SuccessResult {
                             id: change_id.to_string(),
                             version: next_version,
@@ -201,17 +404,10 @@ pub async fn process_drawing_changes(
                 }
             }
             OperationType::Delete => {
-                let existing = sqlx::query!(
-                    "SELECT version FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
-                    change_uuid,
-                    user_id,
-                    device_filter
-                )
-                .fetch_optional(&mut **tx)
-                .await?;
+                let existing = batch.version_of(tx, change_uuid).await?;
 
-                if let Some(row) = existing {
-                    let next_version = advance_version("Drawing", change_id, row.version)?;
+                if let Some(version) = existing {
+                    let next_version = advance_version("Drawing", change_id, version)?;
                     tracing::info!("Applying drawing soft-delete for {}. Next version: {}", change_id, next_version);
                     // Stamped for the same reason as the update above: a soft-delete the
                     // cursor cannot see is a deletion the sibling tablet never applies.
@@ -225,6 +421,8 @@ pub async fn process_drawing_changes(
                     )
                     .execute(&mut **tx)
                     .await?;
+
+                    batch.note_write(change_uuid);
 
                     upload_status.push(SuccessResult {
                         id: change_id.to_string(),
@@ -441,21 +639,27 @@ pub async fn process_drawing_sync_items(
     // read the new version back, which is what keeps the blob in that echo.
     upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
+    // No need-update path on the flat list, so nothing here reads the `data` blob and the
+    // prefetch is versions only.
+    let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
+    let devices: Vec<Uuid> = items
+        .iter()
+        .filter_map(|item| item.device_uuid)
+        .collect::<HashSet<Uuid>>()
+        .into_iter()
+        .collect();
+
+    let registered = registered_device_set(tx, user_id, device_rule, &devices).await?;
+    let mut batch = DrawingBatch::load(tx, user_id, device_filter, &ids, &[]).await?;
+
     for item in items {
         let is_delete = item.is_deleted || item.sync_state == "PENDING_DELETE";
 
         if is_delete {
-            let existing = sqlx::query!(
-                "SELECT version FROM drawings WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
-                item.id,
-                user_id,
-                device_filter
-            )
-            .fetch_optional(&mut **tx)
-            .await?;
+            let existing = batch.version_of(tx, item.id).await?;
 
-            if let Some(row) = existing {
-                let next_version = advance_version("Drawing", &item.id.to_string(), row.version)?;
+            if let Some(version) = existing {
+                let next_version = advance_version("Drawing", &item.id.to_string(), version)?;
                 tracing::info!("Applying drawing soft-delete for {}. Next version: {}", item.id, next_version);
                 sqlx::query!(
                     "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE'::text::sync_state WHERE id = $4 AND user_id = $5",
@@ -467,6 +671,8 @@ pub async fn process_drawing_sync_items(
                 )
                 .execute(&mut **tx)
                 .await?;
+
+                batch.note_write(item.id);
 
                 upload_status.push(SuccessResult {
                     id: item.id.to_string(),
@@ -485,39 +691,32 @@ pub async fn process_drawing_sync_items(
             }
             success_uuids.push(item.id);
         } else {
-            let device_uuid = resolve_item_device(
+            let device_uuid = resolve_item_device_cached(
                 tx,
                 user_id,
                 item.device_uuid,
                 device_rule,
                 "Drawing",
                 &item.id.to_string(),
+                &registered,
             )
             .await?;
 
             // Upsert drawing
-            let existing = sqlx::query!(
-                "SELECT version FROM drawings \
-                 WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR device_uuid = $3)",
-                item.id,
-                user_id,
-                device_filter
-            )
-            .fetch_optional(&mut **tx)
-            .await?;
+            let existing = batch.version_of(tx, item.id).await?;
 
             // Same policy as the change-delta path above: the server's row decides the
             // numbering, the client's clock decides nothing, and a new row's seed is
             // bounded. See `crate::routes::sync::versioning`.
             let next_version = match existing {
-                Some(ref row) => {
-                    if item.version < row.version {
+                Some(version) => {
+                    if item.version < version {
                         tracing::warn!(
                             "Conflicting write for drawing {} (client version {}, server version {}); accepting it as the later arrival",
-                            item.id, item.version, row.version
+                            item.id, item.version, version
                         );
                     }
-                    advance_version("Drawing", &item.id.to_string(), row.version)?
+                    advance_version("Drawing", &item.id.to_string(), version)?
                 }
                 None => seed_version("Drawing", &item.id.to_string(), item.version)?,
             };
@@ -559,6 +758,8 @@ pub async fn process_drawing_sync_items(
             )
             .execute(&mut **tx)
             .await?;
+
+            batch.note_write(item.id);
 
             upload_status.push(SuccessResult {
                 id: item.id.to_string(),

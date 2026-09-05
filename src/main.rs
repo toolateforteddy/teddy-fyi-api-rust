@@ -130,6 +130,18 @@ async fn run_reaper() {
         }
     }
 
+    // Same argument as the sweep above, for the same kind of rows: expired invites and
+    // spent failure counters are already dead, so this is not gated on `REAP_DRY_RUN`
+    // either, and a failure here must not stop the account sweep from running.
+    match jobs::reap_list_invites::reap_list_invites(&pool).await {
+        Ok(summary) => {
+            tracing::info!(summary = ?summary, "Expired list invites swept");
+        }
+        Err(err) => {
+            tracing::error!("List invite sweep failed: {:?}", err);
+        }
+    }
+
     let config = jobs::reap_stale_users::ReapConfig::from_env();
     match jobs::reap_stale_users::reap_stale_users(&pool, &redis_client, &config).await {
         Ok(_) => {}

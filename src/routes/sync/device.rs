@@ -113,6 +113,16 @@ pub async fn require_registered_device(
 
 /// Registers `device_uuid` under `user_id` when it is new, and rejects it when it is
 /// already registered to a different account.
+///
+/// This is the only place in the service that creates a `devices` row from a
+/// caller-supplied id, so it is also where the per-account cap
+/// ([`crate::routes::devices::limits::max_devices_per_account`]) is enforced. Putting the
+/// cap on `POST /api/devices` alone would have been decorative: a sync request naming an
+/// unknown `device_uuid` lands here too and would have gone on minting rows for free.
+///
+/// The cap is checked *only* on the branch that would insert. A device already registered
+/// to this account returns above it, so a real tablet re-registering — which is what every
+/// launch does — can never be refused, however far over the cap the account happens to be.
 pub async fn ensure_device(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
@@ -148,6 +158,29 @@ pub async fn ensure_device(
             device_uuid
         ))),
         None => {
+            // Counted here rather than once per request because this is the branch that
+            // grows the table, and because a single sync request can name several devices.
+            let registered = sqlx::query_scalar!(
+                r#"SELECT COUNT(*) AS "count!" FROM devices WHERE user_id = $1"#,
+                user_id
+            )
+            .fetch_one(&mut **tx)
+            .await?;
+
+            if registered >= crate::routes::devices::limits::max_devices_per_account() {
+                // 429 and not 403: nothing about the request is wrong, the account simply
+                // has no room. Removing a device it no longer uses makes this succeed.
+                tracing::warn!(
+                    user_id = %user_id,
+                    registered,
+                    "Device registration refused: per-account device cap reached"
+                );
+                return Err(AppError::TooManyRequests(format!(
+                    "Account already has the maximum of {} registered devices",
+                    crate::routes::devices::limits::max_devices_per_account()
+                )));
+            }
+
             tracing::info!("Registering device {} for user {}", device_uuid, user_id);
             sqlx::query!(
                 "INSERT INTO devices (id, user_id, name) VALUES ($1, $2, $3)",
@@ -164,6 +197,10 @@ pub async fn ensure_device(
 
 /// The account's oldest device — the one the migration backfilled existing rows onto.
 /// Creates one if the account has none yet.
+///
+/// Deliberately not capped: it inserts only when the account has *zero* devices, so it can
+/// never be the call that takes an account past its limit, and a cap here could only ever
+/// misfire.
 pub async fn fallback_device(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,

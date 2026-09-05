@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO list_join_failures (user_id, failed_at) VALUES ('guesser', $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "44a05182fa6e603e1a12eb5ae6c905310e07d2ad51f03015724f84ea9f67c38e"
+}

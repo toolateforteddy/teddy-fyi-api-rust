@@ -141,3 +141,6 @@ async fn fetch_device(
         last_seen_at: row.last_seen_at,
     })
 }
+
+#[cfg(test)]
+mod tests;

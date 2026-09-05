@@ -158,3 +158,42 @@ pub async fn publish_device_event(
     log_published(CHANNEL_KIND_DEVICE, user_id, Some(device_uuid), event);
     Ok(())
 }
+
+/// Publishes a batch of device events in a single Redis round trip.
+///
+/// One sync request can carry a config write per device — a payload of 500 configs
+/// used to mean 500 sequential `PUBLISH`es on the tail of the request — and the
+/// channel and payload of each are computed exactly as [`publish_device_event`]
+/// computes them, because clients and the SSE fan-out read those bytes.
+///
+/// Batching gives up per-event isolation: the whole batch shares one outcome, where
+/// publishing one at a time could lose a single event and deliver the rest. That is
+/// the right trade for a best-effort fan-out whose failure mode in practice is the
+/// connection, not the command — and the caller's response to a failure (log it, let
+/// the sync succeed, let clients reconcile by version) is the same either way.
+pub async fn publish_device_events(
+    publisher: &RedisPublisher,
+    user_id: &str,
+    events: &[(Uuid, SyncSseEvent)],
+) -> Result<(), AppError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let mut pipe = redis::pipe();
+    for (device_uuid, event) in events {
+        pipe.publish(
+            get_device_channel_name(user_id, device_uuid),
+            serde_json::to_string(event)?,
+        )
+        .ignore();
+    }
+    publisher.run_pipeline(&pipe).await?;
+
+    // Logged only once the batch is away, so a line still means "this went out", the
+    // same thing it meant when each publish logged for itself.
+    for (device_uuid, event) in events {
+        log_published(CHANNEL_KIND_DEVICE, user_id, Some(device_uuid), event);
+    }
+    Ok(())
+}

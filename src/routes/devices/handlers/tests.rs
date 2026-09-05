@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::routes::devices::limits;
-use crate::routes::sync::tests::helpers::setup_state;
+use crate::routes::sync::tests::helpers::{seed_device, setup_state};
 use axum::response::IntoResponse;
 use axum::http::StatusCode;
 use sqlx::PgPool;
@@ -134,6 +134,26 @@ async fn an_existing_device_can_always_re_register(pool: PgPool) {
 /// A device belonging to somebody else is still a 403, not a 429. The two mean different
 /// things — "that is not yours" versus "you have no room" — and only one of them is fixed
 /// by deleting a device.
+#[sqlx::test]
+async fn renaming_device_with_empty_name_returns_bad_request(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+
+    let err = rename_device_handler(
+        State(state),
+        Extension(claims("user-1")),
+        Path(device_uuid),
+        Json(RenameDeviceRequest {
+            name: "   ".to_string(),
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(status_of(err).await, StatusCode::BAD_REQUEST);
+}
+
 #[sqlx::test]
 async fn another_accounts_device_is_still_forbidden(pool: PgPool) {
     let state = setup_state(pool.clone());

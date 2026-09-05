@@ -1,3 +1,4 @@
+use crate::routes::sync::deletes::soft_delete_version;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -280,8 +281,14 @@ pub async fn process_grocery_item_store_info_changes(
                     }
                 }
 
-                let parent = parent_items_map.get(&change.grocery_item_id);
-                if let Some(parent) = parent {
+                // A parent the server does not have is the unsynced-delete case one level
+                // up -- the item was created and deleted before it ever reached us -- and it
+                // used to be a 403 that failed the whole batch. Acknowledged like any other
+                // now, and nothing is left unguarded by it: `"groceryItemId"` is a foreign
+                // key onto `grocery_items` with `ON DELETE CASCADE`, so a store-info row
+                // whose parent is absent cannot exist and the statement below matches
+                // nothing. Only a parent that *is* here and is not the caller's is a 403.
+                if let Some(parent) = parent_items_map.get(&change.grocery_item_id) {
                     let mut authorized = parent.is_deleted;
                     if !authorized {
                         authorized = parent.user_id.as_deref() == Some(user_id);
@@ -299,21 +306,18 @@ pub async fn process_grocery_item_store_info_changes(
                             change.grocery_item_id, change.store_id
                         )));
                     }
-                } else {
-                    return Err(AppError::Forbidden(format!("Parent grocery item not found: {}", change.grocery_item_id)));
                 }
 
-                let row_opt = sqlx::query!(
+                let version = soft_delete_version!(
+                    tx,
+                    "grocery item store info",
+                    &string_id,
                     r#"UPDATE grocery_item_store_info SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE "groceryItemId" = $3 AND "storeId" = $4 RETURNING version"#,
                     server_timestamp,
                     client_id,
                     change.grocery_item_id,
-                    change.store_id
-                )
-                .fetch_optional(&mut **tx)
-                .await?;
-
-                let version = row_opt.map(|r| r.version).unwrap_or(1);
+                    change.store_id,
+                );
 
                 upload_status.push(SuccessResult {
                     id: string_id.clone(),

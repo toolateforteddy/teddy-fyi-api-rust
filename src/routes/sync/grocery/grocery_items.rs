@@ -1,3 +1,4 @@
+use crate::routes::sync::deletes::soft_delete_version;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -338,28 +339,30 @@ pub async fn process_grocery_changes(
                                 list_id
                             )));
                         }
-                    } else {
-                        if row.user_id.as_deref() != Some(user_id) {
-                            return Err(AppError::Forbidden(format!("User is not authorized to delete grocery item {}", change.id)));
-                        }
+                    } else if row.user_id.as_deref() != Some(user_id) {
+                        return Err(AppError::Forbidden(format!("User is not authorized to delete grocery item {}", change.id)));
                     }
-
-                    let row_result = sqlx::query!(
-                        "UPDATE grocery_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
-                        server_timestamp,
-                        client_id,
-                        change.id
-                    )
-                    .fetch_one(&mut **tx)
-                    .await?;
-
-                    upload_status.push(SuccessResult {
-                        id: string_id.clone(),
-                        version: row_result.version,
-                        sync_state: "SYNCED".to_string(),
-                    });
-                    success_ids.push(string_id);
                 }
+
+                // Outside the guard above, which only decides authorization: a delete for
+                // a row the server never had is acknowledged rather than left pending, so
+                // the client can stop resending it. See `crate::routes::sync::deletes`.
+                let version = soft_delete_version!(
+                    tx,
+                    "grocery item",
+                    &change.id,
+                    "UPDATE grocery_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
+                    server_timestamp,
+                    client_id,
+                    change.id,
+                );
+
+                upload_status.push(SuccessResult {
+                    id: string_id.clone(),
+                    version,
+                    sync_state: "SYNCED".to_string(),
+                });
+                success_ids.push(string_id);
             }
         }
     }

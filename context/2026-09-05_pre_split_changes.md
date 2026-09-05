@@ -152,6 +152,16 @@ the reason this is a "now" item rather than a "later" one.
 
 ## 3. Deleting an unknown id 500s the entire sync request — **9**, Now
 
+**Landed** in [#57](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/57). All ten
+delete paths now acknowledge a delete for a row the server does not have, under one policy
+written down in `src/routes/sync/deletes.rs`; `soft_delete_version!` owns the executor call so
+`fetch_one` cannot be chosen for a delete again, and `src/routes/sync/tests/deletes.rs` fails
+the build if it is. Two paths not named below were the same bug wearing a 403 —
+`grocery_lists` ("Grocery list … not found") and `grocery_item_store_info` ("Parent grocery
+item not found") — and three more (`grocery_items` and the config/drawing delta paths) said
+nothing about the change at all, which leaves it pending on the device forever rather than
+failing the batch. The description below is what was there before.
+
 In `todo_items`, `todo_lists`, `categories`, `stores` and `grocery_list_members`, the
 `OperationType::Delete` arm runs
 

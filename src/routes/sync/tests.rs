@@ -4,6 +4,7 @@ mod affected_users;
 mod cache;
 mod client_binding;
 mod data_integrity;
+mod deletes;
 mod deserialization;
 mod devices;
 mod flat_configs_drawings;

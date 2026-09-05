@@ -1,3 +1,4 @@
+use crate::routes::sync::deletes::soft_delete_version;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -258,18 +259,21 @@ pub async fn process_store_changes(
                     }
                 }
 
-                let row = sqlx::query!(
+                // No `else` for the missing row: a delete for a row the server never had
+                // is acknowledged, not refused. See `crate::routes::sync::deletes`.
+                let version = soft_delete_version!(
+                    tx,
+                    "store",
+                    &change.id,
                     "UPDATE stores SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                     server_timestamp,
                     client_id,
-                    change.id
-                )
-                .fetch_one(&mut **tx)
-                .await?;
+                    change.id,
+                );
 
                 upload_status.push(SuccessResult {
                     id: string_id.clone(),
-                    version: row.version,
+                    version,
                     sync_state: "SYNCED".to_string(),
                 });
                 success_ids.push(string_id);

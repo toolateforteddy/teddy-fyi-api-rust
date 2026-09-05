@@ -1,3 +1,4 @@
+use crate::routes::sync::deletes::soft_delete_version;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -229,8 +230,20 @@ pub async fn process_grocery_list_changes(
                         }
                         row.version
                     }
+                    // A list the server never had: acknowledged, not refused. Membership
+                    // below is the authorization check, and there is nothing to be a member
+                    // of. See `crate::routes::sync::deletes`.
                     None => {
-                        return Err(AppError::Forbidden(format!("Grocery list {} not found", change.id)));
+                        upload_status.push(SuccessResult {
+                            id: change.id.clone(),
+                            version: crate::routes::sync::deletes::ack_unsynced_delete(
+                                "grocery list",
+                                &change.id,
+                            ),
+                            sync_state: "SYNCED".to_string(),
+                        });
+                        success_ids.push(change.id.clone());
+                        continue;
                     }
                 };
 
@@ -258,14 +271,15 @@ pub async fn process_grocery_list_changes(
                     || member_row.role == "OWNER";
 
                 if is_owner {
-                    let row = sqlx::query!(
+                    let deleted_version = soft_delete_version!(
+                        tx,
+                        "grocery list",
+                        &change.id,
                         "UPDATE grocery_lists SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
                         server_timestamp,
                         client_id,
-                        change.id
-                    )
-                    .fetch_one(&mut **tx)
-                    .await?;
+                        change.id,
+                    );
 
                     // Soft delete associated grocery items
                     sqlx::query!(
@@ -325,7 +339,7 @@ pub async fn process_grocery_list_changes(
 
                     upload_status.push(SuccessResult {
                         id: change.id.clone(),
-                        version: row.version,
+                        version: deleted_version,
                         sync_state: "SYNCED".to_string(),
                     });
                     success_ids.push(change.id.clone());

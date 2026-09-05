@@ -397,7 +397,7 @@ claim comes from.
 
 ## 10. Refresh tokens are Argon2-hashed — **8**, Now — **LANDED**
 
-**Landed** in [#65](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/65).
+**Landed** in [#70](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/70).
 `hash_refresh_token` is now a domain-separated SHA-256 (`teddy-fyi/refresh-token/v1:`), the same
 idiom `hash_device_code` already used, and `verify_refresh_token` reads **either** format so no
 device is signed out.

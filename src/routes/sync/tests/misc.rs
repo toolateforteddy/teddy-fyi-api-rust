@@ -69,6 +69,7 @@ async fn test_invite_system_flow(pool: PgPool) {
         sub: "user-1".to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     };
     
     let invite_res = crate::routes::lists::handlers::invite_handler(
@@ -97,6 +98,7 @@ async fn test_invite_system_flow(pool: PgPool) {
         sub: "user-2".to_string(),
         client_uuid: "client-2".to_string(),
         exp: 10000000000,
+        product: None,
     };
 
     let join_res = crate::routes::lists::handlers::join_handler(
@@ -194,6 +196,7 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
         sub: "user-2".to_string(),
         client_uuid: "client-2".to_string(),
         exp: 10000000000,
+        product: None,
     };
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
@@ -309,6 +312,7 @@ async fn test_sync_handler_need_update_state_recovery(pool: PgPool) {
         sub: "user-1".to_string(),
         client_uuid: "client-2".to_string(),
         exp: 10000000000,
+        product: None,
     };
 
     // Client requests state recovery for all 3 using UPDATE with data: null/None

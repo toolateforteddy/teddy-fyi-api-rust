@@ -1485,6 +1485,7 @@ async fn test_grocery_list_delete_cascade(pool: PgPool) {
         sub: "user-1".to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     };
     let req_delete = SyncRequest {
         last_synced_at: None,
@@ -1607,6 +1608,7 @@ async fn test_grocery_list_cascade_delete_conflict(pool: PgPool) {
         sub: "user-1".to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     };
     let req_delete = SyncRequest {
         last_synced_at: None,
@@ -1759,6 +1761,7 @@ async fn test_grocery_list_delete_member_stop_collaborating(pool: PgPool) {
         sub: "user-2".to_string(),
         client_uuid: "client-2".to_string(),
         exp: 10000000000,
+        product: None,
     };
     let req_delete = SyncRequest {
         last_synced_at: None,
@@ -1988,6 +1991,7 @@ async fn test_collaborator_sync_pulls_existing_items(pool: PgPool) {
         sub: "user-2".to_string(),
         client_uuid: "client-2".to_string(),
         exp: 10000000000,
+        product: None,
     };
     let req = SyncRequest {
         last_synced_at: Some(last_sync_time),

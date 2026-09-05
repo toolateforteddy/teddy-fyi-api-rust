@@ -5,6 +5,7 @@ use super::types::*;
 use super::config::*;
 use super::device::*;
 use super::limits::{validate_sync_payload, SyncLimits};
+use super::scope_auth::authorize_scope;
 use super::drawing::*;
 use super::publisher::{publish_device_event, SyncSseEvent};
 use crate::state::AppState;
@@ -28,6 +29,12 @@ pub async fn sync_handler(
     // rows this very request wrote. See `crate::routes::sync::versioning`.
     let server_ms = server_timestamp.timestamp_millis();
     let scope = payload.scope.unwrap_or(SyncScope::All);
+
+    // Before the bounds check, and long before a transaction: the scope decides which
+    // product's tables this request reaches, and it arrives in the body. `authorize_scope`
+    // is what ties it to the product the token was issued for. See
+    // `crate::routes::sync::scope_auth`.
+    authorize_scope(&claims, scope)?;
 
     // Bounds first, before a transaction is opened or a row is touched: an over-large
     // drawing blob or an over-long config value fails the whole request with a 400 that

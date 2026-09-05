@@ -1,9 +1,11 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub google_client_ids: HashSet<String>,
+    /// Every Google client ID accepted as a token audience, and the product each belongs
+    /// to. Behind an `Arc` because `AppState` is cloned per request and this is a map that
+    /// is built once at start-up and only ever read. See [`crate::auth::client_ids`].
+    pub client_catalog: Arc<crate::auth::client_ids::ClientCatalog>,
     pub google_client: Arc<google_oauth::AsyncClient>,
     pub db_pool: sqlx::Pool<sqlx::Postgres>,
     pub jwt_secret: String,

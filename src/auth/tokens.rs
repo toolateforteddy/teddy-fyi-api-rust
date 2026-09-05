@@ -1,3 +1,4 @@
+use crate::auth::product::Product;
 use jsonwebtoken::{encode, Header, EncodingKey};
 use serde::{Deserialize, Serialize};
 use argon2::{
@@ -42,6 +43,21 @@ pub struct Claims {
     pub sub: String, // user_id
     pub client_uuid: String,
     pub exp: usize,
+    /// Which product this token was issued for, when that is known.
+    ///
+    /// This is the only thing in a token that distinguishes a ScribbleRoute credential
+    /// from a teddy.fyi one. Everything else — the signature, the `exp`, the device
+    /// binding — is identical across the two products, and `JWT_SECRET` is deliberately
+    /// not rotated at the split, so without this claim a token minted at one hostname
+    /// stays structurally valid at the other for as long as both exist.
+    /// [`crate::routes::sync::scope_auth`] is what acts on it.
+    ///
+    /// `Option`, and skipped when absent, for the reason set out in
+    /// [`crate::auth::product`]: tokens already in devices' hands do not carry it, sessions
+    /// established through an unclassified client ID cannot carry it, and neither may be
+    /// signed out by this change. A missing claim means "unknown", never "denied".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product: Option<Product>,
 }
 
 /// Mints an access token for `user_id`/`client_uuid`.
@@ -53,6 +69,7 @@ pub struct Claims {
 pub fn create_access_token(
     user_id: &str,
     client_uuid: &str,
+    product: Option<Product>,
     secret: &[u8],
     expires_in_secs: Option<i64>,
 ) -> Result<String, jsonwebtoken::errors::Error> {
@@ -77,6 +94,7 @@ pub fn create_access_token(
         sub: user_id.to_owned(),
         client_uuid: client_uuid.to_owned(),
         exp: expiration,
+        product,
     };
 
     encode(&Header::default(), &claims, &EncodingKey::from_secret(secret))

@@ -1,3 +1,8 @@
+# The cache is disposable by design: every key in it is either a pub/sub message or a
+# `user:*:last_update:*` marker whose durable copy is already committed in Postgres, and
+# clients reconcile by version on their next sync. Nothing here is worth persisting, and
+# nothing here is worth OOM-killing the pod to keep. The `args` below say exactly that to
+# valkey, which otherwise boots with defaults tuned for a durable standalone server.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +22,41 @@ spec:
       containers:
       - name: valkey
         image: valkey/valkey:8-alpine
+        # The image starts `valkey-server` with no config file, so it inherits the
+        # compiled-in defaults. Three of those are wrong for a cache this size.
+        args:
+        # 1. Persistence. The default save points (3600/1, 300/100, 60/10000) fork the
+        #    server and write an RDB into the container filesystem — a copy-on-write
+        #    memory spike inside a 128Mi limit, in exchange for a snapshot that is
+        #    thrown away with the pod. `--save ""` disables them; appendonly is already
+        #    off by default and is stated so it cannot drift back on.
+        - --save
+        - ""
+        - --appendonly
+        - "no"
+        # 2. Memory. With no maxmemory, valkey grows until the kernel OOM-kills the
+        #    container, which drops every SSE subscription along with the cache. A cap
+        #    below the limit turns that into LRU eviction, which costs one cache miss.
+        #    96mb of the 128Mi limit leaves room for allocator overhead and the server
+        #    itself. `allkeys-lru` rather than `volatile-lru`: every production key is
+        #    written with a TTL today, so the two behave identically now, but allkeys
+        #    keeps evicting instead of erroring if a key without one ever appears.
+        - --maxmemory
+        - "96mb"
+        - --maxmemory-policy
+        - "allkeys-lru"
+        # 3. Pub/sub backpressure. The default hard limit lets a single slow subscriber
+        #    buffer 32mb — a quarter of the pod — before valkey disconnects it. Each
+        #    api-rust replica holds exactly one subscriber connection, so a stalled one
+        #    should be cut loose early and reconnect (fanout.rs retries with backoff)
+        #    rather than push the server into eviction.
+        - --client-output-buffer-limit
+        - "pubsub 8mb 2mb 60"
+        # Real client count is a handful: one subscriber and one publisher per replica,
+        # plus the reaper. The default 10000 is a budget this pod could never serve
+        # without being OOM-killed first; a low cap fails the connection loudly instead.
+        - --maxclients
+        - "256"
         ports:
         - containerPort: 6379
           name: redis
@@ -27,16 +67,27 @@ spec:
           limits:
             cpu: 200m
             memory: 128Mi
+        # `valkey-cli ping` rather than a TCP dial: the listener is accepting long
+        # before the server can answer, and stays accepting when it is wedged, so a
+        # tcpSocket probe reports ready in exactly the cases readiness exists to catch.
         readinessProbe:
-          tcpSocket:
-            port: 6379
+          exec:
+            command: ["valkey-cli", "ping"]
           initialDelaySeconds: 5
           periodSeconds: 10
         livenessProbe:
-          tcpSocket:
-            port: 6379
+          exec:
+            command: ["valkey-cli", "ping"]
           initialDelaySeconds: 10
           periodSeconds: 15
+          # Three misses before a restart. Restarting is cheap here — the cache is
+          # disposable — but it drops every subscriber, so it should not fire on one
+          # slow reply.
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
 ---
 apiVersion: v1
 kind: Service
@@ -66,6 +117,12 @@ spec:
     - podSelector:
         matchLabels:
           app: api-rust
+    # The user-reaper CronJob announces each deletion over the same pub/sub bus, so it
+    # needs the port too. It carries its own label rather than `app: api-rust` so this
+    # rule stays readable about who is actually allowed in.
+    - podSelector:
+        matchLabels:
+          app: api-rust-user-reaper
     ports:
     - protocol: TCP
       port: 6379

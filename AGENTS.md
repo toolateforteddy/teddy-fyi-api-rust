@@ -48,6 +48,7 @@ it ship in one commit.
 | `k8s/api-rust.yaml` | `api-rust-svc` (NodePort), `api-rust-ksa`, the `SecretProviderClass`, `api-rust-dep`, the `BackendConfig`, and the `api-rust-cert` / `api-scribbleroute-cert` ManagedCertificates. |
 | `k8s/cache.yaml` | The Valkey `cache-dep` / `cache-svc` this service uses for Redis, plus a NetworkPolicy admitting only `app: api-rust`. |
 | `k8s/user-reaper.yaml` | The daily retention CronJob. Reuses this image with the `reap-stale-users` subcommand and the same KSA and secret mount. |
+| `k8s/maintenance.yaml` | The maintenance responder for `api.scribbleroute.com`: an nginx answering 503 with an explanation, for the Phase 4 write freeze. **Applying it starts it; it takes no traffic until `site-ingress` points the hostname at it.** See `context/2026-09-05_planned_maintenance.md`. |
 
 **What is *not* here:** `site-ingress` stays in `teddyfyi`, because it is the shared front
 door for the nginx site as well as this API. It references `api-rust-svc` and names both
@@ -115,6 +116,14 @@ endpoint shapes are already written down.
   re-key rides along in Phase 5 of the split, because that freeze is the only window in which it
   is cheap, and the fork has to precede it. Read it before adding a sign-in provider, before keying a new table by a user, and
   before writing the Phase 4 copy program.
+
+- **Telling users about a planned outage** — `context/2026-09-05_planned_maintenance.md`.
+  **Built, never used.** The runbook for Phase 4's write freeze: `k8s/maintenance.yaml` here, the
+  `site-ingress` backend swap in `teddyfyi`, and the status document on `scribbleroute.com` that
+  the ScribbleKeep apps read to tell a planned outage apart from a tablet with no Wi-Fi. Read it
+  before running any window, and note the one detail that is easy to get wrong: the maintenance
+  nginx's health check must answer 200, or the GKE ingress marks it unhealthy and serves Google's
+  502 page instead of the explanation.
 
 - **Changes to make before or during the split** — `context/2026-09-05_pre_split_changes.md`.
   **A survey, not a plan.** Forty-five scored items that are cheap while there is one repo and

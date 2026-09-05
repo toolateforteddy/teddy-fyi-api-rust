@@ -70,26 +70,26 @@ Rules that keep concurrent work from colliding:
 | # | Change | Score | When |
 |---|---|--:|---|
 | 1 | A collapsed `0001_init.sql` stops the fork booting — **landed** | 10 | Now |
-| 2 | JWT carries no product/audience claim | 9 | Now |
-| 3 | Delete of an unknown id 500s the whole sync request | 9 | Now |
+| 2 | ~~JWT carries no product/audience claim~~ **landed** | 9 | Now |
+| 3 | ~~Delete of an unknown id 500s the whole sync request~~ **landed** | 9 | Now |
 | 4 | No foreign keys to `users`; deletion is 16 ordered DELETEs | 9 | At the freeze |
 | 5 | `deploy.yml` uses a long-lived GCP service-account key | 9 | Now |
 | 6 | Deployment pins `:latest`; rollout is `rollout restart` | 9 | Now |
 | 7 | ~~Any list member can grant membership to any account~~ **landed** | 8 | Now |
 | 8 | ~~`role` is client-supplied and gates list deletion~~ **landed** | 8 | Now |
-| 9 | Audience set is flat; no client-id → product mapping | 8 | Now |
+| 9 | ~~Audience set is flat; no client-id → product mapping~~ **landed, with one gap** | 8 | Now |
 | 10 | Refresh tokens are Argon2-hashed | 8 | Now |
 | 11 | A Gemini HTTP call runs inside an open Postgres transaction | 8 | Anytime |
 | 12 | Probes point at the deprecated `/healthcheck` | 8 | Now |
 | 13 | Guardrail limits and the pod memory limit disagree by ~100× | 8 | Anytime |
 | 14 | The retention reaper has never deleted anything | 8 | Now |
 | 15 | No index on any tenancy column on the grocery/todo side | 8 | Now |
-| 16 | `SyncScope` is not bound to anything the caller proved | 8 | Now |
+| 16 | ~~`SyncScope` is not bound to anything the caller proved~~ **landed** | 8 | Now |
 | 17 | Tenancy columns are nullable | 7 | At the freeze |
 | 18 | `grocery_list_members.id` embeds the raw Google subject | 7 | Now |
 | 19 | Sessions have no absolute lifetime | 7 | Anytime |
 | 20 | One bad item fails the whole batch | 7 | Now |
-| 21 | No caps on grocery/todo field sizes or batch length | 7 | Now |
+| 21 | No caps on grocery/todo field sizes — ~~batch length~~ **landed** | 7 | Now |
 | 22 | Deployment has no `securityContext` | 7 | Now |
 | 23 | Valkey has no `maxmemory` or eviction policy | 7 | Now |
 | 24 | `GEMINI_API_KEY` is `expect`ed at boot for a teddy.fyi-only feature | 7 | Now |
@@ -191,7 +191,17 @@ carrying the ScribbleRoute query paths, is serving requests against them. That s
 **two deploys** — ship the code that no longer references the tables, wait for the rollout, then
 ship the drop.
 
-## 2. The JWT carries no product claim — **9**, Now
+## 2. The JWT carries no product claim — **9**, Now — **LANDED**
+
+**Landed** in [#64](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/64), together with items 9 and 16 — they are one change, as the
+notes below said they would be. `Claims` now carries
+`product: Option<Product>` (`src/auth/product.rs`), minted from the audience at login and from
+the claiming parent's audience at device pairing, persisted on `sessions.product` so a refresh
+re-mints it, and skipped from the JSON entirely when unknown so an older client's token still
+decodes. Stage 1 of three: it *mints and tolerates*. Absence is permitted, because denying it
+would sign out every device holding a token minted before the deploy. Stage 3 — making absence a
+401 — is a later, deliberate change, and `a_token_without_a_product_claim_still_reaches_both_products`
+fails if anybody brings it forward. The description below is what was there before.
 
 `Claims` is `{sub, client_uuid, exp}` (`src/auth/tokens.rs:41`), and `require_auth` validates it
 with a bare `Validation::new(Algorithm::HS256)` (`src/auth/middleware.rs:68`) — signature and
@@ -350,7 +360,25 @@ the payload says and echoes the stored role back as a remote change so the clien
 disagreeing. `test_sync_member_cannot_promote_self_to_owner` pins both halves — the promotion is
 dropped, and the list delete it existed for is still refused.
 
-## 9. The audience set is flat — **8**, Now
+## 9. The audience set is flat — **8**, Now — **LANDED, with the gap this item predicted**
+
+**Landed** in [#64](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/64). `ClientCatalog` (`src/auth/client_ids.rs`) is the
+`client id → Option<Product>` map, read from two new per-product vars — `TEDDY_FYI_CLIENT_IDS`
+and `SCRIBBLEROUTE_CLIENT_IDS` — plus the legacy vars, two of which classify themselves by name
+(`GOOGLE_CLIENT_ID_GROCERY_WEB` → teddy.fyi, `SCRIBBLEROUTE_API_CLIENT_ID` → ScribbleRoute). An
+ID claimed by both products refuses to start.
+
+**The gap is the one this item named, and it is not closed by code.** `GOOGLE_IOS_CLIENT_IDS`
+still holds both products' iOS apps in one secret and nothing in the repo says which is which,
+so those IDs — and `GOOGLE_CLIENT_ID` — are accepted, unclassified, and their sessions carry no
+product claim. Guessing was rejected deliberately: a wrong guess denies a real device its own
+scopes, which is an outage wearing a security feature's clothes. Closing it is **configuration,
+not a deploy** — list each ID under one of the two per-product vars. The pod logs the
+unclassified set at boot (a `warn` naming every one of them) so the remaining work is visible
+from a rollout rather than from reading source. Until then item 16's enforcement applies only to
+sessions established through a classified ID.
+
+The description below is what was there before.
 
 `load_google_client_ids` (`src/auth/client_ids.rs`) unions `GOOGLE_CLIENT_ID`,
 `GOOGLE_CLIENT_ID_GROCERY_WEB`, `SCRIBBLEROUTE_API_CLIENT_ID`, `GOOGLE_CLIENT_IDS` and
@@ -460,7 +488,17 @@ including the eight-way `UNION ALL` in `status.rs:70-100`, which sequentially sc
 Add `("userId", updated_at)` composites. It is a twenty-line migration, it is a straight latency
 win today, and after the fork it is two migrations in two repos with two review cycles.
 
-## 16. `SyncScope` is not bound to anything the caller proved — **8**, Now
+## 16. `SyncScope` is not bound to anything the caller proved — **8**, Now — **LANDED**
+
+**Landed** in [#64](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/64), with items 2 and 9. `authorize_scope`
+(`src/routes/sync/scope_auth.rs`) runs at the top of both readers of `scope` — `POST /api/sync`
+and `GET /api/sync/status` — before a transaction is opened or the status cache is read, and
+403s a scope that does not belong to the token's product. `SyncScope::product()` is exhaustive,
+so a new scope will not compile until somebody says which side of the split it lands on.
+`All` is teddy.fyi's, which is a description of what the handler already does rather than a new
+restriction — and it closes the "omit the field and get the default" route around the check.
+A token with no product claim still reaches everything; see item 2 on why, and on what
+deleting that test would mean. The description below is what was there before.
 
 `let scope = payload.scope.unwrap_or(SyncScope::All);` (`src/routes/sync/handler.rs:30`). The
 scope is a body field. With item 2 unfixed, any valid token reaches all six scopes and both
@@ -525,7 +563,13 @@ error naming the item, and `AppError::Forbidden` from inside a processor does wh
 `AppError::Database` from item 3 does not. Decide the error model once, here, before it is two
 implementations that drift.
 
-## 21. No caps on grocery/todo payloads — **7**, Now
+## 21. No caps on grocery/todo payloads — **7**, Now — **half landed**
+
+**The batch-length half landed** in [#59](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/59):
+`SyncLimits` now bounds how many items one sync body may carry, per collection and in total
+(`DEFAULT_MAX_ITEMS_PER_COLLECTION` / `DEFAULT_MAX_ITEMS_TOTAL` in
+`src/routes/sync/limits.rs`). **The per-field size half is still open** — the `TEXT` columns
+below remain unbounded. The description below is what was there before.
 
 `validate_sync_payload` (`src/routes/sync/limits.rs:131`) bounds `drawings[]` and `configs[]` and
 nothing else. On the teddy.fyi side:

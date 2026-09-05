@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_authorizations\n            SET user_id = $1, claimed_at = now(), product = $3\n          WHERE user_code = $2\n            AND expires_at > now()\n            AND claimed_at IS NULL\n          RETURNING client_uuid",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_uuid",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "624f12f6fa4fdedd6b1b2471f4ea6b8f88d7d5b21e51512a42ae7e48e32a6d4d"
+}

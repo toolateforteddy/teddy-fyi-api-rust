@@ -1,22 +1,26 @@
-use crate::routes::ai::budget::{charge_gemini_call, BudgetLimits};
-use crate::routes::ai::service::assign_todo_icon;
-use crate::state::AppState;
+use super::icons::wants_server_icon;
 use crate::routes::sync::deletes::soft_delete_version;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
+use std::collections::HashMap;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn process_todo_changes(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &str,
     client_id: &str,
-    // Was `gemini_api_key: &str`. Carries the credential, the shared outbound
-    // HTTP client and Redis, because this function makes a billed AI call of its
-    // own (the icon assignment below) and so needs the same three things
-    // `/api/assign-icon` needs.
-    state: &AppState,
+    // Server-assigned icons, keyed by change id, already resolved by
+    // `super::icons::resolve_todo_icons` *before* this transaction was opened.
+    //
+    // This used to be `state: &AppState`, because the icon was fetched from
+    // Gemini right here — an outbound HTTPS round trip made while holding an
+    // open transaction and one of the pool's few connections. Nothing about the
+    // decision needs the database, so the calls happen up front and this
+    // function does database work only. See `super::icons` for the full
+    // reasoning.
+    resolved_icons: &HashMap<String, String>,
     server_timestamp: DateTime<Utc>,
     changes: &[TodoChangeDelta],
     success_ids: &mut Vec<String>,
@@ -88,41 +92,22 @@ pub async fn process_todo_changes(
                         Ok(mut item) => {
                             let mut current_updated_by = client_id.to_string();
 
-                            // Auto-assign icon if missing and fewer than 3 items are being synced in this batch
-                            if changes.len() < 3
-                                && item.icon.as_deref().unwrap_or("").is_empty()
-                                && !item.title.trim().is_empty()
-                            {
-                                // This is the third path that spends the Gemini
-                                // budget, and the least obvious one — a client
-                                // that never calls `/api/assign-icon` can still
-                                // bill us by syncing icon-less todos in batches
-                                // of one or two. It therefore charges the same
-                                // per-account budget as the explicit endpoints.
-                                //
-                                // A refusal is swallowed rather than propagated:
-                                // the icon is a garnish, and failing somebody's
-                                // whole sync because their AI allowance ran out
-                                // would turn a spend limit into data loss.
-                                let charged = charge_gemini_call(
-                                    &state.redis_client,
-                                    BudgetLimits::cached(),
-                                    user_id,
-                                )
-                                .await
-                                .is_ok();
-                                if charged {
-                                    if let Ok(icon) = assign_todo_icon(
-                                        &state.http_client,
-                                        &state.gemini_api_key,
-                                        &item.title,
-                                    )
-                                    .await
-                                    {
-                                        item.icon = Some(icon);
-                                        // Change updated_by_client so it is returned to the caller as a remote mutation
-                                        current_updated_by = "SERVER-AI".to_string();
-                                    }
+                            // Auto-assign icon if missing and fewer than 3 items are being synced in this batch.
+                            //
+                            // The predicate is re-checked here rather than being
+                            // taken on trust from the map: this is the write, so
+                            // this is where "when does the server assign an icon"
+                            // is decided. The map only ever answers *what* icon,
+                            // and an absent entry — no budget, or Gemini errored —
+                            // silently leaves the item as the client sent it,
+                            // because the icon is a garnish and failing somebody's
+                            // whole sync over it would turn a spend limit into
+                            // data loss. See `super::icons`.
+                            if wants_server_icon(&item, changes.len()) {
+                                if let Some(icon) = resolved_icons.get(&change.id) {
+                                    item.icon = Some(icon.clone());
+                                    // Change updated_by_client so it is returned to the caller as a remote mutation
+                                    current_updated_by = "SERVER-AI".to_string();
                                 }
                             }
 

@@ -5,8 +5,9 @@ use super::types::*;
 use super::config::*;
 use super::device::*;
 use super::limits::{validate_sync_payload, SyncLimits};
+use super::scope_auth::authorize_scope;
 use super::drawing::*;
-use super::publisher::{publish_device_event, SyncSseEvent};
+use super::publisher::{publish_device_events, SyncSseEvent};
 use crate::state::AppState;
 use crate::auth::tokens::Claims;
 use axum::{
@@ -14,7 +15,6 @@ use axum::{
     Extension,
 };
 use chrono::Utc;
-use redis::AsyncCommands;
 
 pub async fn sync_handler(
     State(state): State<AppState>,
@@ -28,6 +28,12 @@ pub async fn sync_handler(
     // rows this very request wrote. See `crate::routes::sync::versioning`.
     let server_ms = server_timestamp.timestamp_millis();
     let scope = payload.scope.unwrap_or(SyncScope::All);
+
+    // Before the bounds check, and long before a transaction: the scope decides which
+    // product's tables this request reaches, and it arrives in the body. `authorize_scope`
+    // is what ties it to the product the token was issued for. See
+    // `crate::routes::sync::scope_auth`.
+    authorize_scope(&claims, scope)?;
 
     // Bounds first, before a transaction is opened or a row is touched: an over-large
     // drawing blob or an over-long config value fails the whole request with a 400 that
@@ -87,6 +93,13 @@ pub async fn sync_handler(
         let payload = payload.handle();
         async move {
             if scope == SyncScope::All || scope == SyncScope::Todo {
+                // Before the transaction, deliberately: this may make an outbound Gemini
+                // call, and doing that while holding a connection open inside a live
+                // transaction is how a handful of concurrent syncs exhausts the pool and
+                // times out unrelated endpoints. See `crate::routes::sync::todo::icons`.
+                let resolved_icons =
+                    resolve_todo_icons(&state, &claims.sub, &payload.todo_changes).await;
+
                 let mut tx = state.db_pool.begin().await?;
                 let mut success_ids = Vec::new();
                 let mut upload_status = Vec::new();
@@ -109,7 +122,7 @@ pub async fn sync_handler(
                     &mut tx,
                     &claims.sub,
                     &payload.client_id,
-                    &state,
+                    &resolved_icons,
                     server_timestamp,
                     &payload.todo_changes,
                     &mut success_ids,
@@ -541,32 +554,38 @@ pub async fn sync_handler(
     // named that device sees the change without waiting for its next sync poll. Publishing
     // happens after the transaction commits, so a listener that reacts by syncing reads the
     // row that was just written. A Redis outage must not fail the sync, so failures only log.
-    for broadcast in &config_broadcasts {
-        let event = SyncSseEvent::DirectUpdate {
-            entity: "config".to_string(),
-            key: broadcast.item.key.clone(),
-            // The value itself, not the whole row: `key`/`value` is the contract every
-            // listener reads, and handing it the serialized `ConfigSyncItem` made clients
-            // store that JSON object as the config's value.
-            value: serde_json::Value::String(broadcast.item.value.clone()),
-            sender_client_id: Some(payload.client_id.clone()),
-            device_uuid: Some(broadcast.device_uuid),
-            is_deleted: broadcast.item.is_deleted,
-        };
-        if let Err(err) = publish_device_event(
-            &state.redis_publisher,
-            &claims.sub,
-            &broadcast.device_uuid,
-            &event,
-        )
-        .await
-        {
-            tracing::warn!(
-                "Failed to publish config event for device {}: {:?}",
+    //
+    // The whole set goes out as one pipelined batch rather than a publish apiece: a payload
+    // of 500 configs is 500 broadcasts, and sending them serially put 500 in-request round
+    // trips on the tail of a sync that had already done its real work. They are independent
+    // of one another, so there was never anything to gain from waiting for each reply.
+    let config_events: Vec<(uuid::Uuid, SyncSseEvent)> = config_broadcasts
+        .iter()
+        .map(|broadcast| {
+            (
                 broadcast.device_uuid,
-                err
-            );
-        }
+                SyncSseEvent::DirectUpdate {
+                    entity: "config".to_string(),
+                    key: broadcast.item.key.clone(),
+                    // The value itself, not the whole row: `key`/`value` is the contract every
+                    // listener reads, and handing it the serialized `ConfigSyncItem` made clients
+                    // store that JSON object as the config's value.
+                    value: serde_json::Value::String(broadcast.item.value.clone()),
+                    sender_client_id: Some(payload.client_id.clone()),
+                    device_uuid: Some(broadcast.device_uuid),
+                    is_deleted: broadcast.item.is_deleted,
+                },
+            )
+        })
+        .collect();
+    if let Err(err) =
+        publish_device_events(&state.redis_publisher, &claims.sub, &config_events).await
+    {
+        tracing::warn!(
+            "Failed to publish {} config event(s): {:?}",
+            config_events.len(),
+            err
+        );
     }
 
     let has_grocery = !payload.grocery_list_changes.is_empty()
@@ -585,52 +604,58 @@ pub async fn sync_handler(
         || !payload.drawings.is_empty();
 
     if has_mutations {
-        // Connected once and inspected, rather than two `if let`s: the failure needs
-        // to be counted, and a second connect attempt just to log it would double the
-        // cost of the path that is already failing.
-        let cache_conn = state.redis_client.get_multiplexed_tokio_connection().await;
-        if let Err(ref err) = cache_conn {
+        // Every key this request touches goes out in one pipeline, on the process-wide
+        // connection `RedisPublisher` already holds. Both halves of that used to be a
+        // per-request cost: a fresh multiplexed connection (a TCP, and in production a
+        // TLS, handshake) dialled and thrown away on every mutating sync, and then a
+        // serial `SET` per key — two of them per member of every shared grocery list
+        // touched, so a four-member list alone was eight round trips.
+        let ts_str = server_timestamp.to_rfc3339();
+        let mut cache_writes = redis::pipe();
+
+        // Update All scope for the requesting user
+        cache_writes.set_ex(format!("user:{}:last_update:All", claims.sub), &ts_str, 86400).ignore();
+
+        // Invalidate/update caches for all members/collaborators of the updated grocery lists
+        if has_grocery {
+            if !affected_grocery_users.contains(&claims.sub) {
+                affected_grocery_users.push(claims.sub.clone());
+            }
+            for user_id in &affected_grocery_users {
+                cache_writes.set_ex(format!("user:{}:last_update:Grocery", user_id), &ts_str, 86400).ignore();
+                cache_writes.set_ex(format!("user:{}:last_update:All", user_id), &ts_str, 86400).ignore();
+            }
+        }
+
+        // Update specific scopes for the requesting user
+        let has_todo = !payload.todo_list_changes.is_empty() || !payload.todo_changes.is_empty();
+        let has_drawings = !payload.drawing_changes.is_empty() || !payload.drawings.is_empty();
+        let has_configs = !payload.config_changes.is_empty() || !payload.configs.is_empty();
+
+        if has_todo {
+            cache_writes.set_ex(format!("user:{}:last_update:Todo", claims.sub), &ts_str, 86400).ignore();
+        }
+        // Drawings can now arrive under either the Box or Keep scope, but only the
+        // Box and KeepCloud status queries look at drawings, so mark those keys.
+        if has_drawings {
+            cache_writes.set_ex(format!("user:{}:last_update:ScribbleBox", claims.sub), &ts_str, 86400).ignore();
+            cache_writes.set_ex(format!("user:{}:last_update:ScribbleKeepCloud", claims.sub), &ts_str, 86400).ignore();
+        }
+        if has_configs {
+            cache_writes.set_ex(format!("user:{}:last_update:ScribbleKeep", claims.sub), &ts_str, 86400).ignore();
+            cache_writes.set_ex(format!("user:{}:last_update:ScribbleKeepCloud", claims.sub), &ts_str, 86400).ignore();
+        }
+
+        if let Err(err) = state.redis_publisher.run_pipeline(&cache_writes).await {
             // Losing this write is not a correctness problem — `/api/sync/status`
             // falls back to the database aggregate — but it is a silent, expensive
-            // degradation, so it gets counted.
+            // degradation, so it gets counted. The counter keeps its name, and still
+            // means "this request's cache keys did not get written"; what changed is
+            // that there is no separate connect step to attribute a failure to, since
+            // the dial is shared and lazy, and that the batch shares one outcome
+            // instead of each key failing on its own.
             crate::observability::metrics::record_redis_degraded("sync_cache_write_connect");
-            tracing::warn!("Failed to connect to Redis to update sync caches: {:?}", err);
-        }
-        if let Ok(mut conn) = cache_conn {
-            let ts_str = server_timestamp.to_rfc3339();
-            
-            // Update All scope for the requesting user
-            let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:All", claims.sub), &ts_str, 86400).await;
-
-            // Invalidate/update caches for all members/collaborators of the updated grocery lists
-            if has_grocery {
-                if !affected_grocery_users.contains(&claims.sub) {
-                    affected_grocery_users.push(claims.sub.clone());
-                }
-                for user_id in &affected_grocery_users {
-                    let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Grocery", user_id), &ts_str, 86400).await;
-                    let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:All", user_id), &ts_str, 86400).await;
-                }
-            }
-
-            // Update specific scopes for the requesting user
-            let has_todo = !payload.todo_list_changes.is_empty() || !payload.todo_changes.is_empty();
-            let has_drawings = !payload.drawing_changes.is_empty() || !payload.drawings.is_empty();
-            let has_configs = !payload.config_changes.is_empty() || !payload.configs.is_empty();
-
-            if has_todo {
-                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:Todo", claims.sub), &ts_str, 86400).await;
-            }
-            // Drawings can now arrive under either the Box or Keep scope, but only the
-            // Box and KeepCloud status queries look at drawings, so mark those keys.
-            if has_drawings {
-                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleBox", claims.sub), &ts_str, 86400).await;
-                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleKeepCloud", claims.sub), &ts_str, 86400).await;
-            }
-            if has_configs {
-                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleKeep", claims.sub), &ts_str, 86400).await;
-                let _ = conn.set_ex::<_, _, ()>(&format!("user:{}:last_update:ScribbleKeepCloud", claims.sub), &ts_str, 86400).await;
-            }
+            tracing::warn!("Failed to update sync caches in Redis: {:?}", err);
         }
     }
 

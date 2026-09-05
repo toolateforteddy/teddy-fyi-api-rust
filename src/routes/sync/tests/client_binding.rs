@@ -23,6 +23,7 @@ fn claims_for(client_uuid: &str) -> Claims {
         sub: "user-1".to_string(),
         client_uuid: client_uuid.to_string(),
         exp: 10_000_000_000,
+        product: None,
     }
 }
 

@@ -478,6 +478,7 @@ fn stream_claims() -> Claims {
         sub: "user-1".to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10_000_000_000,
+        product: None,
     }
 }
 

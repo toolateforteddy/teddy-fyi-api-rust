@@ -24,6 +24,7 @@ pub fn setup_state(pool: PgPool) -> AppState {
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
         )
         .unwrap(),
+        http_client: crate::routes::ai::gemini::build_http_client(),
         cookie_domain: ".teddy.fyi".to_string(),
         stream_slots: Arc::new(crate::routes::sync::stream_limits::StreamSlots::from_env()),
     }

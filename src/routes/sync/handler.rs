@@ -68,7 +68,7 @@ pub async fn sync_handler(
                     &mut tx,
                     &claims.sub,
                     &payload.client_id,
-                    &state.gemini_api_key,
+                    &state,
                     server_timestamp,
                     &payload.todo_changes,
                     &mut success_ids,

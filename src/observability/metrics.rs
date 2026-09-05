@@ -67,6 +67,10 @@ fn register_baseline_metrics() {
         "gemini_requests_total",
         "Calls to the Gemini API, by model and outcome"
     );
+    metrics::describe_counter!(
+        "gemini_calls_refused_total",
+        "Gemini calls refused before dispatch by a spend budget or the kill switch"
+    );
     metrics::describe_counter!("sync_completed_total", "Successful POST /api/sync requests");
     metrics::describe_gauge!(
         "db_connectivity_degraded",
@@ -104,6 +108,11 @@ fn register_baseline_metrics() {
     for reason in ["per_user", "global"] {
         metrics::counter!("sse_streams_refused_total", "reason" => reason).increment(0);
     }
+    // Same reasoning as the stream caps: a spend budget that is never hit is the
+    // healthy state, so its series must exist at zero rather than be absent.
+    for reason in crate::routes::ai::budget::REFUSAL_REASONS {
+        metrics::counter!("gemini_calls_refused_total", "reason" => *reason).increment(0);
+    }
     for site in REDIS_FALLBACK_SITES {
         metrics::counter!("redis_degraded_total", "site" => *site).increment(0);
     }
@@ -118,6 +127,8 @@ const REDIS_FALLBACK_SITES: &[&str] = &[
     "sync_status_backfill_connect",
     "sync_status_backfill_set",
     "sync_cache_write_connect",
+    "gemini_budget_connect",
+    "gemini_budget_incr",
 ];
 
 /// Serves `GET /metrics` on its own port until the process exits.

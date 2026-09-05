@@ -96,6 +96,7 @@ async fn init_app_state() -> AppState {
         jwt_secret,
         gemini_api_key,
         redis_client,
+        http_client: routes::ai::gemini::build_http_client(),
         cookie_domain,
         // Read once at startup: the caps are deployment configuration, and a
         // per-request `env::var` on a hot path buys nothing.

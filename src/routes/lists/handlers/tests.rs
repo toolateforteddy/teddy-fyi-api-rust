@@ -80,7 +80,7 @@ async fn seen_by_caller(err: AppError) -> (StatusCode, String) {
     (status, body["error"].as_str().unwrap().to_string())
 }
 
-/// Backdates an invite past its expiry without waiting 24 hours.
+/// Backdates an invite past its expiry without waiting out its TTL.
 async fn expire_invite(pool: &PgPool, code: &str) {
     sqlx::query!(
         r#"UPDATE list_invites SET "expiresAt" = now() - interval '1 hour' WHERE code = $1"#,
@@ -198,31 +198,110 @@ async fn a_probed_expired_code_is_destroyed(pool: PgPool) {
 #[sqlx::test]
 async fn outstanding_invites_are_capped(pool: PgPool) {
     let state = setup_state(pool.clone());
-    seed_list(&pool, "list-1", "owner-1").await;
 
+    // The cap is reached across lists, not by pressing "invite" repeatedly on one: a list
+    // holds a single live code, so a second mint for the same list replaces the first
+    // rather than adding to the pile.
+    let cap = limits::max_outstanding_invites_per_user();
     let mut codes = Vec::new();
-    for n in 0..limits::max_outstanding_invites_per_user() {
+    for n in 0..cap {
+        let list_id = format!("list-{}", n);
+        seed_list(&pool, &list_id, "owner-1").await;
         codes.push(
-            invite(&state, "owner-1", "list-1")
+            invite(&state, "owner-1", &list_id)
                 .await
                 .unwrap_or_else(|_| panic!("invite {} is under the cap and must succeed", n)),
         );
     }
 
-    let (status, _) = seen_by_caller(invite(&state, "owner-1", "list-1").await.unwrap_err()).await;
+    seed_list(&pool, "list-over", "owner-1").await;
+    let (status, _) = seen_by_caller(invite(&state, "owner-1", "list-over").await.unwrap_err()).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     // The cap is per account, not global: a different parent is unaffected.
-    seed_list(&pool, "list-2", "owner-2").await;
-    assert!(invite(&state, "owner-2", "list-2").await.is_ok());
+    seed_list(&pool, "list-other", "owner-2").await;
+    assert!(invite(&state, "owner-2", "list-other").await.is_ok());
 
     // A redeemed invite stops counting, so the account gets its slot back.
     join(&state, "guest-1", &codes[0]).await.unwrap();
-    assert!(invite(&state, "owner-1", "list-1").await.is_ok());
+    assert!(invite(&state, "owner-1", "list-over").await.is_ok());
 
     // So does an expired one — a parent whose code lapsed unused is not penalised.
+    seed_list(&pool, "list-over-2", "owner-1").await;
     expire_invite(&pool, &codes[1]).await;
-    assert!(invite(&state, "owner-1", "list-1").await.is_ok());
+    assert!(invite(&state, "owner-1", "list-over-2").await.is_ok());
+}
+
+/// Minting supersedes: a list has one live code, and it is the newest one.
+///
+/// Every extra code was a standing credential to the same list, live for as long as the
+/// one actually sent to anybody and no less useful to a guesser. Pressing "invite" again —
+/// because the first code was mistyped, or went to the wrong person — now takes the old
+/// one out of circulation, which is what pressing that button already looks like it does.
+#[sqlx::test]
+async fn a_new_code_retires_the_list_previous_one(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    seed_list(&pool, "list-1", "owner-1").await;
+
+    let first = invite(&state, "owner-1", "list-1").await.unwrap();
+    let second = invite(&state, "owner-1", "list-1").await.unwrap();
+    assert_ne!(first, second);
+
+    // One row for the list, and the superseded code is as dead as one that never existed —
+    // same status, same string, per `JOIN_FAILURE_MESSAGE`.
+    assert_eq!(outstanding_invites(&pool, "owner-1").await, 1);
+    let (status, message) = seen_by_caller(join(&state, "guest-1", &first).await.unwrap_err()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(message, JOIN_FAILURE_MESSAGE);
+
+    // The live one still works, and is the only one that does.
+    assert_eq!(join(&state, "guest-2", &second).await.unwrap().list_id, "list-1");
+}
+
+/// Re-inviting to a list is never what trips the outstanding cap.
+///
+/// The supersede happens before the count, so replacing a code adds nothing to the surface
+/// the cap bounds — a parent at the cap can still fix a mistyped code for a list they have
+/// already invited to.
+#[sqlx::test]
+async fn superseding_a_code_does_not_count_against_the_cap(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    let cap = limits::max_outstanding_invites_per_user();
+    for n in 0..cap {
+        let list_id = format!("list-{}", n);
+        seed_list(&pool, &list_id, "owner-1").await;
+        invite(&state, "owner-1", &list_id).await.unwrap();
+    }
+
+    assert!(invite(&state, "owner-1", "list-0").await.is_ok());
+    assert_eq!(outstanding_invites(&pool, "owner-1").await, cap);
+}
+
+/// A code is good for an hour, not for a day.
+#[sqlx::test]
+async fn a_code_is_good_for_an_hour(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    seed_list(&pool, "list-1", "owner-1").await;
+
+    let code = invite(&state, "owner-1", "list-1").await.unwrap();
+    let expires_at = sqlx::query_scalar!(
+        r#"SELECT "expiresAt" FROM list_invites WHERE code = $1"#,
+        code
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let ttl = expires_at - Utc::now();
+    let configured = chrono::Duration::minutes(limits::invite_ttl_mins());
+    assert!(ttl <= configured, "TTL {:?} is longer than configured", ttl);
+    assert!(
+        ttl > configured - chrono::Duration::minutes(1),
+        "TTL {:?} is shorter than configured",
+        ttl
+    );
+    assert_eq!(limits::invite_ttl_mins(), 60);
 }
 
 /// The membership check is unchanged, and it is not a 429: being refused a list you do not
@@ -260,6 +339,7 @@ async fn codes_are_normalised_before_lookup(pool: PgPool) {
 #[test]
 fn limits_default_when_the_environment_is_silent() {
     assert_eq!(limits::max_join_failures(), limits::DEFAULT_MAX_JOIN_FAILURES);
+    assert_eq!(limits::invite_ttl_mins(), limits::DEFAULT_INVITE_TTL_MINS);
     assert_eq!(
         limits::max_outstanding_invites_per_user(),
         limits::DEFAULT_MAX_OUTSTANDING_INVITES_PER_USER

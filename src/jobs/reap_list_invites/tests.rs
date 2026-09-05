@@ -7,27 +7,34 @@ use super::*;
 /// would quietly disable the brute-force limit that depends on them.
 #[sqlx::test]
 async fn only_dead_rows_are_swept(pool: PgPool) {
-    sqlx::query!(
-        r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt")
-           VALUES ('list-1', 'Shop', 'owner-1', 0)"#
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    // A list holds one invite at a time — `list_invites` is uniquely indexed on "listId" —
+    // so the three rows this needs are three lists.
+    for list_id in ["list-1", "list-2", "list-3"] {
+        sqlx::query!(
+            r#"INSERT INTO grocery_lists (id, name, "ownerId", "createdAt")
+               VALUES ($1, 'Shop', 'owner-1', 0)"#,
+            list_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
 
-    for (code, expires_at) in [
-        ("LIVEONE1", Utc::now() + Duration::hours(1)),
+    for (code, list_id, expires_at) in [
+        ("LIVEONE1", "list-1", Utc::now() + Duration::hours(1)),
         // Expired, but inside the retention window: still answerable in support.
-        ("RECENT01", Utc::now() - Duration::hours(1)),
+        ("RECENT01", "list-2", Utc::now() - Duration::hours(1)),
         (
             "DEADONE1",
+            "list-3",
             Utc::now() - Duration::hours(INVITE_RETENTION_HOURS + 1),
         ),
     ] {
         sqlx::query!(
             r#"INSERT INTO list_invites (code, "listId", "createdBy", "expiresAt")
-               VALUES ($1, 'list-1', 'owner-1', $2)"#,
+               VALUES ($1, $2, 'owner-1', $3)"#,
             code,
+            list_id,
             expires_at
         )
         .execute(&pool)

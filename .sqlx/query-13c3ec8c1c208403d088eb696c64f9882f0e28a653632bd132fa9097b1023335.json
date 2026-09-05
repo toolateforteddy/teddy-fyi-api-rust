@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO list_invites (code, \"listId\", \"createdBy\", \"expiresAt\")\n               VALUES ($1, $2, 'owner-1', $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "13c3ec8c1c208403d088eb696c64f9882f0e28a653632bd132fa9097b1023335"
+}

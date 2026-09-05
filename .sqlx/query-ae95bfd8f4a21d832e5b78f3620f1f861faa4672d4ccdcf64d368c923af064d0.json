@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_lists (id, name, \"ownerId\", \"createdAt\")\n               VALUES ($1, 'Shop', 'owner-1', 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ae95bfd8f4a21d832e5b78f3620f1f861faa4672d4ccdcf64d368c923af064d0"
+}

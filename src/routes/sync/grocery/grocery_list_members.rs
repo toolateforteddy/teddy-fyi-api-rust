@@ -102,11 +102,30 @@ pub async fn process_grocery_list_member_changes(
                 if let Some(ref data) = change.data {
                     match serde_json::from_value::<GroceryListMemberData>(data.clone()) {
                         Ok(item) => {
-                            // Verify permission: User must either be joining themselves, or already be a member of the list
-                            let is_joining_self = item.user_id == user_id;
-                            let is_already_member = member_lists_set.contains(&item.list_id);
+                            // Verify permission: the caller must already be a member of the
+                            // list this row belongs to. Both ends of it, when the row exists.
+                            //
+                            // Joining *yourself* used to be sufficient on its own, and it is
+                            // not a permission check at all: a listId is not a secret — it
+                            // rides along in every grocery item, store and category the list
+                            // owns — so knowing one was enough to insert a MEMBER row against
+                            // another family's list and start reading and writing their data.
+                            // No guessing required. Membership is granted by `/api/lists/join`
+                            // and by nothing else; sync only ever reflects a membership that
+                            // already exists.
+                            let is_member_of_target = member_lists_set.contains(&item.list_id);
 
-                            if !is_joining_self && !is_already_member {
+                            // An existing row carries a list of its own, and the upsert below
+                            // rewrites `"listId"` from the payload. Without this second half a
+                            // member of list B could take a membership row belonging to list A
+                            // and move it — either dragging A's row into B, or, with someone
+                            // else's row, pushing them out of B into a list they never joined.
+                            let is_member_of_current = existing_map
+                                .get(&change.id)
+                                .map(|row| member_lists_set.contains(&row.list_id))
+                                .unwrap_or(true);
+
+                            if !is_member_of_target || !is_member_of_current {
                                 return Err(AppError::Forbidden(format!(
                                     "User is not authorized to manage membership for list {}",
                                     item.list_id

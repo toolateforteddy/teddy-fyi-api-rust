@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions\n             SET failed_refresh_attempts = LEAST(failed_refresh_attempts, 1000000) + 1\n             WHERE user_id = $1 AND client_uuid = $2\n             RETURNING failed_refresh_attempts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_refresh_attempts",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e4f57515d23a0c06c47c7981e5817e2ef47992399c50ca6f88abcca86e3e5155"
+}

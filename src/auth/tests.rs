@@ -167,7 +167,7 @@ mod tests {
         // Fetch session from DB and verify rotation columns
         let session = sqlx::query_as!(
             crate::auth::models::Session,
-            "SELECT * FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2",
             user_id,
             client_uuid
         ).fetch_one(&pool).await.unwrap();
@@ -349,8 +349,12 @@ mod tests {
         assert!(active_exists, "Active session should still exist");
     }
 
+    /// A refresh token that was never issued proves only that the caller is guessing, and
+    /// guessing must not log a device out: `/auth/refresh` takes no credential beyond the
+    /// token itself, so deleting here made a one-line unauthenticated POST into a permanent
+    /// remote logout for any `user_id`/`client_uuid` an attacker could name.
     #[sqlx::test]
-    async fn test_refresh_handler_invalid_token_breach_mitigation(pool: PgPool) {
+    async fn test_refresh_handler_unknown_token_leaves_session_intact(pool: PgPool) {
         let state = setup_state(pool.clone());
         let user_id = "user-invalid-token-test";
         let client_1 = "client-1";
@@ -381,34 +385,99 @@ mod tests {
             expiration
         ).execute(&pool).await.unwrap();
 
-        // Attempt refresh on session 1 with a completely invalid token
+        // Attempt refresh on session 1 with a completely invalid token, three times over.
+        for _ in 0..3 {
+            let payload = RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_1.to_string(),
+                refresh_token: "wrong-token-abc".to_string(),
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            };
+            let response = refresh_handler(State(state.clone()), Json(payload)).await;
+            assert_eq!(response.unwrap_err().status(), axum::http::StatusCode::UNAUTHORIZED);
+        }
+
+        // Neither session may be touched by an unauthenticated guess.
+        for client in [client_1, client_2] {
+            let exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .count
+                .unwrap() > 0;
+            assert!(exists, "Session for {} must survive a guessed refresh token", client);
+        }
+
+        // The guesses are counted, so a brute-force is still visible.
+        let attempts = sqlx::query_scalar!(
+            "SELECT failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_1
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(attempts, 3, "Each rejected guess should bump the per-session counter");
+
+        // And the device whose session was targeted can still refresh normally afterwards.
         let payload = RefreshRequest {
             user_id: user_id.to_string(),
             client_uuid: client_1.to_string(),
-            refresh_token: "wrong-token-abc".to_string(),
+            refresh_token: refresh_1.to_string(),
             use_cookie: Some(false),
             expires_in_secs: None,
         };
+        let response = refresh_handler(State(state.clone()), Json(payload))
+            .await
+            .expect("The real refresh token must still work after someone guessed at it");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
 
+        // A successful rotation clears the counter: it counts consecutive failures.
+        let attempts = sqlx::query_scalar!(
+            "SELECT failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_1
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(attempts, 0, "A successful refresh should reset the failure counter");
+    }
+
+    /// The old hash matching with a NULL `rotated_at` cannot be reached by guessing -- only a
+    /// genuinely issued token matches it -- so invalidating there is not the remote-logout
+    /// hole, and we keep failing closed rather than honouring a token of unknowable age.
+    #[sqlx::test]
+    async fn test_refresh_handler_rotated_at_null_invalidates(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-rotated-null-test";
+        let client_uuid = "client-rotated-null";
+
+        let old_refresh = "old-refresh-token-null-rotated";
+        let current_refresh = "current-refresh-token-null-rotated";
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, $5, NULL)",
+            user_id,
+            client_uuid,
+            hash_refresh_token(current_refresh),
+            expiration,
+            hash_refresh_token(old_refresh)
+        ).execute(&pool).await.unwrap();
+
+        let payload = RefreshRequest {
+            user_id: user_id.to_string(),
+            client_uuid: client_uuid.to_string(),
+            refresh_token: old_refresh.to_string(),
+            use_cookie: Some(false),
+            expires_in_secs: None,
+        };
         let response = refresh_handler(State(state.clone()), Json(payload)).await;
         assert_eq!(response.unwrap_err().status(), axum::http::StatusCode::UNAUTHORIZED);
 
-        // Verify breach mitigation: only the offending client's session must be deleted from the database
-        let client_1_exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client_1)
+        let exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client_uuid)
             .fetch_one(&pool)
             .await
             .unwrap()
             .count
             .unwrap() > 0;
-        assert!(!client_1_exists, "Offending client session should have been deleted");
-
-        let client_2_exists = sqlx::query!("SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2", user_id, client_2)
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .count
-            .unwrap() > 0;
-        assert!(client_2_exists, "Other client session should still exist");
+        assert!(!exists, "A real old token of unknowable age should still invalidate the session");
     }
 }
 

@@ -87,7 +87,7 @@ async fn a_page_exactly_at_the_limit_is_not_truncated(pool: PgPool) {
         &parse_or_hash_uuid("client-1"),
         None,
         None,
-        4,
+        Some(4),
     )
     .await
     .unwrap();
@@ -113,7 +113,7 @@ async fn one_row_over_the_limit_pages(pool: PgPool) {
         &parse_or_hash_uuid("client-1"),
         None,
         None,
-        4,
+        Some(4),
     )
     .await
     .unwrap();
@@ -129,7 +129,7 @@ async fn one_row_over_the_limit_pages(pool: PgPool) {
         &parse_or_hash_uuid("client-1"),
         None,
         Some(chrono::DateTime::from_timestamp_millis(1_003).unwrap()),
-        4,
+        Some(4),
     )
     .await
     .unwrap();
@@ -158,7 +158,7 @@ async fn a_page_that_would_split_a_millisecond_stops_before_it(pool: PgPool) {
         &parse_or_hash_uuid("client-1"),
         None,
         None,
-        3,
+        Some(3),
     )
     .await
     .unwrap();
@@ -183,7 +183,7 @@ async fn more_than_a_page_in_one_millisecond_is_served_whole(pool: PgPool) {
         &parse_or_hash_uuid("client-1"),
         None,
         None,
-        2,
+        Some(2),
     )
     .await
     .unwrap();
@@ -220,6 +220,7 @@ async fn a_cloud_sync_carries_each_drawing_once_per_channel(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: true,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -244,4 +245,115 @@ async fn a_cloud_sync_carries_each_drawing_once_per_channel(pool: PgPool) {
     assert_eq!(res.drawings.len(), 3);
     assert_eq!(res.remote_drawing_changes.len(), 3);
     assert!(!res.has_more);
+}
+
+#[sqlx::test]
+async fn a_client_that_cannot_page_is_served_whole(pool: PgPool) {
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
+    let other_client = parse_or_hash_uuid("client-2");
+    seed_drawings(&pool, user_uuid, device_uuid, other_client, 1_000, 9).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let page = fetch_drawing_download(
+        &mut tx,
+        &user_uuid,
+        &parse_or_hash_uuid("client-1"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Nine rows and no bound: all nine, and no cursor walked back, because there is
+    // nothing left behind for the client to come back for.
+    assert_eq!(page.items.len(), 9);
+    assert_eq!(page.remote_changes.len(), 9);
+    assert_eq!(page.next_cursor_ms, None);
+}
+
+#[sqlx::test]
+async fn a_sync_that_does_not_declare_paging_is_not_truncated(pool: PgPool) {
+    // The regression this guards. The shipped clients send no `supports_paging` and no
+    // `last_synced_at`, so every one of their syncs is an initial sync. Bounding those at
+    // a page they can never ask past would not slow their download down -- it would cost
+    // them every row after the page, on every sync, permanently.
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
+    let other_client = parse_or_hash_uuid("client-2");
+    let count = crate::routes::sync::limits::DEFAULT_SYNC_DOWNLOAD_PAGE_SIZE as i64 + 5;
+    seed_drawings(&pool, user_uuid, device_uuid, other_client, 1_000, count).await;
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: Some(SyncScope::ScribbleKeepCloud),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+        supports_paging: false,
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert_eq!(res.drawings.len(), count as usize);
+    assert_eq!(res.remote_drawing_changes.len(), count as usize);
+    // Nothing was held back, so the cursor is this request's own clock reading and the
+    // client is not being asked to come back for a page it cannot request.
+    assert!(!res.has_more);
+}
+
+#[sqlx::test]
+async fn a_sync_that_declares_paging_is_bounded_and_says_so(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
+    let other_client = parse_or_hash_uuid("client-2");
+    let page_size = crate::routes::sync::limits::DEFAULT_SYNC_DOWNLOAD_PAGE_SIZE as i64;
+    seed_drawings(&pool, user_uuid, device_uuid, other_client, 1_000, page_size + 5).await;
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: Some(SyncScope::ScribbleKeepCloud),
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+        supports_paging: true,
+    };
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("Handler should succeed")
+        .0;
+
+    assert_eq!(res.drawings.len(), page_size as usize);
+    assert!(res.has_more, "a truncated download must say it was truncated");
 }

@@ -51,6 +51,32 @@ pub enum Page {
     WholeMillisecond { ms: i64 },
 }
 
+/// The `LIMIT` one download read asks for.
+///
+/// `Some(n)` is a paged read: `n + 1` rows, the extra one being the probe [`trim_page`]
+/// reads to tell "this is everything" from "there is more behind it". `None` is a client
+/// that cannot resume a truncated download (see `SyncRequest::supports_paging`) and is
+/// therefore served whole — expressed as a limit rather than as a second query, so the SQL
+/// text and its prepared descriptor stay exactly the same on both paths.
+pub fn probe_limit(page_size: Option<usize>) -> i64 {
+    match page_size {
+        // `usize` is 64-bit on every target this builds for, so the `min` is what keeps a
+        // hand-set `SYNC_DOWNLOAD_PAGE_SIZE` near the top of the range from wrapping the
+        // cast into a negative `LIMIT`.
+        Some(n) => n.saturating_add(1).min(i64::MAX as usize) as i64,
+        None => i64::MAX,
+    }
+}
+
+/// The page size [`trim_page`] should trim to, given the same bound.
+///
+/// An unpaged read can never truncate, and `usize::MAX` says so in the one place that
+/// decides: `rows.len() <= page_size` holds for every page a database can return, so
+/// [`trim_page`] answers [`Page::Complete`] and no cursor is walked back.
+pub fn trim_size(page_size: Option<usize>) -> usize {
+    page_size.unwrap_or(usize::MAX)
+}
+
 /// Trims a probe page in place so that it ends on a whole millisecond.
 ///
 /// `rows` must be ordered by `last_modified` ascending and must have been read with a
@@ -115,5 +141,29 @@ mod tests {
     fn a_page_entirely_inside_one_millisecond_asks_for_the_whole_group() {
         let mut rows = vec![7, 7, 7, 7];
         assert_eq!(page(&mut rows, 3), Page::WholeMillisecond { ms: 7 });
+    }
+
+    #[test]
+    fn an_unpaged_read_asks_for_everything_and_never_truncates() {
+        assert_eq!(probe_limit(None), i64::MAX);
+
+        // The bound a client that cannot resume is served under: whatever the database
+        // returns fits, so the cursor is never walked back.
+        let mut rows = vec![1, 2, 3, 3, 3];
+        assert_eq!(page(&mut rows, trim_size(None)), Page::Complete);
+        assert_eq!(rows, vec![1, 2, 3, 3, 3]);
+    }
+
+    #[test]
+    fn a_paged_read_asks_for_one_row_past_the_page() {
+        assert_eq!(probe_limit(Some(200)), 201);
+        assert_eq!(trim_size(Some(200)), 200);
+    }
+
+    #[test]
+    fn an_absurd_page_size_does_not_wrap_the_limit_negative() {
+        // A `LIMIT` that came back negative would be a query error rather than a large
+        // page, so the saturation matters more than the number it saturates to.
+        assert!(probe_limit(Some(usize::MAX)) > 0);
     }
 }

@@ -479,6 +479,7 @@ mod tests {
             drawing_changes: vec![],
             configs: vec![],
             drawings: vec![],
+            supports_paging: false,
         }
     }
 

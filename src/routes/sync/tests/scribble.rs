@@ -90,6 +90,7 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
         }],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -196,6 +197,7 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -304,6 +306,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))

@@ -2,7 +2,6 @@ use super::grocery::fetch_remote_grocery_mutations;
 use super::todo::fetch_remote_todo_mutations;
 use super::config::fetch_config_download;
 use super::drawing::fetch_drawing_download;
-use super::limits::SyncLimits;
 use super::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -80,13 +79,17 @@ pub async fn fetch_remote_mutations(
         (vec![], vec![], vec![], vec![], vec![], vec![])
     };
 
+    // Unpaged, deliberately. This path keeps only `remote_changes` and drops the
+    // `next_cursor_ms` that says a page was cut short, so a bound here would truncate with
+    // nothing to tell the client where to resume. The handler calls the downloads directly
+    // and does carry the cursor; this helper does not.
     let remote_config_changes = if scope == SyncScope::ScribbleBox
         || scope == SyncScope::ScribbleKeep
         || scope == SyncScope::ScribbleKeepCloud
     {
         let user_uuid = parse_or_hash_uuid(user_id);
         let client_uuid = parse_or_hash_uuid(client_id);
-        fetch_config_download(tx, &user_uuid, &client_uuid, None, last_synced_at, SyncLimits::from_env().download_page_size)
+        fetch_config_download(tx, &user_uuid, &client_uuid, None, last_synced_at, None)
             .await?
             .remote_changes
     } else {
@@ -96,7 +99,7 @@ pub async fn fetch_remote_mutations(
     let remote_drawing_changes = if scope == SyncScope::ScribbleKeepCloud {
         let user_uuid = parse_or_hash_uuid(user_id);
         let client_uuid = parse_or_hash_uuid(client_id);
-        fetch_drawing_download(tx, &user_uuid, &client_uuid, None, last_synced_at, SyncLimits::from_env().download_page_size)
+        fetch_drawing_download(tx, &user_uuid, &client_uuid, None, last_synced_at, None)
             .await?
             .remote_changes
     } else {

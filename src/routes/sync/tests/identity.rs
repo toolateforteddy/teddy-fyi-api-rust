@@ -120,6 +120,7 @@ async fn todo_rows_key_off_the_raw_subject_and_configs_off_the_derived_uuid(pool
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let _ = sync_handler(State(state.clone()), AppJson(todo_req))
@@ -154,6 +155,7 @@ async fn todo_rows_key_off_the_raw_subject_and_configs_off_the_derived_uuid(pool
             last_modified: Utc::now().timestamp_millis(),
         }],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let _ = sync_handler(State(state), AppJson(config_req))

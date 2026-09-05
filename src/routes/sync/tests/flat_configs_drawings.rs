@@ -63,6 +63,7 @@ async fn test_sync_handler_flat_configs(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![config_item],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -143,6 +144,7 @@ async fn test_sync_handler_flat_drawings(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![drawing_item],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -201,6 +203,7 @@ async fn test_sync_handler_flat_drawings_non_uuid_user_id(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![drawing_item],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -270,6 +273,7 @@ async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![config_item],
         drawings: vec![drawing_item],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -455,5 +459,6 @@ fn blank_request() -> SyncRequest {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }

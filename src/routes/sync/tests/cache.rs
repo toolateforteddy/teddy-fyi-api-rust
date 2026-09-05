@@ -165,6 +165,7 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let claims = Claims {
@@ -287,6 +288,7 @@ async fn test_sync_handler_updates_redis_cache_collaborative(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let claims = Claims {

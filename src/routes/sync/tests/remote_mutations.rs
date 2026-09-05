@@ -50,6 +50,7 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -475,6 +476,7 @@ async fn test_sync_handler_epoch_initial_sync_bypasses_echo(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))

@@ -465,17 +465,28 @@ pub async fn sync_handler(
                 // whose predicates overlapped completely, so every row travelled twice
                 // through Postgres, through memory and onto the wire. They are two views
                 // of one page of rows now; the wire is unchanged.
+                // A page is only a bound for a client that can ask for the next one. One
+                // that cannot is served whole, exactly as it was before paging existed:
+                // truncating it would not slow its download down, it would silently cost
+                // it every row past the page, on every sync, for good. See
+                // `SyncRequest::supports_paging`.
+                let download_page_size = if payload.supports_paging {
+                    Some(limits.download_page_size)
+                } else {
+                    None
+                };
+
                 let config_download = if scope == SyncScope::ScribbleBox
                     || scope == SyncScope::ScribbleKeep
                     || scope == SyncScope::ScribbleKeepCloud
                 {
-                    fetch_config_download(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at, limits.download_page_size).await?
+                    fetch_config_download(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at, download_page_size).await?
                 } else {
                     ConfigDownload { remote_changes: vec![], items: vec![], next_cursor_ms: None }
                 };
 
                 let drawing_download = if scope == SyncScope::ScribbleKeepCloud {
-                    fetch_drawing_download(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at, limits.download_page_size).await?
+                    fetch_drawing_download(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at, download_page_size).await?
                 } else {
                     DrawingDownload { remote_changes: vec![], items: vec![], next_cursor_ms: None }
                 };

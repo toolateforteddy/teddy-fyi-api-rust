@@ -2,7 +2,7 @@ use crate::routes::sync::device::{
     ItemDeviceRule, registered_device_set, resolve_item_device_cached,
 };
 use crate::routes::sync::deletes::ack_unsynced_delete;
-use crate::routes::sync::paging::{trim_page, Page};
+use crate::routes::sync::paging::{probe_limit, trim_page, trim_size, Page};
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -482,17 +482,19 @@ pub async fn fetch_drawing_download(
     client_id: &Uuid,
     device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
-    page_size: usize,
+    // `None` serves the whole download in one reply, for a client that cannot resume a
+    // truncated one. See `SyncRequest::supports_paging`.
+    page_size: Option<usize>,
 ) -> Result<DrawingDownload, AppError> {
     let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
     // One row over the page is the probe that says whether anything is left behind, which
     // is cheaper than a second COUNT over the same predicate.
-    let probe_limit = page_size.saturating_add(1) as i64;
+    let probe_limit = probe_limit(page_size);
     let mut rows = fetch_drawing_page(tx, user_id, client_id, device_filter, last_synced_ms, None, is_initial_sync, probe_limit).await?;
 
-    let next_cursor_ms = match trim_page(&mut rows, page_size, |row| row.last_modified) {
+    let next_cursor_ms = match trim_page(&mut rows, trim_size(page_size), |row| row.last_modified) {
         Page::Complete => None,
         Page::Truncated { next_cursor_ms } => Some(next_cursor_ms),
         Page::WholeMillisecond { ms } => {

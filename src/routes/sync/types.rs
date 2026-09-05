@@ -202,6 +202,19 @@ pub struct SyncRequest {
     pub configs: Vec<ConfigSyncItem>,
     #[serde(default)]
     pub drawings: Vec<DrawingSyncItem>,
+    /// Whether this client knows how to resume a download that was cut short.
+    ///
+    /// The download page bound in `crate::routes::sync::paging` is only safe for a client
+    /// that carries its cursor forward on `last_synced_at` and comes back for the rest. A
+    /// client that does not is served whole, exactly as before paging existed, because a
+    /// page it can never ask past is not a bound — it is data it will never see again.
+    ///
+    /// This cannot be inferred from `last_synced_at` being present: a client that pages
+    /// perfectly well still sends no cursor on its very first sync, which is precisely the
+    /// request most in need of a bound. So it is asked for explicitly, and defaults to
+    /// `false` for every client that shipped before the flag existed.
+    #[serde(default, alias = "supportsPaging")]
+    pub supports_paging: bool,
 }
 
 /// One request body, three readers.

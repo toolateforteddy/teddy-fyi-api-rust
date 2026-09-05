@@ -267,6 +267,18 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, error_message) = match self {
+            // A pool acquire that timed out is not a bug in the request — the
+            // service ran out of connections, or the database did not answer at
+            // all (see `db_health`: an unreachable Neon surfaces as `PoolTimedOut`
+            // too, because the pool absorbs the failed connects). Both are "come
+            // back later", so both get a 503 and its retry semantics rather than a
+            // 500 that tells a client its payload was at fault. This is what makes
+            // the short `acquire_timeout` in `crate::db` shed load: fail fast, and
+            // say so in a status code clients already back off on.
+            AppError::Database(err @ sqlx::Error::PoolTimedOut) => {
+                tracing::error!("Database pool exhausted or unreachable: {:?}", err);
+                (StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".to_string())
+            }
             AppError::Database(err) => {
                 tracing::error!("Database error: {:?}", err);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal database error".to_string())

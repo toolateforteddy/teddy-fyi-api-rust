@@ -126,7 +126,7 @@ impl Pending {
             // `RETURNING` the key as well as the version, so the rows the server actually
             // had can be told apart from the ones it never saw; the latter are
             // acknowledged rather than failing the batch, exactly as the
-            // `soft_delete_version!` macro did. See `crate::routes::sync::deletes`.
+            // per-item delete did. See `crate::routes::sync::deletes`.
             let updated = sqlx::query!(
                 r#"
                 UPDATE grocery_item_store_info SET

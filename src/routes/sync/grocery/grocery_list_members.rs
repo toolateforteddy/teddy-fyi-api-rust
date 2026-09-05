@@ -95,8 +95,8 @@ impl Pending {
         }
 
         if !self.del_id.is_empty() {
-            // `RETURNING id, version` rather than the single-row `RETURNING version` the
-            // `soft_delete_version!` macro wraps: the ids that come back are the rows the
+            // `RETURNING id, version` rather than the single-row `RETURNING version` a
+            // per-item delete would use: the ids that come back are the rows the
             // server actually had, and the ones that do not are acknowledged as already
             // deleted. See `crate::routes::sync::deletes`.
             let updated = sqlx::query!(

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM list_invites WHERE \"listId\" = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "62f51c4f1208453912975d46e8c23c34a95f81386690a35918047fc4b7ead10d"
+}

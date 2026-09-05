@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, sync_state, updated_at, updated_by_client)\n                SELECT v.id, v.list_id, $4, 'ADMIN', v.joined_at, 1, 'SYNCED', $5, NULL\n                FROM UNNEST($1::text[], $2::text[], $3::int8[]) AS v(id, list_id, joined_at)\n                ON CONFLICT (id) DO NOTHING\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "32f54bd4337c67b46c8f1ccb83873b7b7f703771a773c0c4f733387b200963ec"
+}

@@ -26,6 +26,10 @@ pub struct DeletedCounts {
     pub configs: u64,
     pub drawings: u64,
     pub devices: u64,
+    /// Pairing rows a parent claimed. They carry the account's auth subject, so they are
+    /// part of what an erase has to reach; see the deletion below.
+    pub device_authorizations: u64,
+    pub device_claim_failures: u64,
     pub sessions: u64,
     pub users: u64,
 }
@@ -164,6 +168,35 @@ pub async fn delete_user_data(
         .await?
         .rows_affected();
 
+    // Device pairing carries the auth subject verbatim (`device_authorizations.user_id`
+    // is set when a parent claims a code, and `device_claim_failures` is keyed by it), so
+    // both are user-identifying rows an erase has to reach — the same rule the hashing of
+    // log user ids in `observability::http` exists to satisfy. Neither table declares a
+    // foreign key to `users` (see migration 20260904120000), so nothing cascades and
+    // nothing would have failed loudly; left alone they would simply have outlived the
+    // account, which the published policy's "everything associated with it" does not allow.
+    //
+    // Deleted before `users` regardless, so that the order stays correct if either table
+    // ever does grow a foreign key.
+    //
+    // Unclaimed rows are deliberately not matched: until a parent claims a code the
+    // `user_id` is NULL and the row belongs to nobody. Those are the pairing reaper's job.
+    let device_authorizations = sqlx::query!(
+        "DELETE FROM device_authorizations WHERE user_id = $1",
+        user_id
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
+    let device_claim_failures = sqlx::query!(
+        "DELETE FROM device_claim_failures WHERE user_id = $1",
+        user_id
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
     // Sessions last but one: dropping them logs every client of the account out, and the
     // access token the caller used stops refreshing.
     let sessions = sqlx::query!("DELETE FROM sessions WHERE user_id = $1", user_id)
@@ -189,6 +222,8 @@ pub async fn delete_user_data(
         configs,
         drawings,
         devices,
+        device_authorizations,
+        device_claim_failures,
         sessions,
         users,
     };

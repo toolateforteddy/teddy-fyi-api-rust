@@ -53,3 +53,6 @@ pub async fn reap_device_authorizations(pool: &PgPool) -> Result<DeviceReapSumma
         claim_failures_deleted,
     })
 }
+
+#[cfg(test)]
+mod tests;

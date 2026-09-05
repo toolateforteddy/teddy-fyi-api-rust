@@ -152,6 +152,29 @@ async fn seed_user(pool: &PgPool, user_id: &str, suffix: &str) -> Uuid {
     .await
     .unwrap();
 
+    // A claimed pairing row and a failed claim, both keyed by the auth subject: the two
+    // tables the erase used to miss.
+    sqlx::query!(
+        "INSERT INTO device_authorizations
+             (device_code_hash, user_code, client_uuid, user_id, expires_at, claimed_at)
+         VALUES ($1, $2, 'client-1', $3, $4, now())",
+        format!("hash-{}", suffix),
+        format!("USERCD{}", suffix.to_uppercase()),
+        user_id,
+        Utc::now() + chrono::Duration::minutes(10)
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query!(
+        "INSERT INTO device_claim_failures (user_id) VALUES ($1)",
+        user_id
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
     sqlx::query!(
         "INSERT INTO users (id, email) VALUES ($1, $2)",
         user_id,
@@ -202,6 +225,8 @@ async fn test_delete_user_data_removes_everything_the_user_owns(pool: PgPool) {
     assert_eq!(response.deleted.configs, 1);
     assert_eq!(response.deleted.drawings, 1);
     assert_eq!(response.deleted.devices, 1);
+    assert_eq!(response.deleted.device_authorizations, 1);
+    assert_eq!(response.deleted.device_claim_failures, 1);
     assert_eq!(response.deleted.sessions, 1);
     assert_eq!(response.deleted.users, 1);
 
@@ -218,6 +243,8 @@ async fn test_delete_user_data_removes_everything_the_user_owns(pool: PgPool) {
         "configs",
         "drawings",
         "devices",
+        "device_authorizations",
+        "device_claim_failures",
         "sessions",
         "users",
     ] {
@@ -257,6 +284,81 @@ async fn test_delete_user_data_leaves_another_users_data_alone(pool: PgPool) {
     assert_eq!(count(&pool, "SELECT COUNT(*) FROM devices").await, 1);
     assert_eq!(count(&pool, "SELECT COUNT(*) FROM configs").await, 1);
     assert_eq!(count(&pool, "SELECT COUNT(*) FROM drawings").await, 1);
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT COUNT(*) FROM device_authorizations WHERE user_id = 'user-2'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM device_authorizations").await, 1);
+    assert_eq!(count(&pool, "SELECT COUNT(*) FROM device_claim_failures").await, 1);
+}
+
+/// A pairing code nobody has claimed yet has a NULL `user_id` and belongs to no account,
+/// so an erase must leave it for the pairing reaper rather than sweep it up.
+#[sqlx::test]
+async fn test_delete_user_data_leaves_unclaimed_pairing_codes_alone(pool: PgPool) {
+    seed_user(&pool, "user-1", "a").await;
+
+    sqlx::query!(
+        "INSERT INTO device_authorizations
+             (device_code_hash, user_code, client_uuid, expires_at)
+         VALUES ('hash-open', 'OPENCODE', 'client-9', $1)",
+        Utc::now() + chrono::Duration::minutes(10)
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let response = delete_user_data_handler(
+        State(setup_state(pool.clone())),
+        Extension(claims("user-1")),
+    )
+    .await
+    .expect("Deletion should succeed")
+    .0;
+
+    assert_eq!(response.deleted.device_authorizations, 1);
+    let remaining: Vec<String> =
+        sqlx::query_scalar!("SELECT user_code FROM device_authorizations")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, vec!["OPENCODE".to_string()]);
+}
+
+/// The erase is one transaction, so a failure at any point leaves the account exactly as
+/// it was. This is also what lets the reaper dry-run by rolling back.
+#[sqlx::test]
+async fn test_delete_user_data_is_atomic(pool: PgPool) {
+    seed_user(&pool, "user-1", "a").await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let (deleted, _) = crate::routes::user::deletion::delete_user_data(&mut tx, "user-1")
+        .await
+        .unwrap();
+    assert_eq!(deleted.device_authorizations, 1);
+    assert_eq!(deleted.device_claim_failures, 1);
+    tx.rollback().await.unwrap();
+
+    for table in [
+        "users",
+        "sessions",
+        "devices",
+        "device_authorizations",
+        "device_claim_failures",
+        "grocery_lists",
+        "drawings",
+    ] {
+        assert_eq!(
+            count(&pool, &format!("SELECT COUNT(*) FROM {}", table)).await,
+            1,
+            "{} must survive a rolled-back erase",
+            table
+        );
+    }
 }
 
 /// A list the caller only joined survives; they just stop being a member of it. The

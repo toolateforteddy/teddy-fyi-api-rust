@@ -10,6 +10,13 @@ on:
       - master
       - main
 
+# This workflow clones the repository, compiles it and runs tests. It needs nothing else:
+# no comments to post, no commits to push, no packages to publish. Without this block the
+# job gets GitHub's default token, which on this repo is far broader than that, and every
+# third-party action in the steps below runs with it.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Run Lints and Tests
@@ -64,6 +71,32 @@ jobs:
       # `mock.` login bypass it compiles in — is never built or tested by CI, and rots.
       - name: Run Clippy (dev-auth)
         run: cargo clippy --features dev-auth -- -D warnings
+
+      # Everything above and below runs with SQLX_OFFLINE=true, which checks the `query!`
+      # macros against the committed `.sqlx/` descriptors instead of a database. That makes
+      # CI fast and makes it possible to build without Postgres — and it means a `.sqlx`
+      # entry that no longer matches the schema, or a query whose descriptor was never
+      # regenerated, compiles green here and fails against real Postgres in production.
+      # This step is the thing that stops that: it regenerates the descriptors against a
+      # live database with the migrations applied and fails if they differ from what is
+      # committed. It is the only step in this workflow that talks to Postgres with
+      # SQLX_OFFLINE unset, which is the whole point.
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --locked --version ^0.8 --no-default-features --features rustls,postgres
+
+      - name: Apply Migrations
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
+        run: cargo sqlx migrate run
+
+      - name: Check SQLx Offline Cache
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
+        run: |
+          if ! cargo sqlx prepare --check -- --tests; then
+            echo "::error::The committed .sqlx offline cache does not match the queries in this branch. Run 'cargo sqlx prepare -- --tests' (or 'make prepare') against a database with all migrations applied, and commit the .sqlx changes."
+            exit 1
+          fi
 
       # Run Cargo tests (requires SQLx offline mode for query verification and a running Postgres instance)
       - name: Run Tests

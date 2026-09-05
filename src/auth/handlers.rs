@@ -591,6 +591,33 @@ pub async fn refresh_handler(
     }
 }
 
+/// How logout reads the token that names the session to end.
+///
+/// Deliberately not `Validation::new`, which validates `exp`. An access token that had already
+/// expired failed to decode here, so the `DELETE` never ran: the `sessions` row survived, the
+/// refresh token inside it stayed good for its remaining seven days, and a parent who had just
+/// tapped "sign out" had signed nothing out. At the old 24-hour access token that needed a
+/// console left open all day to reach. At `ACCESS_TOKEN_TTL_SECS` it is the ordinary case --
+/// leave the app open for a quarter of an hour, tap sign out, and this is the token it presents.
+/// That made sign-out least trustworthy exactly when the short TTL was supposed to make it more
+/// so.
+///
+/// **The signature is still verified**, which is the part that carries the security. A caller
+/// must still present a token this service minted, naming that `user_id` and `client_uuid`, so
+/// this is not the anonymous remote-logout hole that `test_logout_cannot_be_forged_for_another_user`
+/// pins shut -- the claims are not attacker-chosen. What it newly admits is a *stale* token
+/// ending its own session, and that is the safe direction to err in: the worst it can do is end
+/// a session whose holder was entitled to end it anyway, and the alternative is the session that
+/// will not die.
+///
+/// `exp` is still required to be *present* (`Validation::new` puts it in `required_spec_claims`
+/// and this leaves that alone); it is only its value that stops being a reason to refuse.
+fn logout_validation() -> jsonwebtoken::Validation {
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.validate_exp = false;
+    validation
+}
+
 pub async fn logout_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -618,7 +645,7 @@ pub async fn logout_handler(
         if let Ok(token_data) = jsonwebtoken::decode::<crate::auth::tokens::Claims>(
             &t,
             &jsonwebtoken::DecodingKey::from_secret(state.jwt_secret.as_bytes()),
-            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+            &logout_validation(),
         ) {
             // Delete the session from database
             let _ = sqlx::query!(
@@ -626,6 +653,10 @@ pub async fn logout_handler(
                 token_data.claims.sub,
                 token_data.claims.client_uuid
             ).execute(&state.db_pool).await;
+        } else {
+            // Worth seeing: every one of these is a sign-out that cleared the cookie and left
+            // the session alive, which is the failure this function is shaped to avoid.
+            tracing::warn!("Logout could not read its token, so no session row was deleted.");
         }
     }
 

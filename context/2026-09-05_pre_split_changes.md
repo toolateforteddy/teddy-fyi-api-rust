@@ -193,7 +193,7 @@ ship the drop.
 
 ## 2. The JWT carries no product claim — **9**, Now — **LANDED**
 
-**Landed** in [#60](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/60), together with items 9 and 16 — they are one change, as the
+**Landed** in [#64](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/64), together with items 9 and 16 — they are one change, as the
 notes below said they would be. `Claims` now carries
 `product: Option<Product>` (`src/auth/product.rs`), minted from the audience at login and from
 the claiming parent's audience at device pairing, persisted on `sessions.product` so a refresh
@@ -362,7 +362,7 @@ dropped, and the list delete it existed for is still refused.
 
 ## 9. The audience set is flat — **8**, Now — **LANDED, with the gap this item predicted**
 
-**Landed** in [#60](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/60). `ClientCatalog` (`src/auth/client_ids.rs`) is the
+**Landed** in [#64](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/64). `ClientCatalog` (`src/auth/client_ids.rs`) is the
 `client id → Option<Product>` map, read from two new per-product vars — `TEDDY_FYI_CLIENT_IDS`
 and `SCRIBBLEROUTE_CLIENT_IDS` — plus the legacy vars, two of which classify themselves by name
 (`GOOGLE_CLIENT_ID_GROCERY_WEB` → teddy.fyi, `SCRIBBLEROUTE_API_CLIENT_ID` → ScribbleRoute). An
@@ -490,7 +490,7 @@ win today, and after the fork it is two migrations in two repos with two review 
 
 ## 16. `SyncScope` is not bound to anything the caller proved — **8**, Now — **LANDED**
 
-**Landed** in [#60](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/60), with items 2 and 9. `authorize_scope`
+**Landed** in [#64](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/64), with items 2 and 9. `authorize_scope`
 (`src/routes/sync/scope_auth.rs`) runs at the top of both readers of `scope` — `POST /api/sync`
 and `GET /api/sync/status` — before a transaction is opened or the status cache is read, and
 403s a scope that does not belong to the token's product. `SyncScope::product()` is exhaustive,

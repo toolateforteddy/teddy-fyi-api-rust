@@ -1,0 +1,187 @@
+# The maintenance responder for api.scribbleroute.com.
+#
+# Phase 4 of context/2026-09-05_scribbleroute_backend_split.md freezes ScribbleRoute writes
+# while the data tier is copied and re-keyed. During that freeze `api-rust-dep` is either
+# scaled to zero or pointed at a database it must not serve from, and something still has to
+# answer on the hostname -- because "nothing answers" and "planned maintenance" look identical
+# from a tablet, and the tablets belong to people who are not the person doing the migration.
+#
+# This is that something: nginx, one replica, no dependencies, answering 503 with a body that
+# says why. Deliberately a separate Deployment rather than a flag on the API, because the whole
+# point is to keep answering during the minutes when the API cannot run at all.
+#
+# THIS IS NOT WIRED UP BY DEFAULT. Applying this file starts the responder; it takes no traffic
+# until `site-ingress` in the teddyfyi repo points api.scribbleroute.com at
+# `scribbleroute-maintenance-svc`. See context/2026-09-05_planned_maintenance.md for the order
+# to do that in, and for the status document on scribbleroute.com that has to be flipped with it.
+#
+# Names are qualified (`scribbleroute-maintenance-*`) rather than bare. The split note's §"two
+# ways a naive fork takes down production" is about exactly this: everything in api-rust.yaml is
+# unqualified, so when scribbleroute/backend forks it and applies into the same cluster the two
+# repos overwrite each other. This file is ScribbleRoute's from birth and is named that way, so
+# it moves to the fork without a rename.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scribbleroute-maintenance-nginx
+data:
+  nginx.conf: |
+    worker_processes 1;
+    events { worker_connections 1024; }
+
+    http {
+      access_log /dev/stdout;
+      error_log /dev/stderr;
+
+      server {
+        listen 8080 default_server;
+
+        # The health check must NOT be 503, and this is the whole reason the location exists.
+        #
+        # The GKE ingress will only send traffic to a backend its health check calls healthy.
+        # A server that answers 503 to everything -- including the probe -- is marked unhealthy,
+        # the load balancer stops routing to it, and clients get Google's own 502 error page
+        # instead of the body below. That turns a deliberate, explained outage back into the
+        # unexplained one this file exists to prevent. The BackendConfig points its
+        # requestPath here.
+        location = /healthz {
+          access_log off;
+          return 200 'ok';
+          add_header Content-Type text/plain always;
+        }
+
+        # A browser will not show the 503 body to the page that asked for it unless the
+        # preflight succeeds first, so preflights are answered normally. scribbleroute.com/link
+        # is the caller that matters: without this it reports a CORS failure, which is the least
+        # useful thing it could tell a parent during a planned window.
+        location / {
+          if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Client-UUID" always;
+            add_header Access-Control-Max-Age 600 always;
+            return 204;
+          }
+          return 503;
+        }
+
+        # `always`, on every header: nginx drops add_header from an error response without it,
+        # and every response this server gives is an error response.
+        error_page 503 = @maintenance;
+        location @maintenance {
+          default_type application/json;
+          # Retry-After is the one header here with a behavioural effect. The Android client
+          # parses it (core/data-cloud RetryAfter) and holds the scope off for that long, so a
+          # fleet of tablets backs off on the server's schedule rather than each on its own.
+          # Half an hour, clamped client-side to ten minutes, which is the intended outcome:
+          # long enough to stop the hammering, short enough that nothing is stranded if the
+          # window ends early.
+          add_header Retry-After 1800 always;
+          add_header Cache-Control "no-store" always;
+          add_header Access-Control-Allow-Origin "*" always;
+          return 503 '{"state":"maintenance","error":"planned_maintenance","message":"ScribbleRoute cloud sync is paused for planned maintenance. Work on the tablet is unaffected and will sync when this is over.","statusUrl":"https://scribbleroute.com/status","statusDocumentUrl":"https://scribbleroute.com/status.json"}';
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scribbleroute-maintenance-svc
+  annotations:
+    cloud.google.com/backend-config: '{"default": "scribbleroute-maintenance-be-config"}'
+spec:
+  selector:
+    app: scribbleroute-maintenance
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+  # NodePort, matching api-rust-svc: it is what the GKE ingress can target.
+  type: NodePort
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: scribbleroute-maintenance-be-config
+spec:
+  timeoutSec: 30
+  healthCheck:
+    checkIntervalSec: 15
+    timeoutSec: 5
+    type: HTTP
+    requestPath: /healthz
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scribbleroute-maintenance-dep
+spec:
+  # Two, not one. This is the thing that has to answer while everything else is deliberately
+  # broken, so it should not be one pod away from the outage having no voice; and at this size
+  # a second nginx costs nothing worth counting.
+  replicas: 2
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: scribbleroute-maintenance
+  template:
+    metadata:
+      labels:
+        app: scribbleroute-maintenance
+      annotations:
+        # Rolls the pods when the response body or headers change. nginx reads its config once
+        # at start; without this a `kubectl apply` that edits the ConfigMap changes nothing that
+        # is actually serving, which is a bad surprise to have mid-window.
+        checksum/config: "edit-me-when-the-configmap-changes"
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        # ScheduleAnyway, unlike api-rust-dep's DoNotSchedule. There the cost of waiting for a
+        # second node is a slower deploy; here it would be the maintenance page failing to come
+        # up during the one window it is needed. Spread if you can, serve regardless.
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: scribbleroute-maintenance
+      containers:
+      - name: nginx
+        image: nginx:1.29-alpine
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          periodSeconds: 10
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 3
+      volumes:
+      - name: config
+        configMap:
+          name: scribbleroute-maintenance-nginx

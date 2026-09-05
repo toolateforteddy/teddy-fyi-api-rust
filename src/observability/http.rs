@@ -46,7 +46,15 @@ pub fn hash_user_id(user_id: &str, salt: &str) -> String {
     hasher.update(b":");
     hasher.update(user_id.as_bytes());
     let digest = hasher.finalize();
-    digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
+    // The first eight bytes read as one big-endian integer and formatted zero-padded:
+    // byte-for-byte the same 16 characters the old per-byte `format!` produced, without
+    // allocating a `String` per byte on a path that runs once per request.
+    let truncated = u64::from_be_bytes(
+        digest[..8]
+            .try_into()
+            .expect("SHA-256 always yields 32 bytes"),
+    );
+    format!("{:016x}", truncated)
 }
 
 /// Reads the salt once per call site; see [`hash_user_id`] for the fallback.

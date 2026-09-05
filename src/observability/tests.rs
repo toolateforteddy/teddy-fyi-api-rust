@@ -497,3 +497,35 @@ mod gauge_spy {
         }
     }
 }
+
+/// Pins the digest's *encoding*, not just its length: the hash is formatted from eight
+/// bytes read as one integer, and the zero-padding is what keeps that identical to the
+/// per-byte hex it replaced. A digest whose leading bytes are zero is the case that would
+/// silently lose characters if the padding ever went away, so one is searched for rather
+/// than assumed.
+#[test]
+fn hash_user_id_is_the_hex_of_the_first_eight_digest_bytes() {
+    use sha2::{Digest, Sha256};
+
+    fn expected(user_id: &str, salt: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"teddy-fyi/log-user-id/v1:");
+        hasher.update(salt.as_bytes());
+        hasher.update(b":");
+        hasher.update(user_id.as_bytes());
+        hasher.finalize()[..8]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
+    }
+
+    let mut saw_leading_zero = false;
+    for n in 0..2_000 {
+        let user_id = format!("user-{n}");
+        let hash = hash_user_id(&user_id, "salt");
+        assert_eq!(hash, expected(&user_id, "salt"), "digest encoding for {user_id}");
+        assert_eq!(hash.len(), 16, "width for {user_id}");
+        saw_leading_zero |= hash.starts_with('0');
+    }
+    assert!(saw_leading_zero, "expected some digest to start with a zero nibble");
+}

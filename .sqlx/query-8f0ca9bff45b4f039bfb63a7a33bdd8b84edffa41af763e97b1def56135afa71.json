@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, version FROM configs WHERE id = $1 AND user_id = $2 AND device_uuid = $3",
+  "query": "SELECT id, key, value, version FROM configs WHERE user_id = $1",
   "describe": {
     "columns": [
       {
@@ -10,21 +10,31 @@
       },
       {
         "ordinal": 1,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "value",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
         "name": "version",
         "type_info": "Int4"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "996bfa89250130a97757d73e89244037e32f2d95fac63a0231e4d13fd9646673"
+  "hash": "8f0ca9bff45b4f039bfb63a7a33bdd8b84edffa41af763e97b1def56135afa71"
 }

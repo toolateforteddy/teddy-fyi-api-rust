@@ -36,13 +36,22 @@ pub fn setup_state(pool: PgPool) -> AppState {
     }
 }
 
+/// Calls the real handler as a *legitimate* client: the token names the same device the body
+/// does.
+///
+/// The claim used to be hardcoded to `client-1` regardless of what the request said, which was
+/// harmless while the body field was the only thing the handler read. It is not harmless now —
+/// the handler binds the device to the token, so a hardcoded claim would make every test here
+/// silently exercise the mismatch path instead of the behaviour it was written for. Tests that
+/// want the two to disagree say so explicitly by calling the handler themselves; see
+/// `super::client_binding`.
 pub async fn sync_handler(
     state: State<AppState>,
     req: AppJson<SyncRequest>,
 ) -> Result<Json<SyncResponse>, AppError> {
     let claims = Claims {
         sub: "user-1".to_string(),
-        client_uuid: "client-1".to_string(),
+        client_uuid: req.0.client_id.clone(),
         exp: 10000000000,
     };
     parent_sync_handler(state, Extension(claims), req).await

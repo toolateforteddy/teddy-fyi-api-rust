@@ -1,7 +1,11 @@
 #[cfg(test)]
 mod tests {
     use crate::auth::tokens::{create_access_token, hash_refresh_token, verify_refresh_token, Claims};
-    use crate::auth::handlers::{login_handler, refresh_handler, LoginRequest, RefreshRequest};
+    use crate::auth::handlers::{
+        login_handler, logout_handler, refresh_handler, LoginRequest, RefreshRequest,
+        DEFAULT_SESSION_SECS, REFRESH_GRACE_SECS,
+    };
+    use crate::auth::tokens::ACCESS_TOKEN_TTL_SECS;
     use crate::routes::sync::tests::helpers::setup_state;
     use axum::extract::State;
     use axum::Json;
@@ -43,25 +47,57 @@ mod tests {
         // Verify expiration is roughly 60 seconds from now
         assert!(diff >= 55 && diff <= 65);
 
-        // 2. Test ceiling limit (exceeding 24 hours caps to 24 hours)
-        let token_large = create_access_token(user_id, client_uuid, secret, Some(200000)).unwrap();
+        // 2. An over-large request is clamped to the ceiling, not honoured. The old
+        //    behaviour clamped a day's worth of seconds to... a day, which is why this asks
+        //    for the previous ceiling specifically: 24 hours must now come back as 15
+        //    minutes, or the clamp is not doing anything.
+        let token_large = create_access_token(user_id, client_uuid, secret, Some(86400)).unwrap();
         let decoded_large = jsonwebtoken::decode::<Claims>(
             &token_large,
             &jsonwebtoken::DecodingKey::from_secret(secret),
             &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
         ).unwrap();
-        let diff_large = decoded_large.claims.exp - now;
-        assert!(diff_large >= 86390 && diff_large <= 86410);
+        let diff_large = (decoded_large.claims.exp - now) as i64;
+        assert!(
+            (diff_large - ACCESS_TOKEN_TTL_SECS).abs() <= 10,
+            "an 86400s request must clamp to the ceiling, got {diff_large}s"
+        );
 
-        // 3. Test negative duration defaults to 24 hours
+        // 3. Test negative duration defaults to the ceiling
         let token_neg = create_access_token(user_id, client_uuid, secret, Some(-100)).unwrap();
         let decoded_neg = jsonwebtoken::decode::<Claims>(
             &token_neg,
             &jsonwebtoken::DecodingKey::from_secret(secret),
             &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
         ).unwrap();
-        let diff_neg = decoded_neg.claims.exp - now;
-        assert!(diff_neg >= 86390 && diff_neg <= 86410);
+        let diff_neg = (decoded_neg.claims.exp - now) as i64;
+        assert!((diff_neg - ACCESS_TOKEN_TTL_SECS).abs() <= 10);
+
+        // 4. And no argument at all is the same ceiling — this is what device pairing mints
+        //    with, since a tablet has no `expires_in_secs` to ask with.
+        let token_default = create_access_token(user_id, client_uuid, secret, None).unwrap();
+        let decoded_default = jsonwebtoken::decode::<Claims>(
+            &token_default,
+            &jsonwebtoken::DecodingKey::from_secret(secret),
+            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+        ).unwrap();
+        let diff_default = (decoded_default.claims.exp - now) as i64;
+        assert!((diff_default - ACCESS_TOKEN_TTL_SECS).abs() <= 10);
+    }
+
+    /// The default and the clamp are the same number by construction, and both are short.
+    ///
+    /// The pair used to be two independent literals that happened to agree; this pins the
+    /// property, not the value, so lowering one without the other fails here rather than in
+    /// production — where the symptom would be a `DEFAULT_SESSION_SECS` clamp that lets
+    /// through a lifetime the minting function then quietly shortens, or worse, does not.
+    #[test]
+    fn test_session_ttl_is_short_and_the_clamp_is_not_a_lie() {
+        assert_eq!(DEFAULT_SESSION_SECS, ACCESS_TOKEN_TTL_SECS);
+        assert!(
+            ACCESS_TOKEN_TTL_SECS <= 900,
+            "the post-sign-out exposure window is this constant; keep it at 15 minutes or less"
+        );
     }
 
     #[test]
@@ -188,7 +224,7 @@ mod tests {
         let user_id = "user-grace-test";
         let client_uuid = "client-grace-test";
 
-        // Insert rotated session (rotated 5 seconds ago)
+        // Insert a session rotated a moment ago: the ordinary race, well inside the window.
         let old_refresh = "old-refresh-token-123";
         let current_refresh = "current-refresh-token-456";
         let old_hash = hash_refresh_token(old_refresh);
@@ -230,13 +266,14 @@ mod tests {
         let client_uuid = "client-breach-test";
         let other_client_uuid = "other-client-breach-test";
 
-        // Insert session rotated 35 seconds ago (outside grace period)
+        // Insert session rotated just outside the grace window
         let old_refresh = "old-refresh-token-123";
         let current_refresh = "current-refresh-token-456";
         let old_hash = hash_refresh_token(old_refresh);
         let current_hash = hash_refresh_token(current_refresh);
         let expiration = chrono::Utc::now() + chrono::Duration::days(1);
-        let rotated_at = chrono::Utc::now() - chrono::Duration::seconds(35);
+        let rotated_at = chrono::Utc::now()
+            - chrono::Duration::seconds(REFRESH_GRACE_SECS + 5);
 
         sqlx::query!(
             "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
@@ -650,7 +687,8 @@ mod tests {
         let old_hash = hash_refresh_token(old_refresh);
         let current_hash = hash_refresh_token("current-token");
         let expiration = chrono::Utc::now() + chrono::Duration::days(1);
-        let rotated_at = chrono::Utc::now() - chrono::Duration::seconds(35);
+        let rotated_at = chrono::Utc::now()
+            - chrono::Duration::seconds(REFRESH_GRACE_SECS + 5);
         sqlx::query!(
             "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
              VALUES ($1, $2, $3, $4, $5, $6)",
@@ -934,5 +972,200 @@ mod tests {
             crate::auth::handlers::session_cookie(".teddy.fyi", "", 0),
             "access_token=; HttpOnly; Secure; SameSite=Lax; Domain=.teddy.fyi; Path=/; Max-Age=0"
         );
+    }
+
+    /// What "sign out" actually costs, stated as a test.
+    ///
+    /// Logging out deletes the session row, which ends *refresh* immediately, and clears the
+    /// cookie. It cannot end the bearer token already in someone's hand: `require_auth` does
+    /// no session lookup, by design. So the honest claim is a bounded one — the token keeps
+    /// working for at most one access-token lifetime — and that bound is what this pins. When
+    /// it was 24 hours the same test would have passed while describing something nobody
+    /// would call signing out.
+    #[sqlx::test]
+    async fn test_logout_ends_refresh_and_bounds_the_access_token_to_one_ttl(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-logout-window";
+        let client_uuid = "client-logout-window";
+
+        let issued = crate::auth::handlers::issue_session(
+            &state,
+            user_id,
+            None,
+            client_uuid,
+            DEFAULT_SESSION_SECS,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        let decode = |token: &str| {
+            jsonwebtoken::decode::<Claims>(
+                token,
+                &jsonwebtoken::DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+                &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+            )
+        };
+
+        let before = decode(&issued.access_token).expect("freshly minted token is valid");
+        let remaining = before.claims.exp as i64 - chrono::Utc::now().timestamp();
+        assert!(
+            remaining <= ACCESS_TOKEN_TTL_SECS,
+            "a minted token must never outlive the TTL; {remaining}s remained"
+        );
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", issued.access_token).parse().unwrap(),
+        );
+        let response = logout_handler(State(state.clone()), headers)
+            .await
+            .expect("logout should succeed");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        // Refresh is dead the instant logout returns: the row is gone.
+        let sessions = sqlx::query!(
+            "SELECT COUNT(*) as count FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_uuid
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+        assert_eq!(sessions, 0, "logout must delete the session row");
+
+        let refused = refresh_handler(
+            State(state.clone()),
+            Json(RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_uuid.to_string(),
+                refresh_token: issued.refresh_token.clone(),
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            refused.unwrap_err().status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "a logged-out session must not be refreshable"
+        );
+
+        // The access token, meanwhile, still verifies — this is the residual exposure the
+        // short TTL exists to bound, and it is deliberately asserted rather than wished away.
+        let after = decode(&issued.access_token)
+            .expect("the bearer token survives logout; only its short life ends it");
+        let residual = after.claims.exp as i64 - chrono::Utc::now().timestamp();
+        assert!(
+            residual <= ACCESS_TOKEN_TTL_SECS,
+            "post-logout exposure must be bounded by the TTL; {residual}s remained"
+        );
+    }
+
+    /// The widened rotation grace window, pinned at both edges.
+    ///
+    /// The lower assertion is the one that matters: 30 seconds was the old window, and a
+    /// client that now refreshes ~96 times a day instead of once meets every way of losing a
+    /// rotation response ~100x more often. A retry at 30s must still be a retry, not a
+    /// "breach" that deletes the session out from under a parent.
+    /// The test below only proves something if the window is wider than the old 30 seconds,
+    /// so that premise is checked at compile time rather than left to a reader.
+    const _: () = assert!(REFRESH_GRACE_SECS - 5 > 30);
+
+    #[sqlx::test]
+    async fn test_refresh_grace_window_covers_a_slow_retry(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-grace-edge";
+        let client_uuid = "client-grace-edge";
+
+        let old_refresh = "old-token-at-the-edge";
+        let old_hash = hash_refresh_token(old_refresh);
+        let current_hash = hash_refresh_token("current-token-at-the-edge");
+        let expiration = chrono::Utc::now() + chrono::Duration::days(1);
+        // Five seconds inside the window, which is also well outside the old 30s one.
+        let rotated_at =
+            chrono::Utc::now() - chrono::Duration::seconds(REFRESH_GRACE_SECS - 5);
+
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            user_id,
+            client_uuid,
+            current_hash,
+            expiration,
+            old_hash,
+            rotated_at
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let response = refresh_handler(
+            State(state.clone()),
+            Json(RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_uuid.to_string(),
+                refresh_token: old_refresh.to_string(),
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            }),
+        )
+        .await
+        .expect("a retry inside the grace window must succeed, not end the session");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        // And the session survives: the racer's token became the stored `old` one, so
+        // whichever caller won the first rotation still holds a token that works.
+        let session = sqlx::query!(
+            "SELECT old_refresh_token_hash FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_uuid
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the session must still exist");
+        assert!(session.old_refresh_token_hash.is_some());
+    }
+
+    /// Refreshing needs no access token at all — the whole credential is in the body.
+    ///
+    /// This is what makes the short TTL a *replacement* for a `kid` header rather than a
+    /// regression: after a `JWT_SECRET` rotation every outstanding access token is
+    /// unverifiable, but the recovery path does not check one, so a client takes a single 401
+    /// and refreshes back into a working session instead of being signed out.
+    #[sqlx::test]
+    async fn test_refresh_needs_no_access_token(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-refresh-no-access-token";
+        let client_uuid = "client-refresh-no-access-token";
+
+        let issued = crate::auth::handlers::issue_session(
+            &state,
+            user_id,
+            None,
+            client_uuid,
+            DEFAULT_SESSION_SECS,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        // Note what is *not* here: `RefreshRequest` has nowhere to put an access token, and
+        // the handler takes no `HeaderMap`. A token signed with a retired secret, or an
+        // expired one, cannot fail this call because it is never presented.
+        let response = refresh_handler(
+            State(state.clone()),
+            Json(RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_uuid.to_string(),
+                refresh_token: issued.refresh_token,
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            }),
+        )
+        .await
+        .expect("refresh must work without any access token");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
 }

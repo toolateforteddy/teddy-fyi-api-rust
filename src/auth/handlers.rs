@@ -7,7 +7,40 @@ use rand::distr::Alphanumeric;
 
 /// Default access-token lifetime, and the ceiling a client may request. Device pairing
 /// mints at this length: the tablet has no `expires_in_secs` to ask with.
-pub const DEFAULT_SESSION_SECS: i64 = 86400;
+///
+/// Defined *as* [`crate::auth::tokens::ACCESS_TOKEN_TTL_SECS`] rather than repeating the
+/// number, because this constant is only the clamp — `create_access_token` enforces its own
+/// ceiling, and when the two were written out separately (both 24 hours, by coincidence
+/// rather than by construction) either could have been lowered while the other silently kept
+/// minting long tokens. The reasoning for the value itself lives on that constant.
+pub const DEFAULT_SESSION_SECS: i64 = crate::auth::tokens::ACCESS_TOKEN_TTL_SECS;
+
+/// How long after a rotation the *previous* refresh token is still accepted.
+///
+/// Rotation exists so that a stolen refresh token is detectable: the thief and the honest
+/// client cannot both keep using the session, and whoever presents a superseded token gets the
+/// session destroyed. The grace window is the hole punched in that rule for the honest client
+/// that asked twice — it covers the interval between the server committing a rotation and the
+/// client durably storing what came back.
+///
+/// It was 30 seconds, sized for a client that refreshed about once a day. With a 15-minute
+/// access token a device refreshes on the order of a hundred times a day, so every way of
+/// losing a response in that interval — a request that timed out on the client while the
+/// server committed anyway, the app being killed between the HTTP response and the write to
+/// encrypted storage, a captive-portal proxy holding a response past the client's own
+/// deadline — now gets ~100 more chances to happen per device per day. And the failure is the
+/// worst one we have: the retry presents the previous token, lands outside the window, and the
+/// session is *deleted*, which shows up to a parent as being signed out for no reason. Making
+/// sign-out trustworthy must not make spontaneous sign-out ordinary.
+///
+/// Two minutes is chosen against the client's own timeouts rather than against a round number:
+/// it covers a full HTTP timeout plus a retry plus the process restart in between, which is
+/// the longest honest path from "server rotated" to "client asks again with the old token".
+/// What it costs is detection latency, and very little of it: an attacker holding a *stolen*
+/// token holds the current one, which is not what this window is about, and reuse of a
+/// superseded token is still caught — 90 seconds later than before, on a path where the
+/// legitimate client's next refresh, minutes away, catches it anyway.
+pub const REFRESH_GRACE_SECS: i64 = 120;
 
 /// Builds the `Set-Cookie` value for the session cookie.
 ///
@@ -16,6 +49,17 @@ pub const DEFAULT_SESSION_SECS: i64 = 86400;
 /// is a perfectly ordinary configuration: it means "no Domain attribute", which is what a
 /// single-host deployment wants, and the cookie is then host-only. Every other attribute —
 /// `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/` — is identical either way.
+///
+/// `max_age_secs` is always the access token's own lifetime, so the cookie and the credential
+/// inside it die together — now after [`DEFAULT_SESSION_SECS`] rather than a day. A browser
+/// session therefore has to refresh roughly every quarter of an hour to keep the cookie alive,
+/// which the page already has everything it needs to do: `/auth/login` and `/auth/refresh`
+/// return the rotating refresh token in the *body* (`BrowserAuthResponse` /
+/// `BrowserRefreshResponse`) precisely so a cookie-mode client can re-mint without one. The
+/// `/link` pairing page is unaffected either way — `POST /auth/device/claim` is unauthenticated
+/// and validates a Google ID token directly, so it never reads this cookie — but any browser
+/// page that assumed a day-long cookie must now call `/auth/refresh` with `use_cookie: true`
+/// on a timer or on its first 401.
 ///
 /// This is the *whole* of what `state.cookie_domain` is allowed to influence. It used to
 /// double as the switch for the development login bypass; see [`crate::auth::dev_bypass`]
@@ -255,8 +299,11 @@ pub const FAILED_REFRESH_ALERT_THRESHOLD: i32 = 10;
 ///   per-session `failed_refresh_attempts` counter is bumped. Deleting here used to mean
 ///   that anyone who knew a `user_id` and a `client_uuid` could permanently sign a device
 ///   out with a single unauthenticated POST containing a garbage token.
-/// - **The stored OLD hash matches, inside the 30s grace window.** A retry racing its own
-///   rotation. Succeeds, as it always has.
+/// - **The stored OLD hash matches, inside the [`REFRESH_GRACE_SECS`] grace window.** A retry
+///   racing its own rotation. Succeeds, as it always has, and rotates again — the token the
+///   racer presented becomes the stored *old* one, so the response the first caller already
+///   stored stays valid. (Preserving the original `old` hash instead would strand whichever
+///   caller won the race, which is the opposite of what this window is for.)
 /// - **The stored OLD hash matches, outside the window.** A genuinely issued token is being
 ///   replayed after it was superseded, which is the reuse signal refresh-token rotation
 ///   exists to catch. The session is invalidated. This branch is not reachable by guessing:
@@ -316,7 +363,7 @@ pub async fn refresh_handler(
         }
     };
 
-    // 2. Verify token (with 30 seconds grace period for rotated refresh tokens)
+    // 2. Verify token (with the [`REFRESH_GRACE_SECS`] grace period for rotated refresh tokens)
     let is_current = verify_refresh_token(&session.refresh_token_hash, &payload.refresh_token);
     let is_old = session.old_refresh_token_hash.as_ref()
         .map(|old_hash| verify_refresh_token(old_hash, &payload.refresh_token))
@@ -346,14 +393,15 @@ pub async fn refresh_handler(
         if let Some(rotated_at) = session.rotated_at {
             let age = chrono::Utc::now() - rotated_at;
             let age_secs = age.num_seconds();
-            if age_secs > 30 {
+            if age_secs > REFRESH_GRACE_SECS {
                 tracing::warn!(
                     user_id = %payload.user_id,
                     client_uuid = %payload.client_uuid,
                     rotated_at = ?rotated_at,
                     age_seconds = age_secs,
                     server_time = ?chrono::Utc::now(),
-                    "Breach mitigation: Old refresh token reused outside of 30s grace period. Deleting single session."
+                    grace_seconds = REFRESH_GRACE_SECS,
+                    "Breach mitigation: Old refresh token reused outside the rotation grace period. Deleting single session."
                 );
                 sqlx::query!(
                     "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",

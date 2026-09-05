@@ -34,6 +34,36 @@ pub async fn sync_handler(
     // names the field, and nothing is written. See `crate::routes::sync::limits`.
     validate_sync_payload(&payload, &SyncLimits::from_env())?;
 
+    // The device this request speaks for is the one in the token, never the one in the body.
+    //
+    // `client_id` is not an inert label: it becomes `updated_by_client`/`client_uuid` on every
+    // row written here, it is the `sender_client_id` on the SSE events published below, and it
+    // is what the echo filters compare against when deciding which of an account's devices
+    // *skips* a change. `require_auth` has already proved that `X-Client-UUID` equals the
+    // token's `client_uuid`, but the body field was never checked against either — so an
+    // authenticated caller could name a sibling device of their own account, attribute writes
+    // to it, and have the change suppressed on exactly the device it was aimed at. The
+    // authenticated caller owns both devices, so this is not a cross-account hole; it is a way
+    // to make a tablet miss updates it should have received, silently, from a device the
+    // parent may no longer control.
+    //
+    // Derived rather than rejected. Every client we ship already sends the two identically —
+    // the Android `SyncRequestBody` puts the same `clientUuid` in the header and in
+    // `client_id` — so a 4xx would buy nothing here and would hard-fail any client that
+    // happens to differ, whereas overriding keeps it working and gets the attribution *more*
+    // right than what it sent. A disagreement is still worth seeing, so it is logged: if that
+    // line never appears in production, the derivation can be tightened into a rejection.
+    let mut payload = payload;
+    if payload.client_id != claims.client_uuid {
+        tracing::warn!(
+            token_client_uuid = %claims.client_uuid,
+            body_client_id = %payload.client_id,
+            "Sync request body named a different client than its token; using the token's."
+        );
+        payload.client_id = claims.client_uuid.clone();
+    }
+    let payload = payload;
+
     // The three futures below each read the whole request. Share one allocation rather than
     // deep-copying a body that is mostly drawing vector data. See `SharedRequest`.
     let payload = SharedRequest::new(payload);

@@ -101,11 +101,24 @@ pub async fn sync_stream_handler(
     Query(query): Query<StreamQuery>,
 ) -> Result<(HeaderMap, Sse<impl Stream<Item = Result<Event, Infallible>>>), AppError> {
     let user_id = claims.sub.clone();
-    let client_id = query.client_id.or_else(|| {
-        headers
-            .get("x-client-uuid")
-            .and_then(|h| h.to_str().ok().map(|s| s.to_string()))
-    });
+    // Same rule as the sync handler: the listening device is the one in the token. The query
+    // string and the `X-Client-UUID` header used to be consulted first, and the header is
+    // already pinned to the claim by `require_auth`, so in practice this only takes the
+    // decision away from `?client_id=`. Here that parameter could only ever hurt its own
+    // stream — echo filtering decides which events *this* connection skips — but a caller
+    // being able to hand the server a different identity than the one it authenticated with
+    // is exactly the shape of bug being fixed on the write path, and there is no client that
+    // sends anything but its own id here.
+    let client_id = Some(claims.client_uuid.clone());
+    if let Some(requested) = query.client_id.as_deref() {
+        if requested != claims.client_uuid {
+            tracing::warn!(
+                token_client_uuid = %claims.client_uuid,
+                query_client_id = %requested,
+                "Sync stream named a different client than its token; using the token's."
+            );
+        }
+    }
 
     let requested_device = query.device_uuid.or_else(|| {
         headers

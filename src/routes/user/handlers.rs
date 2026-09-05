@@ -27,7 +27,7 @@ pub async fn delete_user_data_handler(
 
     tracing::info!(user_id = %user_id, deleted = ?deleted, "Deleted all data for user");
 
-    announce_deletion(&state.redis_client, &user_id, &affected_users).await;
+    announce_deletion(&state.redis_publisher, &user_id, &affected_users).await;
 
     Ok(Json(DeleteUserDataResponse { user_id, deleted }))
 }

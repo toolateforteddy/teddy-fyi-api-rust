@@ -104,7 +104,7 @@ async fn test_users_without_devices_are_out_of_scope(pool: PgPool) {
     assert_eq!(scanned, 0);
     assert!(stale.is_empty());
 
-    let summary = reap_stale_users(&pool, &setup_state(pool.clone()).redis_client, &armed())
+    let summary = reap_stale_users(&pool, &setup_state(pool.clone()).redis_publisher, &armed())
         .await
         .unwrap();
     assert_eq!(summary.deleted, 0);
@@ -138,7 +138,7 @@ async fn test_dry_run_reports_without_deleting(pool: PgPool) {
     seed_synced_user(&pool, "stale-user", 14).await;
 
     let config = ReapConfig { inactive_months: 12, dry_run: true };
-    let summary = reap_stale_users(&pool, &setup_state(pool.clone()).redis_client, &config)
+    let summary = reap_stale_users(&pool, &setup_state(pool.clone()).redis_publisher, &config)
         .await
         .unwrap();
 
@@ -154,7 +154,7 @@ async fn test_armed_run_deletes_stale_and_spares_recent(pool: PgPool) {
     seed_synced_user(&pool, "stale-user", 14).await;
     seed_synced_user(&pool, "recent-user", 2).await;
 
-    let summary = reap_stale_users(&pool, &setup_state(pool.clone()).redis_client, &armed())
+    let summary = reap_stale_users(&pool, &setup_state(pool.clone()).redis_publisher, &armed())
         .await
         .unwrap();
 

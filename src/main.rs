@@ -97,6 +97,13 @@ async fn init_app_state() -> AppState {
             .expect("Failed to initialize PostgreSQL"),
         jwt_secret,
         gemini_api_key,
+        // One shared pub/sub connection and one cached publish connection for the
+        // whole process, both built from the same client. Neither dials Redis here:
+        // a replica that cannot reach Redis at boot should still start and recover.
+        sync_fanout: routes::sync::fanout::SyncFanout::spawn(redis_client.clone()),
+        redis_publisher: Arc::new(routes::sync::publish_conn::RedisPublisher::new(
+            redis_client.clone(),
+        )),
         redis_client,
         http_client: routes::ai::gemini::build_http_client(),
         cookie_domain,
@@ -146,7 +153,10 @@ async fn run_reaper() {
     }
 
     let config = jobs::reap_stale_users::ReapConfig::from_env();
-    match jobs::reap_stale_users::reap_stale_users(&pool, &redis_client, &config).await {
+    // The sweep publishes an invalidation per deleted account; one cached connection
+    // for the whole run rather than one dial per account.
+    let publisher = routes::sync::publish_conn::RedisPublisher::new(redis_client);
+    match jobs::reap_stale_users::reap_stale_users(&pool, &publisher, &config).await {
         Ok(_) => {}
         Err(err) => {
             tracing::error!("Stale account sweep failed: {:?}", err);

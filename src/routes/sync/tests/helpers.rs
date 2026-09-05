@@ -7,6 +7,11 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn setup_state(pool: PgPool) -> AppState {
+    let redis_client = redis::Client::open(
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+    )
+    .unwrap();
+
     AppState {
         google_client_ids: [
             "test-client".to_string(),
@@ -20,11 +25,12 @@ pub fn setup_state(pool: PgPool) -> AppState {
         db_pool: pool,
         jwt_secret: "test-secret".to_string(),
         gemini_api_key: "test-key".to_string(),
-        redis_client: redis::Client::open(
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
-        )
-        .unwrap(),
         http_client: crate::routes::ai::gemini::build_http_client(),
+        sync_fanout: crate::routes::sync::fanout::SyncFanout::spawn(redis_client.clone()),
+        redis_publisher: Arc::new(crate::routes::sync::publish_conn::RedisPublisher::new(
+            redis_client.clone(),
+        )),
+        redis_client,
         cookie_domain: ".teddy.fyi".to_string(),
         stream_slots: Arc::new(crate::routes::sync::stream_limits::StreamSlots::from_env()),
     }

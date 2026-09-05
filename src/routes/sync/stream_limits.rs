@@ -2,13 +2,18 @@
 //!
 //! # Why a cap exists at all
 //!
-//! Every open stream holds a **dedicated Redis connection** (`get_async_pubsub`),
-//! because a pub/sub connection cannot be shared with the rest of the pool once it
-//! has subscribed. Accounts are free — Google sign-in, or device pairing — so
-//! without a cap a single account can open streams in a loop until Redis hits
-//! `maxclients`. That is not merely its own outage: `GET /healthz/ready` pings
-//! Redis, so once Redis refuses connections *every* replica reports unready and
-//! the whole service leaves rotation. One account, whole-service kill.
+//! Accounts are free — Google sign-in, or device pairing — and a stream is a
+//! long-lived server-side allocation that a client gets for the price of one HTTP
+//! request, so without a cap a single account can open streams in a loop until the
+//! replica falls over.
+//!
+//! Each stream now costs a task, a buffered `broadcast` receiver and a config
+//! snapshot query, but **not** a Redis connection: streams share one process-wide
+//! pub/sub connection, see [`crate::routes::sync::fanout`]. That removed the worst
+//! consequence — exhausting Redis `maxclients`, which would fail the Redis ping in
+//! `GET /healthz/ready` on *every* replica and take the whole service out of
+//! rotation — but it did not make streams free, and the sharpest remaining edge is
+//! Postgres: every open costs a snapshot query against a pool of a few connections.
 //!
 //! Two caps, because one is not enough:
 //!
@@ -16,15 +21,15 @@
 //!   loop, while leaving a real family's handful of tablets alone.
 //! * **Per process** — bounds the same attack spread across many free accounts,
 //!   which the per-user cap cannot see. It is also a genuine capacity limit: a
-//!   replica cannot serve more streams than it has Redis connections for,
-//!   whoever owns them.
+//!   replica has a finite amount of memory and a small database pool, whoever owns
+//!   the streams holding them.
 //!
 //! Slots are held by [`StreamSlot`], an RAII guard modelled on
 //! [`crate::observability::metrics::SseConnectionGuard`]: the stream's `map`
 //! closure captures it, so it lives exactly as long as the connection and is
 //! released on `Drop` — the only moment a client disconnect is observable here.
-//! On the error paths that return before the stream is built (a failed Redis
-//! subscribe, a failed config snapshot) the same `Drop` runs as the local binding
+//! On the error paths that return before the stream is built (a failed fan-out
+//! registration, a failed config snapshot) the same `Drop` runs as the local binding
 //! falls out of scope, so no path can leak a slot.
 
 use std::collections::HashMap;
@@ -33,14 +38,16 @@ use std::sync::{Arc, Mutex};
 /// Concurrent streams one account may hold. Generous for a real household: a
 /// tablet, a second tablet, and a parent's phone running the cloud dashboard.
 /// Clients open exactly one stream each and reconnect rather than stacking, so
-/// anything past this is either a buggy client or an attempt to exhaust Redis.
+/// anything past this is either a buggy client or an attempt to exhaust the
+/// replica.
 pub const DEFAULT_MAX_STREAMS_PER_USER: usize = 3;
 
-/// Concurrent streams one replica will hold, across all accounts. Sized well
-/// under a default Redis `maxclients` of 10,000 — which is shared between every
-/// replica and the ordinary command pool — so a replica refuses new streams long
-/// before Redis starts refusing connections: a 503 on one endpoint instead of
-/// every replica failing readiness at once.
+/// Concurrent streams one replica will hold, across all accounts. Left where it
+/// was when streams cost a Redis connection apiece: the number is no longer sized
+/// against `maxclients`, but it is still a defensible ceiling for the memory and
+/// the database pool a single replica has, and lowering it is a config change
+/// (`SSE_MAX_STREAMS_TOTAL`) rather than a code one. A full replica answers 503 on
+/// this one endpoint instead of degrading everything it serves.
 pub const DEFAULT_MAX_STREAMS_TOTAL: usize = 1_000;
 
 /// Env var overriding [`DEFAULT_MAX_STREAMS_PER_USER`].

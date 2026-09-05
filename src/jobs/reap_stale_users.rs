@@ -17,6 +17,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::routes::sync::publish_conn::RedisPublisher;
 use crate::routes::sync::remote_mutations::parse_or_hash_uuid;
 use crate::routes::sync::types::AppError;
 use crate::routes::user::deletion::{announce_deletion, delete_user_data};
@@ -127,7 +128,7 @@ pub async fn find_stale_users(
 /// missed account is simply picked up by the next run.
 pub async fn reap_stale_users(
     pool: &PgPool,
-    redis_client: &redis::Client,
+    publisher: &RedisPublisher,
     config: &ReapConfig,
 ) -> Result<ReapSummary, AppError> {
     let cutoff = Utc::now()
@@ -152,7 +153,7 @@ pub async fn reap_stale_users(
     };
 
     for user in stale {
-        match reap_one(pool, redis_client, &user, config.dry_run).await {
+        match reap_one(pool, publisher, &user, config.dry_run).await {
             Ok(()) => {
                 if !config.dry_run {
                     summary.deleted += 1;
@@ -177,7 +178,7 @@ pub async fn reap_stale_users(
 /// the ones a real run would produce.
 async fn reap_one(
     pool: &PgPool,
-    redis_client: &redis::Client,
+    publisher: &RedisPublisher,
     user: &StaleUser,
     dry_run: bool,
 ) -> Result<(), AppError> {
@@ -203,7 +204,7 @@ async fn reap_one(
         "Deleted stale account"
     );
 
-    announce_deletion(redis_client, &user.user_id, &affected_users).await;
+    announce_deletion(publisher, &user.user_id, &affected_users).await;
     Ok(())
 }
 

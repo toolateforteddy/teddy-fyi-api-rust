@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 
+use crate::routes::sync::publish_conn::RedisPublisher;
 use crate::routes::sync::publisher::{publish_user_event, SyncSseEvent};
 use crate::routes::sync::remote_mutations::parse_or_hash_uuid;
 use crate::routes::sync::types::AppError;
@@ -201,18 +202,18 @@ pub async fn delete_user_data(
 /// Call this only after the transaction commits. Nothing here can fail the deletion — it
 /// has already happened — so every error only logs.
 pub async fn announce_deletion(
-    redis_client: &redis::Client,
+    publisher: &RedisPublisher,
     user_id: &str,
     affected_users: &[String],
 ) {
-    invalidate_caches(redis_client, user_id, affected_users).await;
+    invalidate_caches(publisher.client(), user_id, affected_users).await;
 
     let event = SyncSseEvent::Invalidate {
         entity: "all".to_string(),
         sender_client_id: None,
         device_uuid: None,
     };
-    if let Err(err) = publish_user_event(redis_client, user_id, &event).await {
+    if let Err(err) = publish_user_event(publisher, user_id, &event).await {
         tracing::warn!("Failed to publish deletion event for user {}: {:?}", user_id, err);
     }
 }

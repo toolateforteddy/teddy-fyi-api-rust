@@ -102,16 +102,18 @@ endpoint shapes are already written down.
   **Planned, not started.** Records what is genuinely shared between the two products (auth and
   the `users` table, not just Postgres), the ordering that keeps each risky step independently
   reversible, and the two ways a naive fork takes down production on its first green build — it
-  inherits this repo's image tag and its unqualified k8s resource names. Read it before creating
-  `scribbleroute/backend`, before removing anything ScribbleRoute-shaped from this repo, and
+  inherits this repo's image tag and its unqualified k8s resource names. **Revised:** the fork is
+  no longer first — an `APP_PROFILE` flag splits the two products inside this repo and carries the
+  second deployment and the traffic cutover, so the fork becomes a refactor against a system
+  already running in the target shape. Read it before creating `scribbleroute/backend`, before removing anything ScribbleRoute-shaped from this repo, and
   before changing `site-ingress` in `teddyfyi`.
 
 - **The identity model we are moving to** — `context/2026-09-05_identity_model.md`.
   **Designed, not built.** `users.id` becomes an opaque surrogate UUID and the Google subject
   becomes an attribute (`provider`, `subject`), which ends the two-identity split below and makes
   room for a second sign-in provider. Accounts are deliberately *not* linked across providers. The
-  re-key rides along in Phase 4 of the split, because that freeze is the only window in which it
-  is cheap. Read it before adding a sign-in provider, before keying a new table by a user, and
+  re-key rides along in Phase 5 of the split, because that freeze is the only window in which it
+  is cheap, and the fork has to precede it. Read it before adding a sign-in provider, before keying a new table by a user, and
   before writing the Phase 4 copy program.
 
 - **Changes to make before or during the split** — `context/2026-09-05_pre_split_changes.md`.

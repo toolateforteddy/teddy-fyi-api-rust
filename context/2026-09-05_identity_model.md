@@ -186,7 +186,7 @@ Google's `sub` from the Google ID token itself. Which one it does decides the si
 the one unknown that can turn a server-side change into a coordinated client rollout, and it is
 cheap to answer.
 
-## 8. Where this happens: Phase 4 of the split
+## 8. Where this happens: Phase 5 of the split
 
 The derivation note's migration is six steps with a dual-write build in the middle. That shape
 exists **only because there is no maintenance window**: clients sync continuously, so rows written
@@ -194,7 +194,7 @@ between the backfill and the cutover would be lost — and lost in the worst way
 still holds them locally and re-uploads them as inserts, producing duplicates under
 `unique_user_device_config_key` rather than an error anyone would notice.
 
-Phase 4 of the split supplies the window. It already freezes writes and rewrites every row into a
+Phase 5 of the split supplies the window. It already freezes writes and rewrites every row into a
 fresh database, so the id mapping is one more transformation in a pass that is happening anyway:
 no added column, no dual-write build, no second backfill, and no point of no return beyond the one
 the phase already has.
@@ -212,13 +212,21 @@ mapping. It needs the same Rust-side hash join as `find_stale_users` to find the
 
 **Prerequisites, in order:**
 
-1. Answer §7 for both clients.
+1. Answer §7 for both clients. This and the orphan audit are Phase 0 of the split — cheap, and
+   much better answered before a freeze than during one.
 2. Run the orphan audit from the derivation note's step 2 — rows whose `user_id` is the hash of no
    surviving `users.id`. `configs` and `drawings` predate the `users` table by one migration, so
    some are expected; a large count makes this a different conversation.
-3. The new repo's migrations create the target schema from the start. It is a new database — there
-   is no add-column-and-backfill dance to write.
-4. The shim in §6 ships and is tested **before** the freeze.
+3. The fork happens **first** (split plan Phase 4), because while one binary serves both products
+   a re-key of only the ScribbleRoute database would leave it straddling two databases with two
+   different id types — this note's own problem in the worst possible place.
+4. The target schema arrives with the **new database**, not with the fork (split plan Phase 5
+   step 1). The fork keeps this repo's migration files byte-identical while it still points at the
+   shared database, or the binary meets a migration history it does not carry and crashloops on
+   `VersionMissing`; see the split plan §1.3. So there is still no add-column-and-backfill dance —
+   it is a fresh database — but the collapse to `0001_init.sql` is a freeze-time step.
+5. The shim in §6 ships with the fork and is tested **before** the freeze. It is code, not schema,
+   so it is safe in the window where migrations are not.
 
 ## 9. The cheaper variant, considered and rejected
 
@@ -266,7 +274,7 @@ Not part of this migration. Recorded so the schema above is not re-litigated whe
 
 | Item | Blocks | Owner |
 | :-- | :-- | :-- |
-| Do the Android/iOS clients read `sub` from our JWT or from Google's? (§7) | scheduling the migration | client repos |
-| Orphan audit: `configs`/`drawings`/`devices` rows with no surviving `users` row (§8) | sizing the copy program | before Phase 4 |
+| Do the Android/iOS clients read `sub` from our JWT or from Google's? (§7) | scheduling the migration | Phase 0, client repos |
+| Orphan audit: `configs`/`drawings`/`devices` rows with no surviving `users` row (§8) | sizing the copy program | Phase 0 |
 | Does App Store 4.8 oblige Sign in with Apple on the existing iOS clients? (§4) | priority of the Apple work | product |
-| `drawings` table size, to confirm §9's rejection | nothing; sanity check | before Phase 4 |
+| `drawings` table size, to confirm §9's rejection | nothing; sanity check | before Phase 5 |

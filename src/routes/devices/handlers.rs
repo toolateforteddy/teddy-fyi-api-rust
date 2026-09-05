@@ -42,6 +42,37 @@ pub struct RenameDeviceRequest {
     pub name: String,
 }
 
+/// Longest device name this endpoint accepts, in Unicode scalar values (`char`s) rather
+/// than bytes, so the limit does not silently shrink for a name written in Japanese or
+/// containing emoji. A device name is a human label for a tablet — "Ada's iPad" — so this
+/// is already far more room than anyone needs.
+pub const MAX_DEVICE_NAME_CHARS: usize = 100;
+
+/// Cheap byte pre-filter before counting characters: UTF-8 uses at most 4 bytes per
+/// scalar value, so anything longer than this cannot be within the character limit.
+const MAX_DEVICE_NAME_BYTES: usize = MAX_DEVICE_NAME_CHARS * 4;
+
+/// Validates a device name supplied by a client.
+///
+/// Both failures are `BadRequest`: the caller is entitled to rename their own device, the
+/// payload is simply not one the server will store. `Forbidden` would say the opposite —
+/// that the tablet is not theirs — which sends a client looking for an authorization
+/// problem that is not there.
+pub(crate) fn validate_device_name(name: &str) -> Result<(), AppError> {
+    if name.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "Device name must not be empty".to_string(),
+        ));
+    }
+    if name.len() > MAX_DEVICE_NAME_BYTES || name.chars().count() > MAX_DEVICE_NAME_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "Device name must be at most {} characters",
+            MAX_DEVICE_NAME_CHARS
+        )));
+    }
+    Ok(())
+}
+
 /// `GET /api/devices` — every tablet on the authenticated account.
 pub async fn list_devices_handler(
     State(state): State<AppState>,
@@ -77,11 +108,17 @@ pub async fn register_device_handler(
 ) -> Result<Json<DeviceResponse>, AppError> {
     let user_uuid = parse_or_hash_uuid(&claims.sub);
     let device_uuid = payload.device_uuid.unwrap_or_else(Uuid::new_v4);
+    // An absent or blank name means "no name supplied" on registration — the device layer
+    // then keeps whatever name it already has, or generates one — so only a name the
+    // caller actually meant is validated.
     let name = payload
         .name
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty());
+    if let Some(name) = name {
+        validate_device_name(name)?;
+    }
 
     let mut tx = state.db_pool.begin().await?;
     crate::routes::sync::device::ensure_device(&mut tx, &user_uuid, device_uuid, name).await?;
@@ -98,11 +135,8 @@ pub async fn rename_device_handler(
     Json(payload): Json<RenameDeviceRequest>,
 ) -> Result<Json<DeviceResponse>, AppError> {
     let user_uuid = parse_or_hash_uuid(&claims.sub);
+    validate_device_name(&payload.name)?;
     let name = payload.name.trim();
-
-    if name.is_empty() {
-        return Err(AppError::Forbidden("Device name must not be empty".to_string()));
-    }
 
     let updated = sqlx::query!(
         "UPDATE devices SET name = $1 WHERE id = $2 AND user_id = $3",

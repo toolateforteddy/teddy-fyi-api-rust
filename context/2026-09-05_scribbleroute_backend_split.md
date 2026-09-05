@@ -125,12 +125,24 @@ Two more cross-repo facts:
   on every start, and `init_app_state` calls it. So every rollout restart applies that
   image's migration directory to whatever `DATABASE_URL` points at.
 
-  The racing hazard is therefore real, and **Phase 2 is exactly the configuration that
-  triggers it**: two deployments, one database, each auto-applying its own directory —
-  and Phase 1 step 3 deliberately makes those directories incompatible, so the fork's
-  first boot tries to apply `0001_init.sql` to a database whose `_sqlx_migrations` table
-  already has eighteen rows. Resolve this before Phase 2; the options are in
-  `context/2026-09-05_pre_split_changes.md` item 1.
+  It is still not a *race*, and the first correction to this paragraph was wrong to say
+  it was. sqlx 0.8.6 defaults to `locking: true`, so a migrator takes an exclusive
+  advisory lock before touching anything, and to `ignore_missing: false`, so a binary
+  that finds an applied version it does not carry returns `VersionMissing` rather than
+  improvising. Two binaries on one database therefore **crashloop rather than corrupt**.
+
+  What that costs is this plan. **Phase 1 step 3 and Phase 2 are mutually incompatible as
+  written**: step 3 collapses the fork to a single `0001_init.sql`, and Phase 2 points it
+  at a database holding eighteen applied versions and no version 1, so the fork panics in
+  `init_app_state` and never serves. Pointed the other way, a migration added in the fork
+  during Phases 2–3 applies cleanly and then crashloops `api-rust-dep` on its next rollout
+  restart — a commit in one repo taking down the other's deploy, which is the shared image
+  tag hazard in a second costume.
+
+  **The resolution is to resequence, not to build a migration job** — see
+  `context/2026-09-05_pre_split_changes.md` item 1 for the full argument. Two changes
+  below carry it: Phase 1 step 3 defers the collapse to Phase 4, and Phases 2–3 gain a
+  no-migrations constraint.
 
 ---
 
@@ -280,11 +292,19 @@ In `scribbleroute/backend`:
    add-column-and-backfill dance to write. The legacy-token shim
    (`context/2026-09-05_identity_model.md` §6) ships and is tested here too, well before the
    freeze that needs it.
-3. Collapse the migrations to a single `0001_init.sql` capturing exactly the ScribbleRoute
-   schema in its target shape. The identity change decides this: the inherited files create
-   `users.id` as `TEXT` and would have to be undone by a later migration in the same run, so
-   replaying history here buys nothing and costs a contradiction. The legacy `TEXT`-to-UUID
-   archaeology in the old files is likewise dead weight against a database with no rows yet.
+3. **Keep the inherited `migrations/` directory byte-identical for now.** The collapse to a
+   single `0001_init.sql` is right, and it is written up in Phase 4 step 1 — but it cannot
+   happen here. The binary migrates on boot (§1.2), and Phases 2–3 point this binary at the
+   *existing* database, which holds eighteen applied versions and no version 1: a collapsed
+   directory means `VersionMissing`, a panic in `init_app_state`, and a pod that never
+   serves. Identical files mean matching checksums, nothing to apply, and two binaries that
+   cannot surprise each other.
+
+   The reasoning for the collapse itself is unchanged and belongs with the new database:
+   the identity change means the inherited files create `users.id` as `TEXT` and would have
+   to be undone by a later migration in the same run, so replaying history buys nothing and
+   costs a contradiction, and the legacy `TEXT`-to-UUID archaeology is dead weight against
+   a database with no rows yet.
 4. Narrow the compiled-in defaults: `CORS_ALLOWED_ORIGINS` to the scribbleroute.com
    spellings, `COOKIE_DOMAIN` to `.scribbleroute.com`, `APP_VERIFICATION_URIS` to the two
    `SCRIBBLE_*` apps.
@@ -303,6 +323,14 @@ In `scribbleroute/backend`:
 this repo is still the one applying it.
 
 ### Phase 2 — Deploy alongside, sharing the data tier
+
+**Constraint for the whole of Phases 2 and 3: no migrations, in either repo.** Both binaries
+migrate on boot against the same database, and sqlx refuses to start on an applied version it
+does not carry (§1.2), so the first migration either side adds crashloops the other on its next
+rollout restart. If one is genuinely urgent it has to land in **both** repos byte-identically —
+same filename, same content, same checksum — and be deployed on the fork first. This is a
+schema freeze, not a write freeze; it lasts days rather than minutes and costs nothing but
+patience.
 
 1. `kubectl apply` the new manifests. `DATABASE_URL` points at the **existing** database,
    `JWT_SECRET` is the **same secret**, `REDIS_URL` points at the **new** Valkey.
@@ -331,9 +359,18 @@ scratched and nothing has moved in the database yet.
 
 ### Phase 4 — Cut the data tier (the one with a freeze)
 
-1. `CREATE DATABASE scribbleroute;` in the same Neon project. Run the new repo's
-   migrations against it. Verify the schema matches what the binary expects (`sqlx migrate
-   info`, plus a boot against it in a scratch pod).
+1. `CREATE DATABASE scribbleroute;` in the same Neon project. **Now** collapse the new
+   repo's `migrations/` to the single `0001_init.sql` deferred from Phase 1 step 3 —
+   the ScribbleRoute schema in its target identity shape, with the foreign keys to
+   `users(id)` that only become expressible once `users.id` is a UUID. This is the first
+   moment it is safe: the new database is empty, so there is no applied history to
+   contradict, and the old database is about to stop being this binary's concern.
+
+   Run those migrations against it and verify the schema matches what the binary expects
+   (`sqlx migrate info`, plus a boot against it in a scratch pod). Do **not** let a pod
+   still pointed at the shared database start on the collapsed directory — that is the
+   `VersionMissing` panic from §1.2, and between this step and step 5 both configurations
+   exist.
 2. **Freeze ScribbleRoute writes.** Scale `scribbleroute-api-dep` to zero, or return 503
    from the ingress for that host. Small user base, so a short real outage is cheaper than
    any dual-write scheme. Announce it if testers are active.
@@ -380,6 +417,14 @@ Only after Phase 4 has been healthy for a week, and only from a fresh backup:
    annotation in `teddyfyi`, in that order.
 5. Migration to drop `configs`, `drawings`, `devices`, `device_authorizations`,
    `device_claim_failures`, and the `sync_state` enum if nothing else uses it.
+
+   **This is a second deploy, not the same one as step 1.** The binary migrates on boot and
+   the Deployment rolls with `maxUnavailable: 0`, so the new pod would drop those tables
+   while the old pod — still carrying the ScribbleRoute query paths step 1 removes — is
+   serving requests against them. Ship the code removal, wait for the rollout to complete,
+   then ship the drop. The same rule governs every migration here and is only visible when
+   a migration is destructive: what boots must be readable by the release it is replacing,
+   for the length of the roll.
 6. **Delete the ScribbleRoute-only `users` and `sessions` rows** using the same one-shot
    join from Phase 4, inverted. This is the step that actually gets external testers' email
    addresses out of the personal database, and it is the one most likely to be forgotten
@@ -402,7 +447,9 @@ its own: `pg_dump` / `pg_restore` and one secret rotation, no code change. Rotat
 | Forced re-login on every tablet at cutover | 3 | Identical `JWT_SECRET`; copy `sessions` in Phase 4 |
 | Cannot select ScribbleRoute `users` rows in SQL | 4, 5 | One-shot Rust subcommand using `parse_or_hash_uuid`, mirroring `find_stale_users` |
 | Split brain if data is copied before traffic moves | — | Ordering: flip first, copy second, freeze during the copy |
-| Both deployments auto-migrate the shared database on every restart | 2 | **Open.** The binary runs `sqlx::migrate!` at boot (§1.2 correction), and Phase 1 step 3 gives the fork an incompatible migration directory. Must be resolved before Phase 2 — `context/2026-09-05_pre_split_changes.md` item 1 |
+| Both deployments auto-migrate the shared database on every restart | 2–3 | Resolved by resequencing: Phase 1 step 3 defers the collapse to Phase 4 step 1, and Phases 2–3 carry a no-migrations constraint. Failure is a crashloop, not corruption — sqlx locks and refuses `VersionMissing` (§1.2) |
+| A migration added in one repo crashloops the *other* repo's next deploy | 2–3 | Same constraint. This is the direction that reaches production teddy.fyi, and it is silent until the next `rollout restart` |
+| Phase 5's DROP TABLE migration runs while the old pod still queries those tables | 5 | `maxUnavailable: 0` means the new pod migrates while the old one serves. Split step 1 into two deploys: remove the code, wait for the rollout, then ship the drop |
 | A ScribbleRoute token is accepted by the teddy.fyi backend, and vice versa | 2–5 | **Open.** `JWT_SECRET` is shared by decision #2 and the token carries no product claim, so the window is the whole of Phases 3–5. Needs the claim minted before Phase 3 — `context/2026-09-05_pre_split_changes.md` item 2 |
 | New pod cannot reach Redis | 2 | Expected — `cache.yaml`'s NetworkPolicy selects `app: api-rust`; the new deployment gets its own Valkey and its own policy |
 | Pod will not boot after removing Gemini | 1 | `init_app_state` `expect`s `GEMINI_API_KEY`; remove code, `AppState` field and manifest env together |

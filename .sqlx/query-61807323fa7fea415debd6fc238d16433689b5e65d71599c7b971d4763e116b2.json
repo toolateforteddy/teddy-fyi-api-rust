@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4)) AND ($6::uuid IS NULL OR device_uuid = $6)",
+  "query": "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data FROM drawings WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($5::uuid IS NULL OR device_uuid = $5) AND ($6::bigint IS NULL OR last_modified <= $6) ORDER BY last_modified ASC, id ASC LIMIT $7",
   "describe": {
     "columns": [
       {
@@ -20,31 +20,36 @@
       },
       {
         "ordinal": 3,
+        "name": "client_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "is_deleted",
         "type_info": "Bool"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "last_modified",
         "type_info": "Int8"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "sync_state",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Int8"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "data",
         "type_info": "Jsonb"
       }
@@ -54,12 +59,14 @@
         "Uuid",
         "Int8",
         "Uuid",
-        "UuidArray",
         "Bool",
-        "Uuid"
+        "Uuid",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -71,5 +78,5 @@
       false
     ]
   },
-  "hash": "5193d1b3bab9177032b408a61104d02e68cbe13854a43089ab9de0eaafaef984"
+  "hash": "61807323fa7fea415debd6fc238d16433689b5e65d71599c7b971d4763e116b2"
 }

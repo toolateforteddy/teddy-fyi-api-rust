@@ -1,5 +1,6 @@
 use crate::routes::sync::device::{ItemDeviceRule, resolve_item_device};
 use crate::routes::sync::deletes::ack_unsynced_delete;
+use crate::routes::sync::paging::{trim_page, Page};
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -464,61 +465,145 @@ pub async fn process_config_changes(
     Ok(())
 }
 
-pub async fn fetch_remote_config_mutations(
+/// One page of the configs a client is owed, read from Postgres exactly once.
+///
+/// The same overlap `DrawingDownload` describes, one table over and three orders of
+/// magnitude lighter per row: `fetch_remote_config_mutations` and
+/// `fetch_configs_for_response` ran predicates where the second was a superset of the
+/// first, so every config on every Scribble sync was read twice and emitted twice. Both
+/// wire fields are still populated and still identical to what they were.
+pub struct ConfigDownload {
+    pub remote_changes: Vec<ConfigChangeDelta>,
+    pub items: Vec<ConfigSyncItem>,
+    /// `Some(ms)` when the page was cut short — see `crate::routes::sync::paging`.
+    pub next_cursor_ms: Option<i64>,
+}
+
+/// Reads at most one page of the configs changed since the client's cursor.
+pub async fn fetch_config_download(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
     device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
-) -> Result<Vec<ConfigChangeDelta>, AppError> {
-    let mut remote_changes = Vec::new();
+    page_size: usize,
+) -> Result<ConfigDownload, AppError> {
     let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
-    let rows = sqlx::query!(
+    let probe_limit = page_size.saturating_add(1) as i64;
+    let mut rows = fetch_config_page(tx, user_id, client_id, device_filter, last_synced_ms, None, is_initial_sync, probe_limit).await?;
+
+    let next_cursor_ms = match trim_page(&mut rows, page_size, |row| row.last_modified) {
+        Page::Complete => None,
+        Page::Truncated { next_cursor_ms } => Some(next_cursor_ms),
+        Page::WholeMillisecond { ms } => {
+            tracing::warn!(
+                "More than a page of configs for user {} share last_modified {}; serving that millisecond whole",
+                user_id, ms
+            );
+            rows = fetch_config_page(tx, user_id, client_id, device_filter, ms - 1, Some(ms), is_initial_sync, i64::MAX).await?;
+            Some(ms)
+        }
+    };
+
+    let mut remote_changes = Vec::with_capacity(rows.len());
+    let mut items = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let sync_state = row.sync_state.unwrap_or_else(|| "SYNCED".to_string());
+
+        // `configs` carries soft-deleted rows on an initial sync and
+        // `remote_config_changes` suppresses them. Preserved rather than unified: it is
+        // the wire as the clients have always seen it.
+        if !(is_initial_sync && row.is_deleted) {
+            let item_data = ConfigData {
+                id: row.id,
+                user_id: row.user_id.to_string(),
+                client_uuid: row.client_uuid.to_string(),
+                device_uuid: Some(row.device_uuid),
+                version: row.version,
+                is_deleted: row.is_deleted,
+                last_modified: row.last_modified,
+                sync_state: sync_state.clone(),
+                key: row.key.clone(),
+                value: row.value.clone(),
+            };
+
+            remote_changes.push(ConfigChangeDelta {
+                id: row.id.to_string(),
+                operation_type: if row.is_deleted {
+                    OperationType::Delete
+                } else {
+                    OperationType::Update
+                },
+                version: row.version,
+                device_uuid: Some(row.device_uuid),
+                data: Some(serde_json::to_value(&item_data)?),
+            });
+        }
+
+        items.push(ConfigSyncItem {
+            id: row.id,
+            device_uuid: Some(row.device_uuid),
+            key: row.key,
+            value: row.value,
+            sync_state,
+            version: row.version,
+            is_deleted: row.is_deleted,
+            last_modified: row.last_modified,
+        });
+    }
+
+    Ok(ConfigDownload { remote_changes, items, next_cursor_ms })
+}
+
+/// The one download query, shared by the page read and the whole-millisecond re-read.
+#[allow(clippy::too_many_arguments)]
+async fn fetch_config_page(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    client_id: &Uuid,
+    device_filter: Option<Uuid>,
+    after_ms: i64,
+    through_ms: Option<i64>,
+    is_initial_sync: bool,
+    limit: i64,
+) -> Result<Vec<ConfigRow>, AppError> {
+    let rows = sqlx::query_as!(
+        ConfigRow,
         "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
          FROM configs \
-         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE) \
-           AND ($5::uuid IS NULL OR device_uuid = $5)",
+         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) \
+           AND ($5::uuid IS NULL OR device_uuid = $5) \
+           AND ($6::bigint IS NULL OR last_modified <= $6) \
+         ORDER BY last_modified ASC, id ASC \
+         LIMIT $7",
         user_id,
-        last_synced_ms,
+        after_ms,
         client_id,
         is_initial_sync,
-        device_filter
+        device_filter,
+        through_ms,
+        limit
     )
     .fetch_all(&mut **tx)
     .await?;
 
-    for row in rows {
-        let item_data = ConfigData {
-            id: row.id,
-            user_id: row.user_id.to_string(),
-            client_uuid: row.client_uuid.to_string(),
-            device_uuid: Some(row.device_uuid),
-            version: row.version,
-            is_deleted: row.is_deleted,
-            last_modified: row.last_modified,
-            sync_state: row.sync_state.clone().unwrap_or_else(|| "SYNCED".to_string()),
-            key: row.key,
-            value: row.value,
-        };
+    Ok(rows)
+}
 
-        let data_val = serde_json::to_value(&item_data)?;
-
-        remote_changes.push(ConfigChangeDelta {
-            id: row.id.to_string(),
-            operation_type: if row.is_deleted {
-                OperationType::Delete
-            } else {
-                OperationType::Update
-            },
-            version: row.version,
-            device_uuid: Some(row.device_uuid),
-            data: Some(data_val),
-        });
-    }
-
-    Ok(remote_changes)
+struct ConfigRow {
+    id: Uuid,
+    user_id: Uuid,
+    device_uuid: Uuid,
+    client_uuid: Uuid,
+    version: i32,
+    is_deleted: bool,
+    last_modified: i64,
+    sync_state: Option<String>,
+    key: String,
+    value: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -531,6 +616,10 @@ pub async fn process_config_sync_items(
     device_rule: &ItemDeviceRule,
     items: &[ConfigSyncItem],
     success_uuids: &mut Vec<Uuid>,
+    // See `process_drawing_sync_items`: the flat upload paths were the only ones that
+    // reported no per-item version in `upload_status`, which is why their echo has to
+    // carry whole rows back. Reporting it here is the first half of fixing that.
+    upload_status: &mut Vec<SuccessResult>,
     broadcasts: &mut Vec<ConfigBroadcast>,
 ) -> Result<(), AppError> {
     for item in items {
@@ -591,6 +680,20 @@ pub async fn process_config_sync_items(
                         },
                     });
                 }
+
+                upload_status.push(SuccessResult {
+                    id: item.id.to_string(),
+                    version: next_version,
+                    sync_state: "SYNCED".to_string(),
+                });
+            } else {
+                // Nothing to delete, so the delete has succeeded. See
+                // `crate::routes::sync::deletes`.
+                upload_status.push(SuccessResult {
+                    id: item.id.to_string(),
+                    version: ack_unsynced_delete("config", &item.id.to_string()),
+                    sync_state: "SYNCED".to_string(),
+                });
             }
             success_uuids.push(item.id);
         } else {
@@ -637,6 +740,11 @@ pub async fn process_config_sync_items(
             )
             .await?;
 
+            upload_status.push(SuccessResult {
+                id: item.id.to_string(),
+                version: next_version,
+                sync_state: "SYNCED".to_string(),
+            });
             success_uuids.push(item.id);
             // The server's id won the reconciliation, so echo that row back too — it is how
             // the client learns which row its key actually lives on.
@@ -683,33 +791,34 @@ pub async fn fetch_config_snapshot(
         .collect())
 }
 
-pub async fn fetch_configs_for_response(
+/// The upload echo: the config rows this very request just wrote, read back.
+///
+/// Split out of the old combined query so that the download above can be paged without
+/// the page limit ever swallowing a row the client is waiting on an acknowledgement for.
+/// `success_uuids` is bounded by `DEFAULT_MAX_ITEMS_PER_COLLECTION`, so this needs no page
+/// of its own. At 8 KiB a value the bytes hardly matter, but the duplicate read did.
+pub async fn fetch_configs_for_echo(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
-    client_id: &Uuid,
     device_filter: Option<Uuid>,
-    last_synced_at: Option<DateTime<Utc>>,
     success_uuids: &[Uuid],
 ) -> Result<Vec<ConfigSyncItem>, AppError> {
-    let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
-    let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
+    if success_uuids.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let rows = sqlx::query!(
         "SELECT id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, key, value \
          FROM configs \
-         WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4)) \
-           AND ($6::uuid IS NULL OR device_uuid = $6)",
+         WHERE user_id = $1 AND id = ANY($2) AND ($3::uuid IS NULL OR device_uuid = $3)",
         user_id,
-        last_synced_ms,
-        client_id,
         success_uuids,
-        is_initial_sync,
         device_filter
     )
     .fetch_all(&mut **tx)
     .await?;
 
-    let items = rows
+    Ok(rows
         .into_iter()
         .map(|row| ConfigSyncItem {
             id: row.id,
@@ -721,7 +830,5 @@ pub async fn fetch_configs_for_response(
             is_deleted: row.is_deleted,
             last_modified: row.last_modified,
         })
-        .collect();
-
-    Ok(items)
+        .collect())
 }

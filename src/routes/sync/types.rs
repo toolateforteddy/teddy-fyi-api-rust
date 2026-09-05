@@ -275,6 +275,21 @@ pub struct SyncResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drawings: Vec<DrawingSyncItem>,
     pub server_timestamp: DateTime<Utc>,
+    /// Set when a download was cut short at a page boundary and the client still has rows
+    /// waiting for it. Additive and omitted when false, so nothing shipped today sees it.
+    ///
+    /// A client that ignores it is still correct, because `server_timestamp` carries the
+    /// truncation: it is walked back to the last millisecond this reply delivered in full,
+    /// so the ordinary "store it and send it back as `last_synced_at`" loop picks the rest
+    /// up on the next sync rather than skipping it. The flag only says "and you can do
+    /// that immediately, rather than on your next scheduled poll". See
+    /// `crate::routes::sync::paging`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_more: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug)]

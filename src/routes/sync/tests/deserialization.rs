@@ -61,6 +61,7 @@ fn test_sync_response_serialization_omits_empty_fields() {
         configs: Vec::new(),
         drawings: Vec::new(),
         server_timestamp: now,
+        has_more: false,
     };
 
     let serialized = serde_json::to_string(&response).expect("Should serialize successfully");
@@ -86,5 +87,6 @@ fn test_sync_response_serialization_omits_empty_fields() {
     assert!(deserialized.remote_drawing_changes.is_empty());
     assert!(deserialized.configs.is_empty());
     assert!(deserialized.drawings.is_empty());
+    assert!(!deserialized.has_more);
     assert_eq!(deserialized.server_timestamp, now);
 }

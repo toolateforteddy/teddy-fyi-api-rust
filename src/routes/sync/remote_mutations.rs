@@ -1,7 +1,8 @@
 use super::grocery::fetch_remote_grocery_mutations;
 use super::todo::fetch_remote_todo_mutations;
-use super::config::fetch_remote_config_mutations;
-use super::drawing::fetch_remote_drawing_mutations;
+use super::config::fetch_config_download;
+use super::drawing::fetch_drawing_download;
+use super::limits::SyncLimits;
 use super::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -85,7 +86,9 @@ pub async fn fetch_remote_mutations(
     {
         let user_uuid = parse_or_hash_uuid(user_id);
         let client_uuid = parse_or_hash_uuid(client_id);
-        fetch_remote_config_mutations(tx, &user_uuid, &client_uuid, None, last_synced_at).await?
+        fetch_config_download(tx, &user_uuid, &client_uuid, None, last_synced_at, SyncLimits::from_env().download_page_size)
+            .await?
+            .remote_changes
     } else {
         vec![]
     };
@@ -93,7 +96,9 @@ pub async fn fetch_remote_mutations(
     let remote_drawing_changes = if scope == SyncScope::ScribbleKeepCloud {
         let user_uuid = parse_or_hash_uuid(user_id);
         let client_uuid = parse_or_hash_uuid(client_id);
-        fetch_remote_drawing_mutations(tx, &user_uuid, &client_uuid, None, last_synced_at).await?
+        fetch_drawing_download(tx, &user_uuid, &client_uuid, None, last_synced_at, SyncLimits::from_env().download_page_size)
+            .await?
+            .remote_changes
     } else {
         vec![]
     };

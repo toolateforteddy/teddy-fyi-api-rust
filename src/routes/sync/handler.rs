@@ -32,7 +32,8 @@ pub async fn sync_handler(
     // Bounds first, before a transaction is opened or a row is touched: an over-large
     // drawing blob or an over-long config value fails the whole request with a 400 that
     // names the field, and nothing is written. See `crate::routes::sync::limits`.
-    validate_sync_payload(&payload, &SyncLimits::from_env())?;
+    let limits = SyncLimits::from_env();
+    validate_sync_payload(&payload, &limits)?;
 
     // The device this request speaks for is the one in the token, never the one in the body.
     //
@@ -384,6 +385,7 @@ pub async fn sync_handler(
                             device_filter,
                             &payload.drawings,
                             &mut success_drawing_uuids,
+                            &mut upload_status,
                         )
                         .await?;
                         for uuid in &success_drawing_uuids {
@@ -417,6 +419,7 @@ pub async fn sync_handler(
                             &device_rule,
                             &payload.configs,
                             &mut success_config_uuids,
+                            &mut upload_status,
                             &mut config_broadcasts,
                         )
                         .await?;
@@ -442,56 +445,69 @@ pub async fn sync_handler(
                     }
                 }
 
-                // Fetch remote mutations
-                let fetched_config = if scope == SyncScope::ScribbleBox
+                // Fetch remote mutations.
+                //
+                // One read per entity, feeding both wire channels. `remote_*_changes` and
+                // the flat `configs`/`drawings` arrays used to be filled by two queries
+                // whose predicates overlapped completely, so every row travelled twice
+                // through Postgres, through memory and onto the wire. They are two views
+                // of one page of rows now; the wire is unchanged.
+                let config_download = if scope == SyncScope::ScribbleBox
                     || scope == SyncScope::ScribbleKeep
                     || scope == SyncScope::ScribbleKeepCloud
                 {
-                    fetch_remote_config_mutations(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at).await?
+                    fetch_config_download(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at, limits.download_page_size).await?
                 } else {
-                    vec![]
+                    ConfigDownload { remote_changes: vec![], items: vec![], next_cursor_ms: None }
                 };
 
-                let fetched_drawing = if scope == SyncScope::ScribbleKeepCloud {
-                    fetch_remote_drawing_mutations(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at).await?
+                let drawing_download = if scope == SyncScope::ScribbleKeepCloud {
+                    fetch_drawing_download(&mut tx, &user_uuid, &client_uuid, device_filter, payload.last_synced_at, limits.download_page_size).await?
                 } else {
-                    vec![]
+                    DrawingDownload { remote_changes: vec![], items: vec![], next_cursor_ms: None }
                 };
 
                 // Merge fetched config/drawing changes
                 {
                     use std::collections::HashSet;
                     let existing_config_ids: HashSet<String> = remote_config_changes.iter().map(|c| c.id.clone()).collect();
-                    remote_config_changes.extend(fetched_config.into_iter().filter(|c| !existing_config_ids.contains(&c.id)));
+                    remote_config_changes.extend(config_download.remote_changes.into_iter().filter(|c| !existing_config_ids.contains(&c.id)));
 
                     let existing_drawing_ids: HashSet<String> = remote_drawing_changes.iter().map(|c| c.id.clone()).collect();
-                    remote_drawing_changes.extend(fetched_drawing.into_iter().filter(|c| !existing_drawing_ids.contains(&c.id)));
+                    remote_drawing_changes.extend(drawing_download.remote_changes.into_iter().filter(|c| !existing_drawing_ids.contains(&c.id)));
                 }
 
-                let response_configs = fetch_configs_for_response(
-                    &mut tx,
-                    &user_uuid,
-                    &client_uuid,
-                    device_filter,
-                    payload.last_synced_at,
-                    &success_config_uuids,
-                )
-                .await?;
+                // The upload echo is read separately and merged, rather than folded into
+                // the download's predicate as it used to be: the download is paged now,
+                // and a page limit must never be able to swallow the acknowledgement for
+                // a row the client is holding open.
+                let mut response_configs = config_download.items;
+                {
+                    use std::collections::HashSet;
+                    let already: HashSet<uuid::Uuid> = response_configs.iter().map(|c| c.id).collect();
+                    let echoed = fetch_configs_for_echo(&mut tx, &user_uuid, device_filter, &success_config_uuids).await?;
+                    response_configs.extend(echoed.into_iter().filter(|c| !already.contains(&c.id)));
+                }
 
-                let response_drawings = if scope == SyncScope::ScribbleKeepCloud || (uploads_drawings && !success_drawing_uuids.is_empty()) {
-                    fetch_drawings_for_response(
-                        &mut tx,
-                        &user_uuid,
-                        &client_uuid,
-                        device_filter,
-                        payload.last_synced_at,
-                        &success_drawing_uuids,
-                        scope == SyncScope::ScribbleKeepCloud,
-                    )
-                    .await?
-                } else {
-                    vec![]
-                };
+                // The cloud scope uploads no drawings and the tablet scopes download
+                // none, so exactly one of these two is ever non-empty — the overlap the
+                // old single query had to reconcile does not exist here.
+                let mut response_drawings = drawing_download.items;
+                if uploads_drawings && !success_drawing_uuids.is_empty() {
+                    use std::collections::HashSet;
+                    let already: HashSet<uuid::Uuid> = response_drawings.iter().map(|d| d.id).collect();
+                    let echoed = fetch_drawings_for_response(&mut tx, &user_uuid, &success_drawing_uuids).await?;
+                    response_drawings.extend(echoed.into_iter().filter(|d| !already.contains(&d.id)));
+                }
+
+                // A truncated page must not let the client's cursor jump to this
+                // request's `server_timestamp`, or everything left behind becomes
+                // unreachable. The smallest truncation point wins, because one
+                // `server_timestamp` serves every entity in the reply.
+                let next_cursor_ms = [config_download.next_cursor_ms, drawing_download.next_cursor_ms]
+                    .into_iter()
+                    .flatten()
+                    .min();
 
                 // Only a tablet's own sync counts as the tablet being seen; the cloud
                 // app editing a device remotely does not mean that device checked in.
@@ -501,9 +517,9 @@ pub async fn sync_handler(
 
                 tx.commit().await?;
 
-                Ok::<_, AppError>((success_ids, upload_status, remote_config_changes, remote_drawing_changes, response_configs, response_drawings, config_broadcasts))
+                Ok::<_, AppError>((success_ids, upload_status, remote_config_changes, remote_drawing_changes, response_configs, response_drawings, config_broadcasts, next_cursor_ms))
             } else {
-                Ok((vec![], vec![], vec![], vec![], vec![], vec![], vec![]))
+                Ok((vec![], vec![], vec![], vec![], vec![], vec![], vec![], None))
             }
         }
     };
@@ -536,6 +552,7 @@ pub async fn sync_handler(
     let response_configs = config_drawing_res.4;
     let response_drawings = config_drawing_res.5;
     let config_broadcasts = config_drawing_res.6;
+    let next_cursor_ms = config_drawing_res.7;
 
     // Fan each config write out to its own device's Pub/Sub channel, so an SSE stream that
     // named that device sees the change without waiting for its next sync poll. Publishing
@@ -660,6 +677,18 @@ pub async fn sync_handler(
         downloaded,
     );
 
+    // The cursor the client is handed. Normally this request's clock reading; when a
+    // download was paged, the last millisecond this reply delivered whole instead — the
+    // client's cursor may not move past rows it did not receive. Every entity in the
+    // reply shares one `server_timestamp`, so an unpaged one (todo, grocery) is simply
+    // re-read on the next sync, which its own echo-suppression filter makes cheap and
+    // which the sync protocol is idempotent under regardless.
+    let has_more = next_cursor_ms.is_some();
+    let server_timestamp = match next_cursor_ms {
+        Some(ms) => chrono::DateTime::from_timestamp_millis(ms).unwrap_or(server_timestamp),
+        None => server_timestamp,
+    };
+
     Ok(Json(SyncResponse {
         success_ids,
         upload_status,
@@ -676,5 +705,6 @@ pub async fn sync_handler(
         configs: response_configs,
         drawings: response_drawings,
         server_timestamp,
+        has_more,
     }))
 }

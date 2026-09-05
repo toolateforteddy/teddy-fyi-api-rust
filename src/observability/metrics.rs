@@ -81,8 +81,20 @@ fn register_baseline_metrics() {
         "sse_streams_refused_total",
         "/api/sync/stream connections refused by a concurrency cap, by reason"
     );
+    metrics::describe_counter!(
+        "http_requests_shed_total",
+        "Requests refused with 503 because the concurrency ceiling was full"
+    );
+    metrics::describe_counter!(
+        "http_handler_panics_total",
+        "Handler panics caught by the panic guard and answered with 500"
+    );
 
     metrics::gauge!("sse_connections_active").set(0.0);
+    // Both of these are supposed to stay at zero forever, which is precisely why they
+    // have to exist at zero: "no data" and "nothing has gone wrong" must not look alike.
+    metrics::counter!("http_requests_shed_total").increment(0);
+    metrics::counter!("http_handler_panics_total").increment(0);
     metrics::gauge!("db_connectivity_degraded").set(0.0);
     for class in ["unreachable", "saturated"] {
         metrics::counter!("db_connectivity_failures_total", "class" => class).increment(0);

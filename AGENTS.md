@@ -54,3 +54,12 @@ endpoint shapes are already written down.
   `TEDDY_FYI_GROCERY` → `teddy.fyi/link` (`APP_VERIFICATION_URIS` in `src/auth/device.rs`).
   A new client that pairs adds its wire name there, or it will send its parents to the
   default page — which is somebody else's site.
+
+- **The two user identities** — `context/2026-09-05_user_identity_derivation.md`. The same
+  signed-in person is named two ways: the raw auth subject keys `users`, `sessions` and every
+  todo/grocery table, while `parse_or_hash_uuid(sub)` keys `configs`, `drawings` and `devices`.
+  **Documented, not fixed** — re-keying orphans every existing row, so the change is deferred and
+  the note costs the migration instead. Read it before touching `parse_or_hash_uuid`, before
+  adding a table keyed by a user, and before writing any endpoint that takes a user identifier
+  from a request body. `src/routes/sync/tests/identity.rs` pins the current behaviour and is
+  supposed to fail if the derivation moves.

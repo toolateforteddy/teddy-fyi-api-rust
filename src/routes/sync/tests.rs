@@ -6,10 +6,10 @@ mod deserialization;
 mod devices;
 mod flat_configs_drawings;
 mod grocery;
+mod identity;
 mod log_hygiene;
 mod misc;
 mod remote_mutations;
 mod scribble;
 mod stream;
 mod todo;
-

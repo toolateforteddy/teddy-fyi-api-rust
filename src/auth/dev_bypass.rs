@@ -27,8 +27,6 @@
 //! Local development enables it: `make dev` / `scripts/dev.sh` pass `--features dev-auth`.
 //! See the README.
 
-use std::collections::HashSet;
-
 /// The email stamped on a bypassed login. Deliberately obvious in the `users` table, so a
 /// row created this way is recognisable if a dev database is ever confused for a real one.
 #[cfg(feature = "dev-auth")]
@@ -81,7 +79,7 @@ pub fn dev_bypass_identity(
 ///   evidence was one `tracing::error!` line at boot. A process that cannot authenticate
 ///   anybody is not serving; failing to start turns a silent, total outage into a failed
 ///   rollout that a deploy actually blocks on. The prod deployment supplies its ID through
-///   the legacy `SCRIBBLEROUTE_API_CLIENT_ID` var, which `load_google_client_ids` folds in,
+///   the legacy `SCRIBBLEROUTE_API_CLIENT_ID` var, which `load_client_catalog` folds in,
 ///   so this is already satisfied there.
 /// * **With `dev-auth`.** An empty allowlist is the normal, expected local setup — the
 ///   `mock.` path needs no client ID. What is *not* normal is a dev-auth binary that also
@@ -92,27 +90,29 @@ pub fn dev_bypass_identity(
 ///
 /// Panicking is the right shape for both: this runs inside `init_app_state`, before the
 /// listener is bound, so it can only ever abort a start-up, never fail a live request.
-pub fn assert_startup_config(google_client_ids: &HashSet<String>) {
+pub fn assert_startup_config(catalog: &crate::auth::client_ids::ClientCatalog) {
     #[cfg(feature = "dev-auth")]
     {
         assert!(
-            google_client_ids.is_empty(),
+            catalog.is_empty(),
             "Refusing to start: this binary was built with the `dev-auth` feature, which accepts \
              unverified `mock.` login tokens, but {} real Google client ID(s) are configured. \
              That combination looks like a development build pointed at a real deployment. \
              Build without `--features dev-auth` to use real Google sign-in.",
-            google_client_ids.len()
+            catalog.len()
         );
     }
 
     #[cfg(not(feature = "dev-auth"))]
     {
         assert!(
-            !google_client_ids.is_empty(),
+            !catalog.is_empty(),
             "Refusing to start: no Google client IDs are configured, so every login would fail \
-             the audience check. Set GOOGLE_CLIENT_IDS or GOOGLE_IOS_CLIENT_IDS (the legacy \
-             GOOGLE_CLIENT_ID, GOOGLE_CLIENT_ID_GROCERY_WEB and SCRIBBLEROUTE_API_CLIENT_ID are \
-             still honoured). For local development without Google credentials, build with \
+             the audience check. Set TEDDY_FYI_CLIENT_IDS and/or SCRIBBLEROUTE_CLIENT_IDS \
+             (the legacy GOOGLE_CLIENT_ID, GOOGLE_CLIENT_ID_GROCERY_WEB, \
+             SCRIBBLEROUTE_API_CLIENT_ID, GOOGLE_CLIENT_IDS and GOOGLE_IOS_CLIENT_IDS are \
+             still honoured, but classify nothing beyond the two whose names name a \
+             product). For local development without Google credentials, build with \
              `--features dev-auth`, which is what `make dev` does."
         );
     }
@@ -121,6 +121,7 @@ pub fn assert_startup_config(google_client_ids: &HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::client_ids::ClientCatalog;
 
     /// The property that is the whole point of the feature gate, asserted in *both*
     /// configurations so neither can regress unnoticed: with `dev-auth` off a `mock.` token
@@ -155,10 +156,10 @@ mod tests {
     #[test]
     fn startup_config_accepts_the_shape_this_build_is_meant_to_run_in() {
         #[cfg(feature = "dev-auth")]
-        assert_startup_config(&HashSet::new());
+        assert_startup_config(&ClientCatalog::default());
 
         #[cfg(not(feature = "dev-auth"))]
-        assert_startup_config(&HashSet::from(["a-client-id".to_string()]));
+        assert_startup_config(&ClientCatalog::from_unclassified(["a-client-id".to_string()]));
     }
 
     #[test]
@@ -167,9 +168,9 @@ mod tests {
         // A dev-auth build carrying production credentials; or, without the feature, a
         // production build that could never authenticate anybody.
         #[cfg(feature = "dev-auth")]
-        assert_startup_config(&HashSet::from(["a-client-id".to_string()]));
+        assert_startup_config(&ClientCatalog::from_unclassified(["a-client-id".to_string()]));
 
         #[cfg(not(feature = "dev-auth"))]
-        assert_startup_config(&HashSet::new());
+        assert_startup_config(&ClientCatalog::default());
     }
 }

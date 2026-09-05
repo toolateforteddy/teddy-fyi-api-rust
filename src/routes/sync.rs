@@ -12,6 +12,9 @@ pub use limits::*;
 pub mod paging;
 pub use paging::*;
 
+pub mod scope_auth;
+pub use scope_auth::*;
+
 pub mod todo;
 pub use todo::*;
 

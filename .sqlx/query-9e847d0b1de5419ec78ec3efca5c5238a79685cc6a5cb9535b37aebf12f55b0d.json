@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT product FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9e847d0b1de5419ec78ec3efca5c5238a79685cc6a5cb9535b37aebf12f55b0d"
+}

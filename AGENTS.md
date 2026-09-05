@@ -68,7 +68,8 @@ the manifests set eleven. Everything else — the `LIST_*` invite limits, `SSE_M
 an oversight, but it does mean the default in the Rust source *is* the production value.
 Change one and you are changing prod.
 
-**Why this matters for the planned fork.** `scribbleroute/backend` is expected to fork from
+**Why this matters for the planned fork.** The split is now planned in full in
+`context/2026-09-05_scribbleroute_backend_split.md`; read it before touching any of this. `scribbleroute/backend` is expected to fork from
 this repo and take `api.scribbleroute.com`, leaving this one defaulting to
 `api-rust.teddy.fyi`. The fork inherits `k8s/` as its starting point. Two things to know
 when that happens: every resource name in `api-rust.yaml` is currently unqualified
@@ -96,6 +97,14 @@ endpoint shapes are already written down.
   `TEDDY_FYI_GROCERY` → `teddy.fyi/link` (`APP_VERIFICATION_URIS` in `src/auth/device.rs`).
   A new client that pairs adds its wire name there, or it will send its parents to the
   default page — which is somebody else's site.
+
+- **Splitting the ScribbleRoute backend out** — `context/2026-09-05_scribbleroute_backend_split.md`.
+  **Planned, not started.** Records what is genuinely shared between the two products (auth and
+  the `users` table, not just Postgres), the ordering that keeps each risky step independently
+  reversible, and the two ways a naive fork takes down production on its first green build — it
+  inherits this repo's image tag and its unqualified k8s resource names. Read it before creating
+  `scribbleroute/backend`, before removing anything ScribbleRoute-shaped from this repo, and
+  before changing `site-ingress` in `teddyfyi`.
 
 - **The two user identities** — `context/2026-09-05_user_identity_derivation.md`. The same
   signed-in person is named two ways: the raw auth subject keys `users`, `sessions` and every

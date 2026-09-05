@@ -122,9 +122,13 @@ endpoint shapes are already written down.
   which must *not* be started before Phase 4. Read it before picking up work in this window, and
   amend it in place as items land rather than deleting them.
 
-  One item is a correction rather than a suggestion and changes the split plan: `db::init_postgres`
-  runs `sqlx::migrate!` on every boot, so the "two services racing migrations on boot" hazard the
-  split note rules out is real, and Phase 2 is the configuration that triggers it.
+  One item is a correction rather than a suggestion and has already changed the split plan:
+  `db::init_postgres` runs `sqlx::migrate!` on every boot, which the split note said nothing
+  does. Auto-migration **stays** — it is right for one-database-per-service, which is where
+  Phase 4 lands. What changed is the sequencing: the fork keeps the inherited migration files
+  through Phases 2–3 and collapses them to `0001_init.sql` only in Phase 4, and Phases 2–3
+  carry a no-migrations-in-either-repo constraint. Read split plan §1.2 before touching
+  `migrations/` or `src/db.rs`.
 
 - **The two user identities** — `context/2026-09-05_user_identity_derivation.md`. The same
   signed-in person is named two ways: the raw auth subject keys `users`, `sessions` and every

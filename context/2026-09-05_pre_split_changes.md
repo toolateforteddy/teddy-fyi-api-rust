@@ -47,10 +47,11 @@ Rules that keep concurrent work from colliding:
   re-key to have happened. Writing them now produces a migration that Phase 4 then has to undo,
   which is the mistake the split plan's Phase 1 step 3 already calls out. Design work on them is
   welcome; migrations are not.
-* **Four items are decisions, not implementations**, and want a human answer before code:
-  1 (does the binary keep migrating, or does that move to a job?), 13 (which of the three
-  numbers is the one that is right?), 14 (is the reaper armed?), 27 (what does a partially
-  committed sync mean to a client?). Bring the options, not a patch.
+* **Three items are decisions, not implementations**, and want a human answer before code:
+  13 (which of the three numbers is the one that is right?), 14 (is the reaper armed?), 27
+  (what does a partially committed sync mean to a client?). Bring the options, not a patch.
+  Item 1 was a fourth until 2026-09-05, when it was settled: keep auto-migration, resequence
+  the plan.
 * **Item 33 changes the shape of the work** — a generated wire schema makes several of the
   others diffable across the two repos. If it is going to happen, earlier is better.
 * **Amend this note rather than replacing it.** When an item lands, mark it and link the PR;
@@ -64,7 +65,7 @@ Rules that keep concurrent work from colliding:
 
 | # | Change | Score | When |
 |---|---|--:|---|
-| 1 | The binary auto-migrates on boot; the split plan says it does not | 10 | Now |
+| 1 | Phase 1 step 3 stops the fork booting in Phase 2 | 10 | Now |
 | 2 | JWT carries no product/audience claim | 9 | Now |
 | 3 | Delete of an unknown id 500s the whole sync request | 9 | Now |
 | 4 | No foreign keys to `users`; deletion is 16 ordered DELETEs | 9 | Phase 4 |
@@ -112,7 +113,7 @@ Rules that keep concurrent work from colliding:
 
 ---
 
-## 1. The plan is wrong about migrations — **10**, Now
+## 1. Phase 1 step 3 stops the fork booting in Phase 2 — **10**, Now
 
 `db::init_postgres` runs `sqlx::migrate!("./migrations").run(&pool)` on every start
 (`src/db.rs:202`), and `init_app_state` calls it. The split plan says the opposite:
@@ -121,16 +122,67 @@ Rules that keep concurrent work from colliding:
 > `sqlx migrate run` against production… So the "two services racing migrations on boot"
 > hazard does not exist here.
 
-It does exist, and Phase 2 is precisely the configuration that triggers it: two deployments,
-one database, each auto-applying its own `migrations/` directory on every rollout restart —
-and Phase 1 step 3 deliberately makes those two directories *incompatible* (the fork collapses
-to a single `0001_init.sql`). The fork's first boot against the shared database will try to
-apply `0001_init.sql` to a database whose `_sqlx_migrations` table has eighteen other rows.
+`deploy.yml` does not. The binary does, on every rollout restart, against whatever
+`DATABASE_URL` names.
 
-This is the highest-value item on the list because it is a factual correction to a plan that is
-about to be executed, and everything downstream of it changes. Either move migrations to an
-explicit step and correct the note, or keep them in the binary and rewrite the Phase 2 risk
-register around it. Do not discover which it is during Phase 2.
+**But it is not a race, and the first version of this note was wrong to call it one.** Read
+against sqlx 0.8.6 (`sqlx-core-0.8.6/src/migrate/migrator.rs`), `Migrator::run_direct` does two
+things that matter here, both by default:
+
+* `locking: true` — it takes an exclusive advisory lock before touching anything, so two pods
+  cannot interleave. There is no race to lose.
+* `ignore_missing: false` — `validate_applied_migrations` walks the applied set and returns
+  `MigrateError::VersionMissing` for any version the running binary does not carry.
+
+So the failure mode is a **crashloop, not corruption**, which is the good direction to fail in.
+What it costs is the plan:
+
+**Phase 1 step 3 and Phase 2 are mutually incompatible as written.** Step 3 collapses the fork
+to a single `0001_init.sql`; Phase 2 points that binary at the *existing* database, whose
+`_sqlx_migrations` table holds eighteen rows and no version 1. The fork gets
+`VersionMissing(20260610182740)`, `init_postgres` returns `Err`, and
+`.expect("Failed to initialize PostgreSQL")` panics. The pod never serves. Phase 2 as written
+does not run.
+
+The worse direction is the same mechanism pointed the other way. If the fork instead *keeps*
+its history and later adds a migration of its own, that migration applies cleanly to the shared
+database — and then `api-rust-dep`'s **next rollout restart** hits `VersionMissing` and
+production teddy.fyi crashloops. A commit in the fork's repository takes down the original's
+next deploy, which is the shared-image-tag hazard in a second costume.
+
+### What to do
+
+**Keep auto-migration.** It is the right shape for this service and for the destination the
+plan is heading to: after Phase 4 there are two databases and two migration directories, each
+binary owns its own, and the schema change ships in the same commit as the code that needs it —
+which is the argument `AGENTS.md` already makes for keeping `k8s/` in this repo. Building a
+separate migration job to serve a hazard that exists for a few days would be machinery to own
+forever.
+
+**Resequence instead.** Move the collapse out of Phase 1 step 3 and into Phase 4, where the fork
+creates its own database and the single `0001_init.sql` is exactly right. Through Phases 2–3 the
+fork carries the *identical eighteen files*: checksums match, neither binary has anything to
+apply, and neither can surprise the other.
+
+The price is one constraint, and it belongs in the plan explicitly: **no migrations in either
+repo during Phases 2–3.** A genuinely urgent one has to land in both repos byte-identically —
+same filename, same content, same checksum — before either deploys. For a window the plan
+already describes as a few days, that is far lighter than the Phase 4 write freeze it has
+already accepted.
+
+### The consequence that stays
+
+`maxSurge: 1` with `maxUnavailable: 0` means the new pod runs its migrations while the old pod
+is still serving the old code. Every migration must therefore be readable by the *previous*
+release for the length of the rollout. That has been true all along and the existing migrations
+mostly respect it — nullable adds, `IF NOT EXISTS`, and a `DELETE FROM` on a table whose rows
+live ten minutes.
+
+Phase 5 step 5 is where it stops being free: dropping `configs`, `drawings` and `devices` in the
+same deploy that removes the code means the new pod drops the tables while the old pod, still
+carrying the ScribbleRoute query paths, is serving requests against them. That step wants to be
+**two deploys** — ship the code that no longer references the tables, wait for the rollout, then
+ship the drop.
 
 ## 2. The JWT carries no product claim — **9**, Now
 

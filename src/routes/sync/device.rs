@@ -1,5 +1,6 @@
 use crate::routes::sync::types::AppError;
 use sqlx::{Postgres, Transaction};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 /// Placeholder used when a device registers itself without a name. Real names are the
@@ -83,6 +84,68 @@ pub async fn resolve_item_device(
             entity, item_id
         ))),
     }
+}
+
+/// The devices out of `candidates` that are already registered to this account.
+///
+/// [`ItemDeviceRule::RowMustName`] checks one row's device at a time, and a payload of ten
+/// thousand rows names the same handful of tablets over and over — the same statement, with
+/// the same parameters, ten thousand times. Resolving the distinct ids once turns the check
+/// in the loop into a set membership test.
+///
+/// The set cannot go stale under the loop: nothing on the `RowMustName` path creates a
+/// device, and a `RequestDevice` batch does not consult the set at all. A miss still falls
+/// through to [`require_registered_device`] anyway (see [`resolve_item_device_cached`]), so
+/// a device some other part of the same transaction registered is found rather than wrongly
+/// refused.
+///
+/// Empty for [`ItemDeviceRule::RequestDevice`], which registers unknown ids instead of
+/// refusing them and so has nothing to pre-resolve.
+pub async fn registered_device_set(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    rule: &ItemDeviceRule,
+    candidates: &[Uuid],
+) -> Result<HashSet<Uuid>, AppError> {
+    if !matches!(rule, ItemDeviceRule::RowMustName) || candidates.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let ids = sqlx::query_scalar!(
+        "SELECT id FROM devices WHERE id = ANY($1) AND user_id = $2",
+        candidates,
+        user_id
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(ids.into_iter().collect())
+}
+
+/// [`resolve_item_device`] with the `RowMustName` lookup already done for the whole batch.
+///
+/// A hit answers from `registered`; anything else — a different rule, a device the prefetch
+/// did not see, a device that is not registered — is handed to `resolve_item_device`
+/// unchanged. That is what keeps the security property intact: an id this account does not
+/// own still travels the original path and comes back with the same `NotFound`, whether it
+/// belongs to nobody or to somebody else.
+#[allow(clippy::too_many_arguments)]
+pub async fn resolve_item_device_cached(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    item_device: Option<Uuid>,
+    rule: &ItemDeviceRule,
+    entity: &str,
+    item_id: &str,
+    registered: &HashSet<Uuid>,
+) -> Result<Uuid, AppError> {
+    if let (ItemDeviceRule::RowMustName, Some(device_uuid)) = (rule, item_device) {
+        if registered.contains(&device_uuid) {
+            return Ok(device_uuid);
+        }
+    }
+
+    resolve_item_device(tx, user_id, item_device, rule, entity, item_id).await
 }
 
 /// Asserts the device is already registered to this account, without creating it.

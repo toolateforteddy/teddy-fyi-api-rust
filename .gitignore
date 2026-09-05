@@ -21,3 +21,7 @@ target
 #.idea/
 
 .env
+
+# Worktrees for parallel agent sessions, one per task. Local scratch state:
+# the branches themselves are pushed, the checkouts are not.
+.claude/worktrees/

@@ -153,6 +153,28 @@ fn test_event_targets_device_filtering() {
     );
     assert!(event_targets_device(&account_wide, Some(device)));
     assert!(event_targets_device(&account_wide, None));
+
+    // A device-scoped `Invalidate` filters exactly like a `DirectUpdate` does: both carry
+    // a `device_uuid`, and a stream watching another tablet has no business re-reading on
+    // one it will not be shown.
+    let invalidate_for_device = SyncSseEvent::Invalidate {
+        entity: "config".to_string(),
+        sender_client_id: None,
+        device_uuid: Some(device),
+    };
+    assert!(event_targets_device(&invalidate_for_device, Some(device)));
+    assert!(!event_targets_device(&invalidate_for_device, Some(other_device)));
+    assert!(!event_targets_device(&invalidate_for_device, None));
+
+    // The snapshot a stream opens with carries no device of its own — it is already built
+    // for whichever device the stream resolved — so it must never be filtered out, least
+    // of all on the device-scoped streams that are the common case.
+    let initial_state = SyncSseEvent::InitialState {
+        entity: "config".to_string(),
+        data: json!({ "theme": "dark" }),
+    };
+    assert!(event_targets_device(&initial_state, Some(device)));
+    assert!(event_targets_device(&initial_state, None));
 }
 
 /// A ScribbleKeep Cloud config write should land on the device's Pub/Sub channel — the one

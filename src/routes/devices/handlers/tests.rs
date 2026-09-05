@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::routes::devices::limits;
-use crate::routes::sync::tests::helpers::setup_state;
+use crate::routes::sync::tests::helpers::{seed_device, setup_state};
 use axum::response::IntoResponse;
 use axum::http::StatusCode;
 use sqlx::PgPool;
@@ -171,5 +171,87 @@ fn the_cap_defaults_when_the_environment_is_silent() {
     assert_eq!(
         limits::max_devices_per_account(),
         limits::DEFAULT_MAX_DEVICES_PER_ACCOUNT
+    );
+}
+
+/// Renaming is the one place a client sends a device name on its own, so it is the one
+/// place a rejected name needs a status a client can act on. A blank name is a payload
+/// problem — 400 — not an ownership problem, which is what the 403 this used to return
+/// would have told a client to go and fix.
+#[sqlx::test]
+async fn renaming_a_device_to_a_blank_name_is_a_bad_request(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = crate::routes::sync::remote_mutations::parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "BouncyMeadowAdventure").await;
+
+    for blank in ["", "   ", "\t\n"] {
+        let err = rename_device_handler(
+            State(state.clone()),
+            Extension(claims("user-1")),
+            Path(device_uuid),
+            Json(RenameDeviceRequest {
+                name: blank.to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status_of(err).await, StatusCode::BAD_REQUEST, "name {:?}", blank);
+    }
+
+    // And the device kept the name it had.
+    let name = sqlx::query_scalar!("SELECT name FROM devices WHERE id = $1", device_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "BouncyMeadowAdventure");
+}
+
+/// The limit is in characters, so a name of multibyte characters gets the same allowance
+/// as an ASCII one instead of being cut off at a third of it.
+#[sqlx::test]
+async fn a_device_name_is_capped_in_characters_not_bytes(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = crate::routes::sync::remote_mutations::parse_or_hash_uuid("user-1");
+    let device_uuid = seed_device(&pool, user_uuid, "Tablet").await;
+
+    let rename = |name: String| {
+        rename_device_handler(
+            State(state.clone()),
+            Extension(claims("user-1")),
+            Path(device_uuid),
+            Json(RenameDeviceRequest { name }),
+        )
+    };
+
+    assert!(rename("あ".repeat(MAX_DEVICE_NAME_CHARS)).await.is_ok());
+    assert_eq!(
+        status_of(rename("a".repeat(MAX_DEVICE_NAME_CHARS + 1)).await.unwrap_err()).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// Registration keeps treating a blank name as "none supplied" — that is how a client
+/// asks the server to name the device — but a name that is present and too long is still
+/// rejected rather than stored.
+#[sqlx::test]
+async fn registering_rejects_an_over_long_name_but_still_allows_none(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    assert!(register(&state, "user-1", Some(Uuid::new_v4()), Some("   "))
+        .await
+        .is_ok());
+    assert_eq!(
+        status_of(
+            register(
+                &state,
+                "user-1",
+                Some(Uuid::new_v4()),
+                Some(&"a".repeat(MAX_DEVICE_NAME_CHARS + 1))
+            )
+            .await
+            .unwrap_err()
+        )
+        .await,
+        StatusCode::BAD_REQUEST
     );
 }

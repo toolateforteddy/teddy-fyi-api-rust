@@ -126,3 +126,47 @@ async fn test_drawing_dao_lifecycle(pool: PgPool) {
     assert!(deleted.is_deleted);
     assert_eq!(deleted.version, 3);
 }
+
+/// `get_by_key` has to name a device, because a key is only unique within one.
+///
+/// Two tablets on the same account each hold their own `theme`, and a lookup that knows
+/// only the user cannot say which of them it means. This is the test that would have
+/// failed against the old `(user_id, key)` query.
+#[sqlx::test]
+async fn test_config_get_by_key_is_scoped_to_one_device(pool: PgPool) {
+    let user = Uuid::new_v4();
+    let other_user = Uuid::new_v4();
+    let client = Uuid::new_v4();
+    let device_a = Uuid::new_v4();
+    let device_b = Uuid::new_v4();
+
+    let config = |device_uuid: Uuid, value: &str| Config {
+        id: Uuid::new_v4(),
+        user_id: user,
+        client_uuid: client,
+        device_uuid,
+        version: 1,
+        is_deleted: false,
+        last_modified: 1000,
+        sync_state: SyncState::PendingInsert,
+        key: "theme".to_string(),
+        value: value.to_string(),
+    };
+
+    ConfigDao::upsert(&pool, user, &config(device_a, "dark")).await.unwrap();
+    ConfigDao::upsert(&pool, user, &config(device_b, "light")).await.unwrap();
+
+    let on_a = ConfigDao::get_by_key(&pool, "theme", user, device_a).await.unwrap().unwrap();
+    assert_eq!(on_a.value, "dark");
+    assert_eq!(on_a.device_uuid, device_a);
+
+    let on_b = ConfigDao::get_by_key(&pool, "theme", user, device_b).await.unwrap().unwrap();
+    assert_eq!(on_b.value, "light");
+    assert_eq!(on_b.device_uuid, device_b);
+
+    // A device the user does not have, and another user naming a device that is not
+    // theirs, both come back empty rather than borrowing somebody's row.
+    assert!(ConfigDao::get_by_key(&pool, "theme", user, Uuid::new_v4()).await.unwrap().is_none());
+    assert!(ConfigDao::get_by_key(&pool, "theme", other_user, device_a).await.unwrap().is_none());
+    assert!(ConfigDao::get_by_key(&pool, "missing", user, device_a).await.unwrap().is_none());
+}

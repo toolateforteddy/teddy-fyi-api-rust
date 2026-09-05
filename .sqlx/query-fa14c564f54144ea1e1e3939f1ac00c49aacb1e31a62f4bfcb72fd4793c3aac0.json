@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO list_invites (code, \"listId\", \"createdBy\", \"expiresAt\")\n               VALUES ($1, $2, $3, $4)\n               ON CONFLICT DO NOTHING\n               RETURNING code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fa14c564f54144ea1e1e3939f1ac00c49aacb1e31a62f4bfcb72fd4793c3aac0"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE list_invites SET \"expiresAt\" = now() - interval '1 hour' WHERE code = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ebf405c61feb50f1510a28f7b7d7341c81467babba9a6aa76c28133a8eeba908"
+}

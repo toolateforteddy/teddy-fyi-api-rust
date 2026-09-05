@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"listId\" as list_id, \"expiresAt\" as expires_at FROM list_invites WHERE code = $1",
+  "query": "SELECT \"listId\" as list_id, \"expiresAt\" as expires_at, attempts\n             FROM list_invites WHERE code = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "expires_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempts",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
@@ -21,8 +26,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "4366bff0c2f73aacda836940c867f2d6cb43d40db329953570e53e8da22593c8"
+  "hash": "fec2e951657487f0ec116e93f4207241a1dcaf8778e142e50345309f2db86dc1"
 }

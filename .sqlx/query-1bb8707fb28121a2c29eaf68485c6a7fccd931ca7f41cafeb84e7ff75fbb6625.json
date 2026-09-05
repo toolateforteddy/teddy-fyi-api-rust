@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM list_join_failures WHERE failed_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1bb8707fb28121a2c29eaf68485c6a7fccd931ca7f41cafeb84e7ff75fbb6625"
+}

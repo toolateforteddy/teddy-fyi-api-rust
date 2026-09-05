@@ -9,9 +9,10 @@
 
 use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
 use crate::routes::sync::versioning::{MAX_SEED_VERSION, MAX_SYNC_VERSION};
+use crate::routes::sync::limits::{DEFAULT_MAX_ITEMS_PER_COLLECTION, DEFAULT_MAX_ITEMS_TOTAL};
 use crate::routes::sync::{
-    AppError, AppJson, DrawingSyncItem, GroceryListChangeDelta, GroceryListData, OperationType,
-    SyncRequest, SyncScope, ConfigSyncItem, parse_or_hash_uuid,
+    AppError, AppJson, ConfigChangeDelta, DrawingSyncItem, GroceryListChangeDelta, GroceryListData,
+    OperationType, SyncRequest, SyncScope, ConfigSyncItem, parse_or_hash_uuid,
 };
 use axum::extract::State;
 use chrono::Utc;
@@ -437,4 +438,153 @@ async fn ordinary_payloads_are_unaffected(pool: PgPool) {
     assert_eq!(cfg.key, "selected_theme");
     assert_eq!(cfg.value, "dark");
     assert_eq!(cfg.client_last_modified, Some(claimed));
+}
+
+
+/// A config item that is legal in every way except, in bulk, how many of it there are.
+fn config(index: usize) -> ConfigSyncItem {
+    ConfigSyncItem {
+        id: Uuid::new_v4(),
+        device_uuid: None,
+        key: format!("k{}", index),
+        value: "v".to_string(),
+        sync_state: "PENDING_INSERT".to_string(),
+        version: 1,
+        is_deleted: false,
+        last_modified: 1_000,
+    }
+}
+
+fn configs(count: usize) -> Vec<ConfigSyncItem> {
+    (0..count).map(config).collect()
+}
+
+/// A body that is small in bytes and enormous in statements is refused, and nothing is
+/// written.
+///
+/// This is the shape the per-item size bounds do not see: every item here is a handful of
+/// bytes and perfectly well formed, so each one passes every check in
+/// `crate::routes::sync::limits` except the count. Processed, they would be one sequential
+/// `INSERT` each inside a single transaction.
+#[sqlx::test]
+async fn an_over_count_collection_is_refused_and_nothing_is_written(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let mut req = blank_request("client-1", SyncScope::ScribbleKeep);
+    req.configs = configs(DEFAULT_MAX_ITEMS_PER_COLLECTION + 1);
+
+    let err = sync_handler(State(state), AppJson(req)).await.unwrap_err();
+    match err {
+        AppError::BadRequest(msg) => {
+            assert!(msg.contains("configs"), "{}", msg);
+            assert!(msg.contains("items"), "{}", msg);
+            assert!(
+                msg.contains(&DEFAULT_MAX_ITEMS_PER_COLLECTION.to_string()),
+                "the refusal names the limit: {}",
+                msg
+            );
+        }
+        other => panic!("expected BadRequest, got {:?}", other),
+    }
+
+    let count = sqlx::query!("SELECT count(*) FROM configs")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(count, 0, "the refusal happens before the transaction opens");
+}
+
+/// The gap a per-collection cap alone leaves: twelve vectors, each legal on its own,
+/// adding up to the very request the cap was meant to refuse.
+#[sqlx::test]
+async fn collections_within_their_own_cap_still_bust_the_request_total(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let mut req = blank_request("client-1", SyncScope::ScribbleKeep);
+    req.configs = configs(DEFAULT_MAX_ITEMS_PER_COLLECTION);
+    req.config_changes = (0..DEFAULT_MAX_ITEMS_PER_COLLECTION)
+        .map(|i| ConfigChangeDelta {
+            id: format!("c{}", i),
+            operation_type: OperationType::Delete,
+            version: 1,
+            device_uuid: None,
+            data: None,
+        })
+        .collect();
+    // Two full-but-legal collections are already the whole total; one more item of
+    // anything is what tips it over.
+    req.drawings = vec![drawing(Uuid::new_v4(), 1, 1_000, serde_json::json!({"strokes": []}))];
+    for len in [req.configs.len(), req.config_changes.len(), req.drawings.len()] {
+        assert!(len <= DEFAULT_MAX_ITEMS_PER_COLLECTION);
+    }
+    assert!(
+        req.configs.len() + req.config_changes.len() + req.drawings.len() > DEFAULT_MAX_ITEMS_TOTAL
+    );
+
+    let err = sync_handler(State(state), AppJson(req)).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m.contains("across all change collections")),
+        "got {:?}",
+        err
+    );
+
+    let count = sqlx::query!("SELECT count(*) FROM configs")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+/// The other half of the bargain: a large, entirely legitimate batch still lands.
+///
+/// Sized above what the shipped client can produce in one request — `RoomSyncEngine`
+/// batches at 25 drawings, and sends its configs unbatched at roughly thirty keys per
+/// device — so a first sync from a tablet that has been offline for months goes through
+/// untouched.
+#[sqlx::test]
+async fn a_large_but_legitimate_batch_still_succeeds(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let user_uuid = parse_or_hash_uuid("user-1");
+    seed_device(&pool, user_uuid, "Tablet").await;
+
+    let mut req = blank_request("client-1", SyncScope::ScribbleKeep);
+    req.configs = configs(300);
+    req.drawings = (0..25)
+        .map(|i| {
+            drawing(
+                Uuid::new_v4(),
+                1,
+                Utc::now().timestamp_millis(),
+                serde_json::json!({ "strokes": [{ "points": [i, i], "color": "#fff" }] }),
+            )
+        })
+        .collect();
+
+    let _ = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("a real client batch is not what the count limit is for");
+
+    let config_count = sqlx::query!("SELECT count(*) FROM configs")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(config_count, 300);
+
+    let drawing_count = sqlx::query!("SELECT count(*) FROM drawings")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .count
+        .unwrap();
+    assert_eq!(drawing_count, 25);
 }

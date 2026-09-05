@@ -115,10 +115,22 @@ Two more cross-repo facts:
 * `cache.yaml`'s NetworkPolicy admits only `podSelector: app: api-rust`. A new pod with a
   different label cannot reach `cache-svc` at all — which is convenient, since it means a
   misconfigured new deployment fails closed rather than quietly sharing Redis.
-* Prod migrations are applied **by hand**. Nothing in `deploy.yml` or the binary runs
+* ~~Prod migrations are applied **by hand**. Nothing in `deploy.yml` or the binary runs
   `sqlx migrate run` against production; CI runs it against its own throwaway Postgres.
   So the "two services racing migrations on boot" hazard does not exist here. The hazard
-  is a human applying the wrong repo's migrations to the wrong database.
+  is a human applying the wrong repo's migrations to the wrong database.~~
+
+  **Wrong, corrected 2026-09-05.** `deploy.yml` does not, but the **binary does**:
+  `db::init_postgres` (`src/db.rs:202`) runs `sqlx::migrate!("./migrations").run(&pool)`
+  on every start, and `init_app_state` calls it. So every rollout restart applies that
+  image's migration directory to whatever `DATABASE_URL` points at.
+
+  The racing hazard is therefore real, and **Phase 2 is exactly the configuration that
+  triggers it**: two deployments, one database, each auto-applying its own directory —
+  and Phase 1 step 3 deliberately makes those directories incompatible, so the fork's
+  first boot tries to apply `0001_init.sql` to a database whose `_sqlx_migrations` table
+  already has eighteen rows. Resolve this before Phase 2; the options are in
+  `context/2026-09-05_pre_split_changes.md` item 1.
 
 ---
 
@@ -390,6 +402,8 @@ its own: `pg_dump` / `pg_restore` and one secret rotation, no code change. Rotat
 | Forced re-login on every tablet at cutover | 3 | Identical `JWT_SECRET`; copy `sessions` in Phase 4 |
 | Cannot select ScribbleRoute `users` rows in SQL | 4, 5 | One-shot Rust subcommand using `parse_or_hash_uuid`, mirroring `find_stale_users` |
 | Split brain if data is copied before traffic moves | — | Ordering: flip first, copy second, freeze during the copy |
+| Both deployments auto-migrate the shared database on every restart | 2 | **Open.** The binary runs `sqlx::migrate!` at boot (§1.2 correction), and Phase 1 step 3 gives the fork an incompatible migration directory. Must be resolved before Phase 2 — `context/2026-09-05_pre_split_changes.md` item 1 |
+| A ScribbleRoute token is accepted by the teddy.fyi backend, and vice versa | 2–5 | **Open.** `JWT_SECRET` is shared by decision #2 and the token carries no product claim, so the window is the whole of Phases 3–5. Needs the claim minted before Phase 3 — `context/2026-09-05_pre_split_changes.md` item 2 |
 | New pod cannot reach Redis | 2 | Expected — `cache.yaml`'s NetworkPolicy selects `app: api-rust`; the new deployment gets its own Valkey and its own policy |
 | Pod will not boot after removing Gemini | 1 | `init_app_state` `expect`s `GEMINI_API_KEY`; remove code, `AppState` field and manifest env together |
 | External users' rows left behind in the personal DB | 5 | Explicit step 6; dropping tables is not sufficient |

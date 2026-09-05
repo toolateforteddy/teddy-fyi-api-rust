@@ -114,6 +114,18 @@ endpoint shapes are already written down.
   is cheap. Read it before adding a sign-in provider, before keying a new table by a user, and
   before writing the Phase 4 copy program.
 
+- **Changes to make before or during the split** — `context/2026-09-05_pre_split_changes.md`.
+  **A survey, not a plan.** Forty-five scored items that are cheap while there is one repo and
+  expensive once there are two, or that need Phase 4's write freeze. It is written to be worked
+  in parallel — each item stands alone and names its files — and its "Working these in parallel"
+  section states which items must land together, which are decisions rather than patches, and
+  which must *not* be started before Phase 4. Read it before picking up work in this window, and
+  amend it in place as items land rather than deleting them.
+
+  One item is a correction rather than a suggestion and changes the split plan: `db::init_postgres`
+  runs `sqlx::migrate!` on every boot, so the "two services racing migrations on boot" hazard the
+  split note rules out is real, and Phase 2 is the configuration that triggers it.
+
 - **The two user identities** — `context/2026-09-05_user_identity_derivation.md`. The same
   signed-in person is named two ways: the raw auth subject keys `users`, `sessions` and every
   todo/grocery table, while `parse_or_hash_uuid(sub)` keys `configs`, `drawings` and `devices`.

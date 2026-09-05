@@ -29,6 +29,12 @@ const MAX_TITLE_BYTES: usize = MAX_TITLE_CHARS * 4;
 /// Enforces [`MAX_TITLE_CHARS`], naming the unit in the error so a client that
 /// hits it is not left guessing which "100" it exceeded.
 pub(crate) fn check_title_length(field: &str, title: &str) -> Result<(), AppError> {
+    if title.trim().is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "{} must not be empty",
+            field
+        )));
+    }
     if title.len() > MAX_TITLE_BYTES || title.chars().count() > MAX_TITLE_CHARS {
         return Err(AppError::BadRequest(format!(
             "{} must be at most {} characters",

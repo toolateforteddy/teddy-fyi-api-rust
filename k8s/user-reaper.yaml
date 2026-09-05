@@ -1,0 +1,68 @@
+# Deletes accounts that have gone 12 months without a sync, per the retention commitment
+# published at https://scribbleroute.com/privacy.
+#
+# Runs DAILY, not monthly: the policy promises removal within 30 days of an account passing
+# the 12-month mark, so a monthly schedule would have zero slack for a single failed run.
+# The cutoff is absolute, so the sweep is idempotent — a missed day is picked up the next.
+#
+# Reuses the api-rust image with a subcommand, and the same KSA and secret mount as
+# api-rust-dep. It needs only DATABASE_URL and the in-cluster Redis; no auth or AI secrets.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: api-rust-user-reaper
+spec:
+  schedule: "20 9 * * *"
+  concurrencyPolicy: Forbid
+  # If the controller is down at the scheduled minute, still run when it comes back.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      # A sweep that has not finished in an hour is wedged, not slow.
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: api-rust-ksa
+          containers:
+          - name: user-reaper
+            image: gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:latest
+            command: ["./teddy-fyi-api-rust", "reap-stale-users"]
+            env:
+            # Reports what it WOULD delete and rolls the erase back. Set to "false" to arm;
+            # any other value (or a typo) keeps it in dry-run.
+            - name: REAP_DRY_RUN
+              value: "true"
+            - name: REAP_INACTIVE_MONTHS
+              value: "12"
+            - name: REDIS_URL
+              value: "redis://cache-svc:6379"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-rust-secret-env
+                  key: DATABASE_URL
+            volumeMounts:
+            # Mounting the CSI volume is what materializes api-rust-secret-env, so the job
+            # does not depend on an api-rust-dep pod being up to resolve its secretKeyRef.
+            - mountPath: "/var/secrets"
+              name: gcp-secrets
+              readOnly: true
+            imagePullPolicy: Always
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+          volumes:
+          - name: gcp-secrets
+            csi:
+              driver: secrets-store-gke.csi.k8s.io
+              readOnly: true
+              volumeAttributes:
+                secretProviderClass: "api-rust-gcp-secrets"

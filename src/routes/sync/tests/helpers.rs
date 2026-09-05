@@ -13,14 +13,19 @@ pub fn setup_state(pool: PgPool) -> AppState {
     .unwrap();
 
     AppState {
-        google_client_ids: [
-            "test-client".to_string(),
-            "test-web-client".to_string(),
-            "test-scribbleroute-client".to_string(),
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect(),
+        // Classified the way a fully configured deployment is, so a test that reaches for
+        // an audience gets a product with it. See `crate::auth::client_ids`.
+        client_catalog: Arc::new(crate::auth::client_ids::ClientCatalog::build(
+            [
+                ("test-client".to_string(), crate::auth::product::Product::TeddyFyi),
+                ("test-web-client".to_string(), crate::auth::product::Product::TeddyFyi),
+                (
+                    "test-scribbleroute-client".to_string(),
+                    crate::auth::product::Product::ScribbleRoute,
+                ),
+            ],
+            Vec::new(),
+        )),
         google_client: Arc::new(google_oauth::AsyncClient::new("test-client")),
         db_pool: pool,
         jwt_secret: "test-secret".to_string(),
@@ -53,6 +58,7 @@ pub async fn sync_handler(
         sub: "user-1".to_string(),
         client_uuid: req.0.client_id.clone(),
         exp: 10000000000,
+        product: None,
     };
     parent_sync_handler(state, Extension(claims), req).await
 }

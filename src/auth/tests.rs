@@ -18,7 +18,7 @@ mod tests {
         let client_uuid = "device-abc";
 
         // Test JWT creation
-        let token = create_access_token(user_id, client_uuid, secret, None).unwrap();
+        let token = create_access_token(user_id, client_uuid, None, secret, None).unwrap();
         assert!(!token.is_empty());
 
         // Test Refresh token hashing
@@ -36,7 +36,7 @@ mod tests {
         let client_uuid = "device-abc";
 
         // 1. Test custom duration (60 seconds)
-        let token_60 = create_access_token(user_id, client_uuid, secret, Some(60)).unwrap();
+        let token_60 = create_access_token(user_id, client_uuid, None, secret, Some(60)).unwrap();
         let decoded_60 = jsonwebtoken::decode::<Claims>(
             &token_60,
             &jsonwebtoken::DecodingKey::from_secret(secret),
@@ -51,7 +51,7 @@ mod tests {
         //    behaviour clamped a day's worth of seconds to... a day, which is why this asks
         //    for the previous ceiling specifically: 24 hours must now come back as 15
         //    minutes, or the clamp is not doing anything.
-        let token_large = create_access_token(user_id, client_uuid, secret, Some(86400)).unwrap();
+        let token_large = create_access_token(user_id, client_uuid, None, secret, Some(86400)).unwrap();
         let decoded_large = jsonwebtoken::decode::<Claims>(
             &token_large,
             &jsonwebtoken::DecodingKey::from_secret(secret),
@@ -64,7 +64,7 @@ mod tests {
         );
 
         // 3. Test negative duration defaults to the ceiling
-        let token_neg = create_access_token(user_id, client_uuid, secret, Some(-100)).unwrap();
+        let token_neg = create_access_token(user_id, client_uuid, None, secret, Some(-100)).unwrap();
         let decoded_neg = jsonwebtoken::decode::<Claims>(
             &token_neg,
             &jsonwebtoken::DecodingKey::from_secret(secret),
@@ -75,7 +75,7 @@ mod tests {
 
         // 4. And no argument at all is the same ceiling — this is what device pairing mints
         //    with, since a tablet has no `expires_in_secs` to ask with.
-        let token_default = create_access_token(user_id, client_uuid, secret, None).unwrap();
+        let token_default = create_access_token(user_id, client_uuid, None, secret, None).unwrap();
         let decoded_default = jsonwebtoken::decode::<Claims>(
             &token_default,
             &jsonwebtoken::DecodingKey::from_secret(secret),
@@ -207,7 +207,7 @@ mod tests {
         // Fetch session from DB and verify rotation columns
         let session = sqlx::query_as!(
             crate::auth::models::Session,
-            "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts, product FROM sessions WHERE user_id = $1 AND client_uuid = $2",
             user_id,
             client_uuid
         ).fetch_one(&pool).await.unwrap();
@@ -992,6 +992,7 @@ mod tests {
             sub: user_id.to_string(),
             client_uuid: client_uuid.to_string(),
             exp: (chrono::Utc::now().timestamp() - ago_secs) as usize,
+            product: None,
         };
         jsonwebtoken::encode(
             &jsonwebtoken::Header::default(),
@@ -1026,6 +1027,7 @@ mod tests {
             None,
             client_uuid,
             DEFAULT_SESSION_SECS,
+            None,
         )
         .await
         .expect("issuing a session should succeed");
@@ -1071,6 +1073,7 @@ mod tests {
             None,
             victim_client,
             DEFAULT_SESSION_SECS,
+            None,
         )
         .await
         .expect("issuing a session should succeed");
@@ -1111,6 +1114,7 @@ mod tests {
             None,
             client_uuid,
             DEFAULT_SESSION_SECS,
+            None,
         )
         .await
         .expect("issuing a session should succeed");
@@ -1264,6 +1268,7 @@ mod tests {
             None,
             client_uuid,
             DEFAULT_SESSION_SECS,
+            None,
         )
         .await
         .expect("issuing a session should succeed");
@@ -1284,5 +1289,165 @@ mod tests {
         .await
         .expect("refresh must work without any access token");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    /// A token minted for a product says so, and one minted without a product does not
+    /// carry the field at all -- which is what makes an older client's `Claims` parse
+    /// unchanged and what keeps the claim absent rather than null on the wire.
+    #[test]
+    fn the_product_claim_round_trips_and_is_omitted_when_unknown() {
+        use crate::auth::product::Product;
+
+        let secret = b"super-secret-key-for-testing";
+        let decode = |token: &str| {
+            jsonwebtoken::decode::<Claims>(
+                token,
+                &jsonwebtoken::DecodingKey::from_secret(secret),
+                &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+            )
+            .expect("freshly minted token is valid")
+            .claims
+        };
+
+        let classified =
+            create_access_token("u", "c", Some(Product::ScribbleRoute), secret, None).unwrap();
+        assert_eq!(decode(&classified).product, Some(Product::ScribbleRoute));
+
+        let unclassified = create_access_token("u", "c", None, secret, None).unwrap();
+        assert_eq!(decode(&unclassified).product, None);
+
+        let serialized = serde_json::to_string(&decode(&unclassified)).unwrap();
+        assert!(
+            !serialized.contains("product"),
+            "an unknown product must be absent from the token, not null: {serialized}"
+        );
+    }
+
+    /// Every token in every device's hands today was minted before this field existed, so
+    /// a claims blob without it has to keep decoding. This is stage 1 of the rollout in
+    /// `crate::auth::product`, and the reason `product` is `Option` and `#[serde(default)]`.
+    #[test]
+    fn a_token_predating_the_claim_still_decodes() {
+        let secret = b"super-secret-key-for-testing";
+        let legacy = serde_json::json!({
+            "sub": "user-1",
+            "client_uuid": "client-1",
+            "exp": 10_000_000_000i64,
+        });
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &legacy,
+            &jsonwebtoken::EncodingKey::from_secret(secret),
+        )
+        .unwrap();
+
+        let claims = jsonwebtoken::decode::<Claims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(secret),
+            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+        )
+        .expect("a token minted before the product claim must still authenticate")
+        .claims;
+
+        assert_eq!(claims.sub, "user-1");
+        assert_eq!(claims.product, None);
+    }
+
+    /// The product survives a refresh, which is the only reason it is on the `sessions`
+    /// row: access tokens last fifteen minutes, so a claim that did not survive rotation
+    /// would be gone within the hour and the boundary with it.
+    #[sqlx::test]
+    async fn the_product_is_persisted_and_re_minted_on_refresh(pool: PgPool) {
+        use crate::auth::product::Product;
+
+        let state = setup_state(pool.clone());
+        let user_id = "user-product-refresh";
+        let client_uuid = "client-product-refresh";
+
+        let issued = crate::auth::handlers::issue_session(
+            &state,
+            user_id,
+            None,
+            client_uuid,
+            DEFAULT_SESSION_SECS,
+            Some(Product::ScribbleRoute),
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        let stored = sqlx::query_scalar!(
+            "SELECT product FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_uuid
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored.as_deref(), Some("scribbleroute"));
+
+        let response = refresh_handler(
+            State(state.clone()),
+            Json(RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_uuid.to_string(),
+                refresh_token: issued.refresh_token,
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            }),
+        )
+        .await
+        .expect("refresh should succeed");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refreshed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let access_token = refreshed["access_token"].as_str().unwrap();
+
+        let claims = jsonwebtoken::decode::<Claims>(
+            access_token,
+            &jsonwebtoken::DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+        )
+        .unwrap()
+        .claims;
+        assert_eq!(claims.product, Some(Product::ScribbleRoute));
+    }
+
+    /// A later sign-in that cannot name a product -- an unclassified client ID, or the dev
+    /// bypass -- must not erase one the session already had. The column only ever gains
+    /// information, which is what lets classifying an ID in configuration take effect
+    /// without a backfill.
+    #[sqlx::test]
+    async fn a_later_unclassified_sign_in_does_not_clear_the_product(pool: PgPool) {
+        use crate::auth::product::Product;
+
+        let state = setup_state(pool.clone());
+        let user_id = "user-product-keep";
+        let client_uuid = "client-product-keep";
+
+        for product in [Some(Product::TeddyFyi), None] {
+            crate::auth::handlers::issue_session(
+                &state,
+                user_id,
+                None,
+                client_uuid,
+                DEFAULT_SESSION_SECS,
+                product,
+            )
+            .await
+            .expect("issuing a session should succeed");
+        }
+
+        let stored = sqlx::query_scalar!(
+            "SELECT product FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_uuid
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored.as_deref(), Some("teddy_fyi"));
     }
 }

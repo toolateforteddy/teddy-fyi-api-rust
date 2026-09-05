@@ -9,6 +9,9 @@ pub mod deletes;
 pub mod limits;
 pub use limits::*;
 
+pub mod scope_auth;
+pub use scope_auth::*;
+
 pub mod todo;
 pub use todo::*;
 

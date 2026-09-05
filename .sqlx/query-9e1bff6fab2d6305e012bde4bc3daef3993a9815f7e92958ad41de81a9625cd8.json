@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at\n           FROM device_authorizations\n          WHERE device_code_hash = $1 AND client_uuid = $2\n          FOR UPDATE",
+  "query": "SELECT device_code_hash, user_id, expires_at, claimed_at, consumed_at, last_polled_at, product\n           FROM device_authorizations\n          WHERE device_code_hash = $1 AND client_uuid = $2\n          FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,11 @@
         "ordinal": 5,
         "name": "last_polled_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "product",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -46,8 +51,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "0d1115cad52b32168b4588d5ce5679c9566784d6fe65b490b5e30cd9ea0aa951"
+  "hash": "9e1bff6fab2d6305e012bde4bc3daef3993a9815f7e92958ad41de81a9625cd8"
 }

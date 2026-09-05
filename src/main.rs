@@ -74,14 +74,38 @@ async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn init_app_state() -> AppState {
-    let google_client_ids = auth::client_ids::load_google_client_ids();
+    let client_catalog = auth::client_ids::load_client_catalog();
     // Fatal, in both directions and for opposite reasons: a shipped binary with no
     // audience allowlist can never authenticate anybody, and a `dev-auth` binary that has
     // one is a development build wearing production credentials. Both used to be survivable
     // — the first was one `tracing::error!` line and then every login failing for the life
     // of the process. Crashing here is confined to start-up, so it fails a rollout rather
     // than a request. The full argument is on `assert_startup_config`.
-    auth::dev_bypass::assert_startup_config(&google_client_ids);
+    auth::dev_bypass::assert_startup_config(&client_catalog);
+
+    // The remaining classification work, stated at boot rather than left to be discovered
+    // by reading `client_ids.rs`. An unclassified audience still signs in; what it cannot
+    // do is carry a product claim, so its sessions are the ones the scope check has to wave
+    // through. Moving an ID out of this line is a configuration change and no deploy --
+    // list it under TEDDY_FYI_CLIENT_IDS or SCRIBBLEROUTE_CLIENT_IDS.
+    let unclassified = client_catalog.unclassified();
+    if unclassified.is_empty() {
+        tracing::info!(
+            teddy_fyi_client_ids = client_catalog.classified_count(auth::product::Product::TeddyFyi),
+            scribbleroute_client_ids =
+                client_catalog.classified_count(auth::product::Product::ScribbleRoute),
+            "Every configured Google client ID is classified per product"
+        );
+    } else {
+        tracing::warn!(
+            teddy_fyi_client_ids = client_catalog.classified_count(auth::product::Product::TeddyFyi),
+            scribbleroute_client_ids =
+                client_catalog.classified_count(auth::product::Product::ScribbleRoute),
+            unclassified = ?unclassified,
+            "Google client IDs with no product: sessions established through these carry no \
+             product claim and their sync scopes cannot be enforced"
+        );
+    }
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
@@ -90,7 +114,7 @@ async fn init_app_state() -> AppState {
     let cookie_domain = std::env::var("COOKIE_DOMAIN").unwrap_or_else(|_| ".teddy.fyi".to_string());
     
     AppState {
-        google_client_ids,
+        client_catalog: Arc::new(client_catalog),
         google_client: Arc::new(google_oauth::AsyncClient::new("")),
         db_pool: db::init_postgres()
             .await

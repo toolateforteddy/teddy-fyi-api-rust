@@ -131,6 +131,10 @@ pub async fn sync_status_handler(
 ) -> Result<Json<SyncStatusResponse>, AppError> {
     let user_id = &claims.sub;
     let scope = query.scope.unwrap_or(SyncScope::All);
+    // Same rule as `POST /api/sync`, and for the same reason: this endpoint answers a
+    // question about another product's tables otherwise. Checked before the cache read, so
+    // a refused scope cannot even learn whether the key is warm.
+    crate::routes::sync::scope_auth::authorize_scope(&claims, scope)?;
     let cache_key = get_cache_key(user_id, scope);
 
     // 1. Try fetching from Valkey cache

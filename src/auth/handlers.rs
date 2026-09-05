@@ -1,6 +1,7 @@
 use axum::{extract::{State, Json}, http::{header, StatusCode}, response::{IntoResponse, Response}};
 use serde::{Deserialize, Serialize};
 use crate::state::AppState;
+use crate::auth::product::Product;
 use crate::auth::tokens::{create_access_token, hash_refresh_token, verify_refresh_token};
 use rand::RngExt;
 use rand::distr::Alphanumeric;
@@ -127,11 +128,13 @@ pub async fn issue_session(
     email: Option<&str>,
     client_uuid: &str,
     duration_secs: i64,
+    product: Option<Product>,
 ) -> Result<AuthResponse, StatusCode> {
     // 1. Generate tokens
     let access_token = create_access_token(
         user_id,
         client_uuid,
+        product,
         state.jwt_secret.as_bytes(),
         Some(duration_secs),
     )
@@ -162,17 +165,25 @@ pub async fn issue_session(
     let refresh_token_hash = hash_refresh_token(&refresh_token);
     let expiration = chrono::Utc::now() + chrono::Duration::days(7);
 
+    // `COALESCE(EXCLUDED.product, sessions.product)` for the same reason `email` uses it
+    // above: a later sign-in that cannot name a product -- through an unclassified client
+    // ID, or the dev bypass -- must not erase a product this session already knew. The
+    // column only ever gains information, never loses it, so classifying a client ID in
+    // configuration upgrades its existing sessions on their next sign-in without a
+    // backfill.
+    let product_wire = product.map(|p| p.as_wire().to_string());
     sqlx::query!(
-        "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at, product)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (user_id, client_uuid) DO UPDATE
-         SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at, old_refresh_token_hash = EXCLUDED.old_refresh_token_hash, rotated_at = EXCLUDED.rotated_at",
+         SET refresh_token_hash = EXCLUDED.refresh_token_hash, expires_at = EXCLUDED.expires_at, old_refresh_token_hash = EXCLUDED.old_refresh_token_hash, rotated_at = EXCLUDED.rotated_at, product = COALESCE(EXCLUDED.product, sessions.product)",
         user_id,
         client_uuid,
         refresh_token_hash,
         expiration,
         None::<String>,
-        None::<chrono::DateTime<chrono::Utc>>
+        None::<chrono::DateTime<chrono::Utc>>,
+        product_wire
     ).execute(&state.db_pool).await.map_err(|e| {
         tracing::error!("Failed to upsert session: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -191,25 +202,38 @@ pub async fn login_handler(
     // `else` arm is the only reachable path. In particular this decision does not read
     // `state.cookie_domain` — a cookie setting must never be able to switch off
     // authentication. See [`crate::auth::dev_bypass`].
-    let (user_id, email) = match crate::auth::dev_bypass::dev_bypass_identity(
+    // The audience is also the only moment this service can tell the two products apart:
+    // after this block the token is gone and every session looks alike. So the product
+    // travels out of here alongside the identity, into the claim and onto the session row.
+    // The dev bypass names no audience and therefore no product, which is the same
+    // "unknown" an unclassified client ID produces -- see `crate::auth::product`.
+    let (user_id, email, product) = match crate::auth::dev_bypass::dev_bypass_identity(
         &payload.google_auth_token,
         &payload.user_id,
     ) {
-        Some(identity) => identity,
+        Some((user_id, email)) => (user_id, email, None),
         None => {
             // Verify Google Token (reusing existing google_client)
             let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
                 .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-            if !state.google_client_ids.contains(&google_payload.aud) {
+            if !state.client_catalog.is_allowed(&google_payload.aud) {
                 tracing::warn!(
-                    "Audience mismatch: expected one of {:?}, got {}",
-                    state.google_client_ids,
+                    "Audience mismatch: {} is not a configured client ID",
                     google_payload.aud
                 );
                 return Err(StatusCode::UNAUTHORIZED);
             }
-            (google_payload.sub, google_payload.email.clone())
+            let product = state.client_catalog.product_for(&google_payload.aud);
+            if product.is_none() {
+                tracing::warn!(
+                    aud = %google_payload.aud,
+                    "Login through a client ID that is not classified per product; this session \
+                     gets no product claim and its sync scopes cannot be enforced. Add the ID to \
+                     TEDDY_FYI_CLIENT_IDS or SCRIBBLEROUTE_CLIENT_IDS."
+                );
+            }
+            (google_payload.sub, google_payload.email.clone(), product)
         }
     };
 
@@ -226,6 +250,7 @@ pub async fn login_handler(
         email.as_deref(),
         &payload.client_uuid,
         duration_secs,
+        product,
     )
     .await?;
 
@@ -337,7 +362,7 @@ pub async fn refresh_handler(
     // 1. Get session (locked)
     let session = sqlx::query_as!(
         crate::auth::models::Session,
-        "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts FROM sessions WHERE user_id = $1 AND client_uuid = $2 FOR UPDATE",
+        "SELECT user_id, client_uuid, refresh_token_hash, expires_at, created_at, old_refresh_token_hash, rotated_at, failed_refresh_attempts, product FROM sessions WHERE user_id = $1 AND client_uuid = $2 FOR UPDATE",
         payload.user_id,
         payload.client_uuid
     ).fetch_optional(&mut *tx).await.map_err(|e| {
@@ -509,9 +534,20 @@ pub async fn refresh_handler(
         duration_secs
     };
 
+    // Carried from the session row, not from the request: `POST /auth/refresh` is
+    // unauthenticated, so anything the body claimed about which product this is would be
+    // an attacker-chosen scope grant. A row written before this column existed, or by a
+    // sign-in that could not name a product, yields `None` and the refreshed token simply
+    // carries no claim -- exactly as the one it replaces did.
+    let product = session
+        .product
+        .as_deref()
+        .and_then(Product::from_wire);
+
     let access_token = create_access_token(
         &payload.user_id,
         &payload.client_uuid,
+        product,
         state.jwt_secret.as_bytes(),
         Some(duration_secs),
     )

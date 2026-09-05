@@ -45,6 +45,7 @@ async fn test_sync_status_handler_db_fallback(pool: PgPool) {
         sub: test_user.to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     };
 
     // Case 1: client last_synced_at is older (needs sync)
@@ -98,6 +99,7 @@ async fn test_sync_status_handler_cache_hit(pool: PgPool) {
             sub: test_user.to_string(),
             client_uuid: "client-1".to_string(),
             exp: 10000000000,
+            product: None,
         };
 
         // Even if DB has a newer/older timestamp or is empty, it should use the cache
@@ -169,6 +171,7 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
         sub: test_user.to_string(),
         client_uuid: "client-1".to_string(),
         exp: 10000000000,
+        product: None,
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims.clone()), AppJson(req))
@@ -290,6 +293,7 @@ async fn test_sync_handler_updates_redis_cache_collaborative(pool: PgPool) {
         sub: user_a.to_string(),
         client_uuid: "client-a".to_string(),
         exp: 10000000000,
+        product: None,
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims.clone()), AppJson(req))

@@ -1450,4 +1450,145 @@ mod tests {
         .unwrap();
         assert_eq!(stored.as_deref(), Some("teddy_fyi"));
     }
+
+    /// A legacy stored hash, in the format every `sessions` row held before refresh tokens
+    /// moved to SHA-256. Produced the way the old `hash_refresh_token` produced it, so
+    /// these tests exercise the real thing rather than a hand-written string.
+    fn legacy_argon2_hash(token: &str) -> String {
+        use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+
+        let salt = SaltString::generate(&mut OsRng);
+        argon2::Argon2::default()
+            .hash_password(token.as_bytes(), &salt)
+            .expect("hashing a test token should succeed")
+            .to_string()
+    }
+
+    /// The new stored form: deterministic, domain-separated, and not a bare SHA-256 of the
+    /// token — so this digest can never coincide with another the service computes over the
+    /// same bytes (`auth::device::hash_device_code` being the one that already exists).
+    #[test]
+    fn refresh_hashes_are_deterministic_and_domain_separated() {
+        use sha2::{Digest, Sha256};
+
+        let token = "a-refresh-token";
+        let hash = hash_refresh_token(token);
+
+        assert_eq!(hash, hash_refresh_token(token), "the hash must be stable");
+        assert_eq!(hash.len(), 64, "hex-encoded SHA-256 is 64 characters");
+        assert!(!hash.starts_with("$argon2"));
+
+        let undomained: String = Sha256::digest(token.as_bytes())
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        assert_ne!(hash, undomained, "the domain prefix must be in the digest");
+
+        assert_ne!(hash, hash_refresh_token("a-refresh-tokeN"));
+    }
+
+    /// The compatibility half, and the reason this could ship without signing anybody out:
+    /// a session row written before the change still verifies.
+    #[test]
+    fn a_legacy_argon2_hash_still_verifies() {
+        let token = "a-token-hashed-the-old-way";
+        let stored = legacy_argon2_hash(token);
+
+        assert!(stored.starts_with("$argon2"));
+        assert!(verify_refresh_token(&stored, token));
+        assert!(!verify_refresh_token(&stored, "some-other-token"));
+    }
+
+    /// The panic `crate::guardrails` cites by name. `verify_refresh_token` used to
+    /// `.expect(...)` on `PasswordHash::new`, so one malformed row was one panic per
+    /// refresh attempt against it; now it is one caller re-authenticating.
+    #[test]
+    fn an_unparseable_stored_hash_is_a_mismatch_not_a_panic() {
+        for stored in [
+            "$argon2id$v=19$not-actually-a-phc-string",
+            "$argon2",
+            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$",
+        ] {
+            assert!(
+                !verify_refresh_token(stored, "any-token"),
+                "{stored} should be a mismatch"
+            );
+        }
+    }
+
+    /// A hash in neither format — truncated, or written by something else entirely — is
+    /// also just a mismatch.
+    #[test]
+    fn a_hash_of_the_wrong_shape_is_a_mismatch() {
+        assert!(!verify_refresh_token("", "any-token"));
+        assert!(!verify_refresh_token("deadbeef", "any-token"));
+        assert!(!verify_refresh_token(&hash_refresh_token("x")[..32], "x"));
+    }
+
+    /// The migration itself: there is no SQL for it, because a stored Argon2 digest cannot
+    /// be recomputed as a SHA-256. Rotation is what converts a row, so a device that
+    /// refreshes once leaves the legacy branch behind — and the branch drains on its own
+    /// within the seven days `expires_at` bounds.
+    #[sqlx::test]
+    async fn a_refresh_upgrades_a_legacy_row_to_the_new_hash(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-hash-upgrade";
+        let client_uuid = "client-hash-upgrade";
+
+        let raw_refresh = "a-refresh-token-stored-the-old-way";
+        let stored = legacy_argon2_hash(raw_refresh);
+        sqlx::query!(
+            "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+            user_id,
+            client_uuid,
+            stored,
+            chrono::Utc::now() + chrono::Duration::days(7)
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let response = refresh_handler(
+            State(state.clone()),
+            Json(RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_uuid.to_string(),
+                refresh_token: raw_refresh.to_string(),
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            }),
+        )
+        .await
+        .expect("a session hashed the old way must still refresh");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refreshed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let new_refresh = refreshed["refresh_token"].as_str().unwrap();
+
+        let row = sqlx::query!(
+            "SELECT refresh_token_hash, old_refresh_token_hash FROM sessions WHERE user_id = $1 AND client_uuid = $2",
+            user_id,
+            client_uuid
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            !row.refresh_token_hash.starts_with("$argon2"),
+            "rotation must store the new format"
+        );
+        assert_eq!(row.refresh_token_hash, hash_refresh_token(new_refresh));
+
+        // The superseded token is kept for the grace window, still in its original format,
+        // and must keep verifying for as long as it is stored -- a retry racing its own
+        // rotation is the case that window exists for.
+        let old_hash = row.old_refresh_token_hash.expect("rotation stores the old hash");
+        assert!(old_hash.starts_with("$argon2"));
+        assert!(verify_refresh_token(&old_hash, raw_refresh));
+    }
 }

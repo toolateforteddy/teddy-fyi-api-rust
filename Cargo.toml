@@ -27,5 +27,16 @@ tokio-stream = "0.1"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 sha2 = "0.11.0"
+# Per-IP rate limiting for the unauthenticated /auth/* routes. Pinned to 0.5.x because that
+# is the last line built against axum 0.7 — 0.6+ target axum 0.8 and their layer will not
+# compose with this router. `tracing` makes it log the throttled key, which is the only way
+# an incident tells "one abusive address" from "everyone".
+tower_governor = { version = "0.5.0", features = ["tracing"] }
+# Only for the middleware marker types in tower_governor's public signatures; the version is
+# the one tower_governor itself depends on.
+governor = "0.8"
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
 
 

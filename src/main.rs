@@ -5,6 +5,7 @@ pub mod models;
 pub mod dao;
 pub mod jobs;
 pub mod observability;
+pub mod rate_limit;
 
 use axum::{
     extract::State,
@@ -213,6 +214,14 @@ async fn serve() {
         ))
         .with_state(app_state.clone());
 
+    // Per-IP rate limits for the auth group. Built here rather than inside the router so the
+    // limiter state can also be handed to the sweeper that drops buckets for addresses that
+    // have gone quiet; see `rate_limit::auth_limits`.
+    let auth_limit = rate_limit::auth_limits::Quota::general_auth().config();
+    let device_start_limit = rate_limit::auth_limits::Quota::device_start().config();
+    rate_limit::auth_limits::spawn_key_gc(auth_limit.clone());
+    rate_limit::auth_limits::spawn_key_gc(device_start_limit.clone());
+
     // Public auth routes
     let auth_routes = Router::new()
         .route("/login", axum::routing::post(auth::handlers::login_handler))
@@ -221,9 +230,21 @@ async fn serve() {
         // Device pairing, for tablets with no Google identity of their own. All three are
         // unauthenticated by design: the tablet has no session yet, and the browser that
         // claims presents a Google ID token in the body rather than one of ours.
-        .route("/device/start", axum::routing::post(auth::device::start_handler))
+        //
+        // `/device/start` carries a second, much tighter bucket of its own: it is the only
+        // route here that runs an Argon2id hash (~19 MiB, tens of ms) before it knows
+        // anything about the caller, so it is the one that turns a flood into an outage.
+        .route(
+            "/device/start",
+            axum::routing::post(auth::device::start_handler)
+                .layer(rate_limit::auth_limits::layer(device_start_limit)),
+        )
         .route("/device/claim", axum::routing::post(auth::device::claim_handler))
         .route("/device/poll", axum::routing::post(auth::device::poll_handler))
+        // `route_layer`, not `layer`: a request that matches no auth route should 404 without
+        // spending anyone's quota. Nothing outside this nest is metered — in particular
+        // `/healthz/*` must stay free, or a throttled probe restarts the pod under load.
+        .route_layer(rate_limit::auth_limits::layer(auth_limit))
         .with_state(app_state.clone());
 
     // Explicit CORS Configurations:

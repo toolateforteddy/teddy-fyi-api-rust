@@ -1,6 +1,19 @@
-use crate::observability::health::{liveness_handler, readiness_handler, ReadyResponse};
+use crate::observability::health::{
+    liveness_handler, readiness_handler, ReadinessProbe, ReadyResponse,
+};
 use crate::observability::http::hash_user_id;
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use std::sync::Arc;
+
+/// A probe pointed at a port nothing listens on.
+///
+/// Port 1 is reserved and never listening, so the failure path is exercised
+/// deterministically — CI has no Redis, and these tests still have to run there.
+fn unreachable_probe() -> Arc<ReadinessProbe> {
+    Arc::new(ReadinessProbe::new(
+        redis::Client::open("redis://127.0.0.1:1").expect("valid url"),
+    ))
+}
 
 #[test]
 fn hash_user_id_is_deterministic_and_salted() {
@@ -28,25 +41,24 @@ async fn liveness_is_ok_without_touching_any_dependency() {
 
 #[tokio::test]
 async fn readiness_reports_unready_when_redis_is_unreachable() {
-    // Port 1 is reserved and never listening, so this exercises the failure path
-    // deterministically — unlike the cache tests, which silently assert nothing
-    // when Redis happens to be down. CI has no Redis, and this test still runs.
-    let client = redis::Client::open("redis://127.0.0.1:1").expect("valid url");
-
-    let response = readiness_handler(State(client)).await.into_response();
+    let response = readiness_handler(State(unreachable_probe()))
+        .await
+        .into_response();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
 async fn readiness_never_reaches_for_postgres() {
-    // `readiness_handler` takes a `redis::Client`, not `AppState`. Neon bills per
+    // `readiness_handler` takes a `ReadinessProbe` — which owns a `redis::Client`
+    // and nothing else — not `AppState`. Neon bills per
     // wake-up, so a probe that ran `SELECT 1` on a timer would keep the database
     // awake around the clock for monitoring alone. Postgres health comes from
     // `db_health` instead, which only ever reads atomics. The signature is the
     // guard; this test exists so that a future refactor to `State<AppState>` has
     // to delete an explicit statement of intent rather than silently regress it.
-    let client = redis::Client::open("redis://127.0.0.1:1").expect("valid url");
-    let _: axum::response::Response = readiness_handler(State(client)).await.into_response();
+    let _: axum::response::Response = readiness_handler(State(unreachable_probe()))
+        .await
+        .into_response();
 }
 
 #[test]
@@ -83,7 +95,11 @@ mod db_health {
     /// Takes the lock and clears the detector. Recovers from poisoning so one
     /// failing test reports its own assertion rather than cascading into every
     /// other test in this module.
-    fn guard() -> std::sync::MutexGuard<'static, ()> {
+    ///
+    /// Shared with the readiness cache tests: those go through `is_degraded()`
+    /// and would otherwise race a db_health test into an unrelated
+    /// `503 postgres` before the Redis leg is ever reached.
+    pub(super) fn guard() -> std::sync::MutexGuard<'static, ()> {
         let lock = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         reset();
         lock
@@ -250,5 +266,234 @@ mod db_health {
         let later = T0 + WINDOW_MS * 100;
         record_signal(DbSignal::Unreachable, later);
         assert!(!is_degraded_at(later + 1));
+    }
+}
+
+/// The `/healthz/ready` Redis cache.
+///
+/// Every test here points at port 1 (nothing listening), so the Redis leg always
+/// fails. That is deliberate: CI has no Redis, and a test that silently asserts
+/// nothing when the dependency is absent is worse than no test. The cache
+/// behaves identically either way — only which TTL applies differs — and
+/// `network_attempts()` measures the thing that actually matters, which is
+/// whether the probe reached for a socket at all.
+mod readiness_cache {
+    use crate::observability::health::{readiness_at, ReadinessProbe};
+    use axum::http::StatusCode;
+    use std::time::{Duration, Instant};
+
+    /// A probe with explicit TTLs, so a test can step across the boundary on a
+    /// supplied clock rather than depending on how long the assertions took.
+    fn probe(positive: Duration, negative: Duration) -> ReadinessProbe {
+        ReadinessProbe::with_ttls(
+            redis::Client::open("redis://127.0.0.1:1").expect("valid url"),
+            positive,
+            negative,
+        )
+    }
+
+    /// One probe, on a runtime local to the caller's thread.
+    ///
+    /// These are plain `#[test]`s rather than `#[tokio::test]`s for two
+    /// reasons: the db_health serialisation guard must be held across the
+    /// checks without being held across an `.await`, and the gauge test needs
+    /// the whole future to run on the thread where `with_local_recorder`
+    /// installed its thread-local recorder.
+    fn check(probe: &ReadinessProbe, now: Instant) -> StatusCode {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(readiness_at(probe, now)).0
+    }
+
+    #[test]
+    fn a_second_probe_inside_the_ttl_does_not_touch_redis() {
+        let _guard = super::db_health::guard();
+        let probe = probe(Duration::from_secs(10), Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        assert_eq!(check(&probe, t0), StatusCode::SERVICE_UNAVAILABLE);
+        let first = probe.network_attempts();
+        assert!(first > 0, "the first probe must actually check Redis");
+
+        // The point of the whole change: the kubelet drives this endpoint
+        // forever and anyone on the ingress can drive it faster, so a repeat
+        // call inside the TTL must cost nothing on the network.
+        assert_eq!(
+            check(&probe, t0 + Duration::from_secs(1)),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the cached verdict is reused"
+        );
+        assert_eq!(
+            probe.network_attempts(),
+            first,
+            "a cached probe must not dial or PING"
+        );
+    }
+
+    #[test]
+    fn a_probe_after_the_ttl_checks_again() {
+        let _guard = super::db_health::guard();
+        let probe = probe(Duration::from_secs(10), Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        check(&probe, t0);
+        let first = probe.network_attempts();
+
+        // The cache bounds staleness, it does not replace the check: once the
+        // TTL has passed the verdict has to be earned again.
+        check(&probe, t0 + Duration::from_secs(11));
+        assert!(
+            probe.network_attempts() > first,
+            "an expired entry must be re-checked, not served stale forever"
+        );
+    }
+
+    #[test]
+    fn a_failure_is_cached_only_for_the_short_negative_ttl() {
+        let _guard = super::db_health::guard();
+        // Failures are cached — an unauthenticated flood against a dead Redis
+        // must not amplify into unbounded dials — but for far less time than a
+        // success, so recovery is noticed almost immediately.
+        let probe = probe(Duration::from_secs(10), Duration::from_millis(250));
+        let t0 = Instant::now();
+
+        check(&probe, t0);
+        let first = probe.network_attempts();
+
+        check(&probe, t0 + Duration::from_millis(200));
+        assert_eq!(
+            probe.network_attempts(),
+            first,
+            "a failure is cached, so a flood cannot amplify into dials"
+        );
+
+        check(&probe, t0 + Duration::from_millis(300));
+        assert!(
+            probe.network_attempts() > first,
+            "the negative TTL must be short enough to notice recovery quickly"
+        );
+    }
+
+    #[test]
+    fn the_db_health_gauge_is_published_on_every_probe_even_a_cached_one() {
+        let _guard = super::db_health::guard();
+        let recorder = super::gauge_spy::GaugeSpy::default();
+        let sets = recorder.handle();
+
+        let probe = probe(Duration::from_secs(10), Duration::from_secs(10));
+        let t0 = Instant::now();
+
+        metrics::with_local_recorder(&recorder, || {
+            check(&probe, t0);
+            check(&probe, t0 + Duration::from_secs(1));
+        });
+
+        assert_eq!(
+            probe.network_attempts(),
+            1,
+            "the second probe was served from the cache"
+        );
+        // `publish_gauge()` runs before the cache is consulted precisely so the
+        // gauge keeps tracking the kubelet's timer. If a future refactor moves
+        // the cache lookup first, this drops to 1 and the gauge silently freezes
+        // at whatever it read when the entry was written.
+        assert_eq!(
+            sets.count("db_connectivity_degraded"),
+            2,
+            "the gauge must be republished on a cached probe too"
+        );
+    }
+}
+
+/// A `metrics::Recorder` that counts `gauge.set()` calls per key.
+///
+/// Hand-rolled because `metrics-util`'s debugging recorder is only a transitive
+/// dependency here, and promoting it to a direct one to count two calls is not
+/// worth the extra supply-chain surface.
+mod gauge_spy {
+    use metrics::{
+        Counter, CounterFn, Gauge, GaugeFn, Histogram, HistogramFn, Key, KeyName, Metadata,
+        Recorder, SharedString, Unit,
+    };
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default, Clone)]
+    pub(super) struct Sets(Arc<Mutex<HashMap<String, u64>>>);
+
+    impl Sets {
+        pub(super) fn count(&self, key: &str) -> u64 {
+            self.0
+                .lock()
+                .expect("spy poisoned")
+                .get(key)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    /// One gauge handle, bound to the key it was registered under.
+    struct SpyGauge {
+        key: String,
+        sets: Sets,
+    }
+
+    impl GaugeFn for SpyGauge {
+        fn set(&self, _value: f64) {
+            *self
+                .sets
+                .0
+                .lock()
+                .expect("spy poisoned")
+                .entry(self.key.clone())
+                .or_insert(0) += 1;
+        }
+        fn increment(&self, _value: f64) {}
+        fn decrement(&self, _value: f64) {}
+    }
+
+    /// Counters and histograms are not what these tests are about, so they get
+    /// handles that do nothing rather than a second set of bookkeeping.
+    struct Ignored;
+    impl CounterFn for Ignored {
+        fn increment(&self, _value: u64) {}
+        fn absolute(&self, _value: u64) {}
+    }
+    impl HistogramFn for Ignored {
+        fn record(&self, _value: f64) {}
+    }
+
+    #[derive(Default)]
+    pub(super) struct GaugeSpy {
+        sets: Sets,
+    }
+
+    impl GaugeSpy {
+        pub(super) fn handle(&self) -> Sets {
+            self.sets.clone()
+        }
+    }
+
+    impl Recorder for GaugeSpy {
+        fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+
+        fn register_counter(&self, _key: &Key, _: &Metadata<'_>) -> Counter {
+            Counter::from_arc(Arc::new(Ignored))
+        }
+
+        fn register_gauge(&self, key: &Key, _: &Metadata<'_>) -> Gauge {
+            Gauge::from_arc(Arc::new(SpyGauge {
+                key: key.name().to_string(),
+                sets: self.sets.clone(),
+            }))
+        }
+
+        fn register_histogram(&self, _key: &Key, _: &Metadata<'_>) -> Histogram {
+            Histogram::from_arc(Arc::new(Ignored))
+        }
     }
 }

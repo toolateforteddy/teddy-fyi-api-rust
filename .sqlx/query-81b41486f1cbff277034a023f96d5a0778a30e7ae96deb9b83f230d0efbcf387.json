@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE todo_lists SET\n                    is_deleted = TRUE,\n                    version = version + 1,\n                    updated_at = $1,\n                    updated_by_client = $2\n                WHERE id = ANY($3)\n                RETURNING id, version\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "81b41486f1cbff277034a023f96d5a0778a30e7ae96deb9b83f230d0efbcf387"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT version, is_deleted FROM grocery_items WHERE id = 'gi-1'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "47d6b21467a8f6b20eb35c924727855211042347403d8e75c78307dc060d7107"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE categories\n                   SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2\n                   WHERE \"listId\" = ANY($3) AND is_deleted = FALSE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a526e0c7f2c2a2785d57020c71dfe01d7d65cbb206d15cd4f06a13dc2ce0f810"
+}

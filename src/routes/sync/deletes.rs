@@ -5,11 +5,16 @@
 //! **A delete names an intent, not a row. If the row is not there, the intent is
 //! already satisfied, so the delete succeeds and is acknowledged.**
 //!
-//! This is the only sanctioned shape for a soft-delete in the sync path, and
-//! [`soft_delete_version!`] is how it is written: the macro owns the
-//! `fetch_optional`, so a processor cannot spell the delete in a way that turns a
-//! missing row into an error. `tests::delete_unknown_id` fails the build if one
-//! tries.
+//! This is the only sanctioned shape for a soft-delete in the sync path. It used to
+//! be written through a `soft_delete_version!` macro that owned the `fetch_optional`,
+//! so that a processor could not spell the delete in a way that turned a missing row
+//! into an error. The processors now delete a whole run of ids in one statement
+//! (`crate::routes::sync::batching`), which is a different shape -- `WHERE id = ANY($n)
+//! ... RETURNING id, version`, `fetch_all`, and the ids that come back are the rows
+//! that were there -- so the macro is gone and [`ack_unsynced_delete`] is what the
+//! processors share. The rule it enforced is unchanged, and the guard that keeps it
+//! honest is still `tests::deletes`, which fails the build for a soft-delete run
+//! through `fetch_one`.
 //!
 //! # Why "acknowledge", rather than 500 or 403
 //!
@@ -85,40 +90,3 @@ pub fn ack_unsynced_delete(entity: &str, id: &str) -> i32 {
     );
     UNSYNCED_DELETE_VERSION
 }
-
-/// Runs a soft-delete `UPDATE ... RETURNING version` and yields the row's new
-/// version, or [`UNSYNCED_DELETE_VERSION`] if the statement matched nothing.
-///
-/// Expands to an `await` expression that propagates database errors with `?`, so it
-/// is used exactly where the bare `sqlx::query!` used to be:
-///
-/// ```ignore
-/// let version = soft_delete_version!(
-///     tx,
-///     "todo item",
-///     change.id,
-///     "UPDATE todo_items SET is_deleted = TRUE, version = version + 1, updated_at = $1, updated_by_client = $2 WHERE id = $3 RETURNING version",
-///     server_timestamp,
-///     client_id,
-///     change.id,
-/// );
-/// ```
-///
-/// The SQL stays at the call site because `sqlx::query!` checks it against the
-/// schema at compile time and can only do that for a literal; what the macro takes
-/// away is the choice of `fetch_one` over `fetch_optional`, which is the thing that
-/// drifted. `$sql` is a `literal` fragment, so the query text a reviewer reads is
-/// the query text sqlx checks.
-macro_rules! soft_delete_version {
-    ($tx:expr, $entity:expr, $id:expr, $sql:literal, $($arg:expr),+ $(,)?) => {{
-        match sqlx::query!($sql, $($arg),+)
-            .fetch_optional(&mut **$tx)
-            .await?
-        {
-            Some(row) => row.version,
-            None => $crate::routes::sync::deletes::ack_unsynced_delete($entity, $id),
-        }
-    }};
-}
-
-pub(crate) use soft_delete_version;

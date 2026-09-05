@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO grocery_item_store_info (\n                    \"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_at, updated_by_client\n                )\n                SELECT v.item_id, v.store_id, v.price, v.is_available, $7, v.version, v.is_deleted, 'SYNCED', $8, $9\n                FROM UNNEST($1::text[], $2::text[], $3::float8[], $4::bool[], $5::int4[], $6::bool[])\n                    AS v(item_id, store_id, price, is_available, version, is_deleted)\n                ON CONFLICT (\"groceryItemId\", \"storeId\") DO UPDATE SET\n                    price = EXCLUDED.price,\n                    \"isAvailable\" = EXCLUDED.\"isAvailable\",\n                    \"userId\" = EXCLUDED.\"userId\",\n                    version = EXCLUDED.version,\n                    is_deleted = EXCLUDED.is_deleted,\n                    sync_state = EXCLUDED.sync_state,\n                    updated_at = EXCLUDED.updated_at,\n                    updated_by_client = EXCLUDED.updated_by_client\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Float8Array",
+        "BoolArray",
+        "Int4Array",
+        "BoolArray",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a105266c9adc987e94b00e7ccb507dbfa66051ac47ecadb7140b87355dfcc712"
+}

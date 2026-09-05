@@ -1388,6 +1388,179 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_sync_grocery_item_store_mapping_batch_of_shared_names(pool: PgPool) {
+    // Pins the rows the store-mapping backfill produces when one payload carries several
+    // new items that share a name (and one that does not). The backfill is resolved for
+    // the whole batch in a single query and written with a single multi-row insert, so
+    // this is the test that says the batched form still creates exactly the same rows.
+    let state = setup_state(pool.clone());
+
+    for (id, name) in [("list-alpha", "Alpha List"), ("list-beta", "Beta List")] {
+        sqlx::query!(
+            "INSERT INTO grocery_lists (id, name, \"createdAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6)",
+            id, name, 0_i64, 1_i32, false, "SYNCED"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    for (id, list_id) in [("member-alpha", "list-alpha"), ("member-beta", "list-beta")] {
+        sqlx::query!(
+            "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            id, list_id, "user-1", "OWNER", 0_i64, 1_i32, false, "SYNCED"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    for (id, name) in [("500", "Store Omega"), ("501", "Store Sigma")] {
+        sqlx::query!(
+            "INSERT INTO stores (id, name, position, \"isDefaultSupported\", \"userId\", version, is_deleted, sync_state) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            id, name, 1, true, "user-1", 1_i32, false, "SYNCED"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // Source items in list-alpha: "Milk" is priced in both stores, "Bread" in one.
+    for (id, name) in [("600", "Milk"), ("601", "Bread")] {
+        sqlx::query!(
+            "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, sync_state)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+            id, name, "1", false, 0_i64, 1_i32, None::<String>, 0_i32, "user-1", true, Some("list-alpha".to_string()), None::<String>, None::<String>, 1_i32, false, "SYNCED"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    for (item_id, store_id, price) in [("600", "500", 2.99_f64), ("600", "501", 3.49), ("601", "500", 1.50)] {
+        sqlx::query!(
+            "INSERT INTO grocery_item_store_info (\"groceryItemId\", \"storeId\", price, \"isAvailable\", \"userId\", version, is_deleted, sync_state, updated_by_client)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            item_id, store_id, price, true, "user-1", 1_i32, false, "SYNCED", "client-1"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // An item the server has already seen, named "Milk" but with no mapping of its own.
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \"categoryId\", \"timesBought\", \"userId\", \"isActive\", \"listId\", unit, notes, version, is_deleted, sync_state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+        "710", "Milk", "1", false, 0_i64, 1_i32, None::<String>, 0_i32, "user-1", true, Some("list-beta".to_string()), None::<String>, None::<String>, 1_i32, false, "SYNCED"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let make_item = |id: &str, name: &str| GroceryItemData {
+        id: id.to_string(),
+        name: name.to_string(),
+        quantity: "2".to_string(),
+        is_bought: false,
+        created_at: 2000,
+        position: 2,
+        category_id: None,
+        times_bought: 0,
+        user_id: None,
+        is_active: true,
+        list_id: Some("list-beta".to_string()),
+        unit: None,
+        notes: None,
+        version: 1,
+        is_deleted: false,
+        sync_state: "SYNCED".to_string(),
+    };
+
+    let grocery_changes = vec![
+        ("700", "milk", OperationType::Insert),
+        ("701", "MILK", OperationType::Insert),
+        ("702", "Bread", OperationType::Insert),
+        ("710", "Milk", OperationType::Update),
+    ]
+    .into_iter()
+    .map(|(id, name, op)| GroceryChangeDelta {
+        id: id.to_string(),
+        operation_type: op,
+        version: 1,
+        data: Some(serde_json::to_value(make_item(id, name)).unwrap()),
+    })
+    .collect();
+
+    let req = SyncRequest {
+        last_synced_at: None,
+        client_id: "client-1".to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes,
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+    };
+
+    let res = sync_handler(State(state.clone()), AppJson(req))
+        .await
+        .expect("Sync should succeed")
+        .0;
+
+    for id in ["700", "701", "702", "710"] {
+        assert!(res.success_ids.contains(&id.to_string()), "{} should sync", id);
+    }
+
+    let rows = sqlx::query!(
+        "SELECT \"groceryItemId\" as grocery_item_id, \"storeId\" as store_id, price, \"isAvailable\" as is_available, \"userId\" as user_id, version, is_deleted, updated_by_client
+         FROM grocery_item_store_info
+         WHERE \"groceryItemId\" = ANY($1)
+         ORDER BY \"groceryItemId\", \"storeId\"",
+        &vec!["700".to_string(), "701".to_string(), "702".to_string(), "710".to_string()]
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    let got: Vec<(String, String, Option<f64>)> = rows
+        .iter()
+        .map(|r| (r.grocery_item_id.clone(), r.store_id.clone(), r.price))
+        .collect();
+
+    // Both spellings of "milk" pick up both of the source item's stores; "Bread" picks up
+    // only its own. Item 710 was already known to the server, so it is not backfilled.
+    assert_eq!(
+        got,
+        vec![
+            ("700".to_string(), "500".to_string(), Some(2.99)),
+            ("700".to_string(), "501".to_string(), Some(3.49)),
+            ("701".to_string(), "500".to_string(), Some(2.99)),
+            ("701".to_string(), "501".to_string(), Some(3.49)),
+            ("702".to_string(), "500".to_string(), Some(1.50)),
+        ]
+    );
+
+    for row in &rows {
+        assert!(row.is_available);
+        assert_eq!(row.user_id, Some("user-1".to_string()));
+        assert_eq!(row.version, 1);
+        assert!(!row.is_deleted);
+        // MUST be NULL/None so it syncs back to client
+        assert_eq!(row.updated_by_client, None);
+    }
+}
+
+#[sqlx::test]
 async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
     let state = setup_state(pool.clone());
     

@@ -6,6 +6,33 @@ use super::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
+/// Maps an identifier string onto a UUID: parsed if it already is one, otherwise hashed
+/// with `uuid5(NAMESPACE_DNS, s)`.
+///
+/// **This is one of two user identities in this service, and changing it is a data
+/// migration, not a refactor.** `configs`, `drawings` and `devices` are keyed by the UUID
+/// this returns for the auth subject; `todo_*`, `grocery_*`, `users`, `sessions` and
+/// `list_invites` are keyed by that same subject *raw*, as text. Nothing stores the
+/// mapping — it is recomputed on every request — so a different namespace, hash or input
+/// encoding orphans every config, drawing and device row that exists. The reasoning, the
+/// full table-by-table split and what a re-key would cost are in
+/// `context/2026-09-05_user_identity_derivation.md`.
+///
+/// Two properties worth knowing before you rely on this:
+///
+/// - **The output is publicly computable.** `uuid5` is unkeyed and the auth subject is not
+///   a secret (co-members of a shared grocery list receive each other's raw subject in
+///   `grocery_list_members` rows), so anyone can derive another account's config UUID.
+///   That is not itself an access grant: every query scopes by the UUID derived from the
+///   *caller's own* verified claims, never from anything in the request body. It does mean
+///   the value must never be treated as a capability, secret, or proof of ownership.
+/// - **The two branches share one output space.** A subject that is already UUID-shaped is
+///   used verbatim, so it can name the same identifier a hashed subject derives. Real
+///   Google `sub` values are decimal digit strings and can never take that shape; only a
+///   path that lets a caller choose its own subject can reach it.
+///
+/// Also used for `client_id`, where the same determinism is all that is wanted and none of
+/// the above is load-bearing — it is an echo-suppression tag, not an identity.
 pub fn parse_or_hash_uuid(s: &str) -> uuid::Uuid {
     uuid::Uuid::parse_str(s).unwrap_or_else(|_| {
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, s.as_bytes())

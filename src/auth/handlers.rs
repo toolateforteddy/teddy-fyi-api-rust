@@ -9,6 +9,31 @@ use rand::distr::Alphanumeric;
 /// mints at this length: the tablet has no `expires_in_secs` to ask with.
 pub const DEFAULT_SESSION_SECS: i64 = 86400;
 
+/// Builds the `Set-Cookie` value for the session cookie.
+///
+/// One function for all three call sites (login, refresh, logout) because the `Domain`
+/// attribute is the only thing that varies with deployment, and an empty `COOKIE_DOMAIN`
+/// is a perfectly ordinary configuration: it means "no Domain attribute", which is what a
+/// single-host deployment wants, and the cookie is then host-only. Every other attribute —
+/// `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/` — is identical either way.
+///
+/// This is the *whole* of what `state.cookie_domain` is allowed to influence. It used to
+/// double as the switch for the development login bypass; see [`crate::auth::dev_bypass`]
+/// for why that coupling was a security bug and where the decision now lives.
+pub fn session_cookie(cookie_domain: &str, access_token: &str, max_age_secs: i64) -> String {
+    if cookie_domain.is_empty() {
+        format!(
+            "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
+            access_token, max_age_secs
+        )
+    } else {
+        format!(
+            "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age={}",
+            access_token, cookie_domain, max_age_secs
+        )
+    }
+}
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub user_id: String,
@@ -116,23 +141,32 @@ pub async fn login_handler(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, StatusCode> {
-    // Resolve user ID and email (supporting dev bypass)
-    let (user_id, email) = if payload.google_auth_token.starts_with("mock.") && state.cookie_domain.is_empty() {
-        (payload.user_id.clone(), Some("dev-user@teddy.fyi".to_string()))
-    } else {
-        // Verify Google Token (reusing existing google_client)
-        let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // Resolve who the caller is. The only way to skip Google validation is the development
+    // bypass, and that is a compile-time property of this binary: without the `dev-auth`
+    // cargo feature `dev_bypass_identity` is a function that can only return `None`, so the
+    // `else` arm is the only reachable path. In particular this decision does not read
+    // `state.cookie_domain` — a cookie setting must never be able to switch off
+    // authentication. See [`crate::auth::dev_bypass`].
+    let (user_id, email) = match crate::auth::dev_bypass::dev_bypass_identity(
+        &payload.google_auth_token,
+        &payload.user_id,
+    ) {
+        Some(identity) => identity,
+        None => {
+            // Verify Google Token (reusing existing google_client)
+            let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
+                .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-        if !state.google_client_ids.contains(&google_payload.aud) {
-            tracing::warn!(
-                "Audience mismatch: expected one of {:?}, got {}",
-                state.google_client_ids,
-                google_payload.aud
-            );
-            return Err(StatusCode::UNAUTHORIZED);
+            if !state.google_client_ids.contains(&google_payload.aud) {
+                tracing::warn!(
+                    "Audience mismatch: expected one of {:?}, got {}",
+                    state.google_client_ids,
+                    google_payload.aud
+                );
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+            (google_payload.sub, google_payload.email.clone())
         }
-        (google_payload.sub, google_payload.email.clone())
     };
 
     let duration_secs = payload.expires_in_secs.unwrap_or(DEFAULT_SESSION_SECS);
@@ -152,17 +186,7 @@ pub async fn login_handler(
     .await?;
 
     if payload.use_cookie.unwrap_or(false) {
-        let cookie_header_value = if state.cookie_domain.is_empty() {
-            format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
-                access_token, duration_secs
-            )
-        } else {
-            format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age={}",
-                access_token, state.cookie_domain, duration_secs
-            )
-        };
+        let cookie_header_value = session_cookie(&state.cookie_domain, &access_token, duration_secs);
 
         let browser_response = BrowserAuthResponse {
             user_id,
@@ -493,18 +517,8 @@ pub async fn refresh_handler(
     })?;
 
     if payload.use_cookie.unwrap_or(false) {
-        let cookie_header_value = if state.cookie_domain.is_empty() {
-            format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
-                access_token, duration_secs
-            )
-        } else {
-            format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age={}",
-                access_token, state.cookie_domain, duration_secs
-            )
-        };
-        
+        let cookie_header_value = session_cookie(&state.cookie_domain, &access_token, duration_secs);
+
         let browser_response = BrowserRefreshResponse {
             refresh_token: new_refresh_token,
         };
@@ -567,16 +581,11 @@ pub async fn logout_handler(
         }
     }
 
-    // 2. Clear cookie
-    let cookie_header_value = if state.cookie_domain.is_empty() {
-        "access_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_string()
-    } else {
-        format!(
-            "access_token=; HttpOnly; Secure; SameSite=Lax; Domain={}; Path=/; Max-Age=0",
-            state.cookie_domain
-        )
-    };
-    
+    // 2. Clear cookie. Same builder as the minting paths — an empty value with `Max-Age=0`
+    // only clears the cookie if every other attribute, `Domain` included, matches the one
+    // that was set, so these must not be allowed to drift apart.
+    let cookie_header_value = session_cookie(&state.cookie_domain, "", 0);
+
     let mut response = StatusCode::OK.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,

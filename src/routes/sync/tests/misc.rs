@@ -1,6 +1,6 @@
 use sqlx::PgPool;
 use axum::extract::State;
-use axum::{Extension, Json};
+use axum::Extension;
 use chrono::Utc;
 use crate::routes::sync::tests::helpers::setup_state;
 use crate::routes::sync::{
@@ -9,10 +9,13 @@ use crate::routes::sync::{
 };
 use crate::auth::tokens::Claims;
 
+/// Needs a `login_handler` call that succeeds, and the only one available without a real
+/// Google ID token is the `mock.` bypass — which now exists only in a `dev-auth` build, and
+/// no longer has anything to do with `cookie_domain`.
+#[cfg(feature = "dev-auth")]
 #[sqlx::test]
 async fn test_login_upserts_user(pool: PgPool) {
-    let mut state = setup_state(pool.clone());
-    state.cookie_domain = "".to_string(); // bypass Google OAuth validation via dev/mock token
+    let state = setup_state(pool.clone());
 
     let payload = crate::auth::handlers::LoginRequest {
         user_id: "user-test-login-upsert".to_string(),
@@ -22,21 +25,22 @@ async fn test_login_upserts_user(pool: PgPool) {
         expires_in_secs: None,
     };
 
-    let response = crate::auth::handlers::login_handler(State(state.clone()), Json(payload))
+    let response = crate::auth::handlers::login_handler(State(state.clone()), axum::Json(payload))
         .await
         .expect("Login should succeed");
 
     assert_eq!(response.status(), axum::http::StatusCode::OK);
 
-    // Verify user exists in the database
-    let user = sqlx::query!(
-        "SELECT email FROM users WHERE id = $1",
-        "user-test-login-upsert"
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("User should have been upserted");
-    assert_eq!(user.email, Some("dev-user@teddy.fyi".to_string()));
+    // Verify user exists in the database. Runtime query, not `sqlx::query!`: this test only
+    // compiles under `dev-auth`, and a macro query that exists in one feature configuration
+    // would be dropped from the checked-in `.sqlx` cache the next time anyone runs
+    // `cargo sqlx prepare` in the other one.
+    let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind("user-test-login-upsert")
+        .fetch_one(&pool)
+        .await
+        .expect("User should have been upserted");
+    assert_eq!(email, Some("dev-user@teddy.fyi".to_string()));
 }
 
 #[sqlx::test]

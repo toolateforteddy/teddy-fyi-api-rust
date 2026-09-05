@@ -3,6 +3,16 @@ name = "teddy-fyi-api-rust"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Compiles in the `mock.` login bypass in `src/auth/dev_bypass.rs`, which mints a session
+# for whatever `user_id` the request body names without validating anything. It exists so a
+# laptop with no Google credentials can sign in. It is deliberately NOT a default feature:
+# `cargo build --release` (what the Dockerfile runs) leaves the accepting branch out of the
+# binary entirely, so no environment variable or request can re-enable it in production.
+# `make dev` / `scripts/dev.sh` turn it on for local work.
+dev-auth = []
+
 [dependencies]
 # axum is our web framework, tokio is our async runtime
 axum = "0.7"

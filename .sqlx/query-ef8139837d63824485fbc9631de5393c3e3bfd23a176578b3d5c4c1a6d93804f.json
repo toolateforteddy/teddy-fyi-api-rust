@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_lists (id, name, \"ownerId\", \"createdAt\", version, updated_at, updated_by_client, is_deleted, sync_state)\n           VALUES ($1, $2, $3, 0, 1, $4, 'seed', false, 'SYNCED')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ef8139837d63824485fbc9631de5393c3e3bfd23a176578b3d5c4c1a6d93804f"
+}

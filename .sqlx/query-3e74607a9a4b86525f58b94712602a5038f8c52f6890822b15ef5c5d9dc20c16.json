@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH touched_lists AS (\n            -- Every list this request named, however it named it.\n            SELECT id AS list_id FROM grocery_lists WHERE id = ANY($2)\n            UNION\n            SELECT \"listId\" FROM grocery_list_members WHERE id = ANY($3)\n            UNION\n            SELECT \"listId\" FROM stores WHERE id = ANY($4) AND \"listId\" IS NOT NULL\n            UNION\n            SELECT \"listId\" FROM categories WHERE id = ANY($5) AND \"listId\" IS NOT NULL\n            UNION\n            SELECT \"listId\" FROM grocery_items WHERE id = ANY($6) AND \"listId\" IS NOT NULL\n            UNION\n            SELECT \"listId\" FROM stores WHERE id = ANY($7) AND \"listId\" IS NOT NULL\n        ),\n        reachable_lists AS (\n            -- ...narrowed to the ones the caller is actually party to. This is what keeps a\n            -- concurrent, unrelated request out of the result.\n            SELECT gl.id\n            FROM grocery_lists gl\n            WHERE gl.id IN (SELECT list_id FROM touched_lists WHERE list_id IS NOT NULL)\n              AND (\n                  gl.\"ownerId\" = $1\n                  OR EXISTS (\n                      SELECT 1 FROM grocery_list_members m\n                      WHERE m.\"listId\" = gl.id AND m.\"userId\" = $1\n                  )\n              )\n        )\n        SELECT DISTINCT u.user_id AS \"user_id!\"\n        FROM (\n            -- Co-members, including ones just removed: their client has to learn of it.\n            SELECT m.\"userId\" AS user_id\n            FROM grocery_list_members m\n            WHERE m.\"listId\" IN (SELECT id FROM reachable_lists)\n            UNION ALL\n            SELECT gl.\"ownerId\"\n            FROM grocery_lists gl\n            WHERE gl.id IN (SELECT id FROM reachable_lists) AND gl.\"ownerId\" IS NOT NULL\n        ) u\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3e74607a9a4b86525f58b94712602a5038f8c52f6890822b15ef5c5d9dc20c16"
+}

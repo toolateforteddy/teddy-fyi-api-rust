@@ -1,5 +1,6 @@
 pub mod helpers;
 
+mod affected_users;
 mod cache;
 mod deserialization;
 mod devices;

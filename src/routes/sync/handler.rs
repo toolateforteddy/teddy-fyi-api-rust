@@ -23,6 +23,10 @@ pub async fn sync_handler(
     let server_timestamp = Utc::now();
     let scope = payload.scope.unwrap_or(SyncScope::All);
 
+    // The three futures below each read the whole request. Share one allocation rather than
+    // deep-copying a body that is mostly drawing vector data. See `SharedRequest`.
+    let payload = SharedRequest::new(payload);
+
     tracing::info!(
         "Incoming sync request: client_id={}, scope={:?}, config_changes={}, drawing_changes={}, configs={}, drawings={}, todo_changes={}, grocery_changes={}",
         payload.client_id,
@@ -39,7 +43,7 @@ pub async fn sync_handler(
     let todo_future = {
         let state = state.clone();
         let claims = claims.clone();
-        let payload = payload.clone();
+        let payload = payload.handle();
         async move {
             if scope == SyncScope::All || scope == SyncScope::Todo {
                 let mut tx = state.db_pool.begin().await?;
@@ -104,7 +108,7 @@ pub async fn sync_handler(
     let grocery_future = {
         let state = state.clone();
         let claims = claims.clone();
-        let payload = payload.clone();
+        let payload = payload.handle();
         async move {
             if scope == SyncScope::All || scope == SyncScope::Grocery {
                 let mut tx = state.db_pool.begin().await?;
@@ -234,54 +238,15 @@ pub async fn sync_handler(
                     || !payload.grocery_changes.is_empty()
                     || !payload.grocery_item_store_info_changes.is_empty();
 
-                let mut affected_grocery_users = Vec::new();
-                if has_grocery {
-                    let rows = sqlx::query!(
-                        r#"
-                        SELECT DISTINCT "userId" as user_id FROM (
-                            -- Users who are members of the updated lists
-                            SELECT glm."userId"
-                            FROM grocery_list_members glm
-                            WHERE glm."listId" IN (
-                                SELECT DISTINCT "listId" FROM (
-                                    SELECT id as "listId" FROM grocery_lists WHERE updated_at = $1
-                                    UNION ALL
-                                    SELECT "listId" FROM grocery_list_members WHERE updated_at = $1 AND "listId" IS NOT NULL
-                                    UNION ALL
-                                    SELECT "listId" FROM stores WHERE updated_at = $1 AND "listId" IS NOT NULL
-                                    UNION ALL
-                                    SELECT "listId" FROM categories WHERE updated_at = $1 AND "listId" IS NOT NULL
-                                    UNION ALL
-                                    SELECT "listId" FROM grocery_items WHERE updated_at = $1 AND "listId" IS NOT NULL
-                                    UNION ALL
-                                    SELECT s."listId" FROM grocery_item_store_info gsi
-                                    JOIN stores s ON gsi."storeId" = s.id
-                                    WHERE gsi.updated_at = $1 AND s."listId" IS NOT NULL
-                                ) sub_lists
-                            )
-                            UNION ALL
-                            -- Owners of updated lists
-                            SELECT "ownerId" as "userId" FROM grocery_lists WHERE updated_at = $1 AND "ownerId" IS NOT NULL
-                            UNION ALL
-                            -- Users who own updated items/stores/categories with no list
-                            SELECT "userId" FROM grocery_items WHERE updated_at = $1 AND "listId" IS NULL AND "userId" IS NOT NULL
-                            UNION ALL
-                            SELECT "userId" FROM stores WHERE updated_at = $1 AND "listId" IS NULL AND "userId" IS NOT NULL
-                            UNION ALL
-                            SELECT "userId" FROM categories WHERE updated_at = $1 AND "listId" IS NULL AND "userId" IS NOT NULL
-                        ) all_users
-                        "#,
-                        server_timestamp
-                    )
-                    .fetch_all(&mut *tx)
-                    .await?;
-
-                    for r in rows {
-                        if let Some(uid) = r.user_id {
-                            affected_grocery_users.push(uid);
-                        }
-                    }
-                }
+                // Bump the grocery caches of everyone who can see a list this request
+                // touched, not just the caller — that is what makes a shared list show up on
+                // a co-member's device. Resolved from the ids the request named, inside the
+                // still-open transaction so the rows just written are visible.
+                let affected_grocery_users = if has_grocery {
+                    find_affected_grocery_users(&mut tx, &claims.sub, &payload).await?
+                } else {
+                    Vec::new()
+                };
 
                 tx.commit().await?;
 
@@ -306,7 +271,7 @@ pub async fn sync_handler(
     let config_drawing_future = {
         let state = state.clone();
         let claims = claims.clone();
-        let payload = payload.clone();
+        let payload = payload.handle();
         async move {
             if scope == SyncScope::ScribbleBox
                 || scope == SyncScope::ScribbleKeep

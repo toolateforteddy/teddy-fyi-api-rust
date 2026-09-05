@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE grocery_item_store_info SET\n                    is_deleted = TRUE,\n                    version = version + 1,\n                    updated_at = $1,\n                    updated_by_client = $2\n                FROM UNNEST($3::text[], $4::text[]) AS v(item_id, store_id)\n                WHERE grocery_item_store_info.\"groceryItemId\" = v.item_id\n                  AND grocery_item_store_info.\"storeId\" = v.store_id\n                RETURNING grocery_item_store_info.\"groceryItemId\" as grocery_item_id, grocery_item_store_info.\"storeId\" as store_id, grocery_item_store_info.version\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grocery_item_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "store_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9fc448758248c29be572693087f1cd469db015c5ee3c151f76592c43f2a626b9"
+}

@@ -1,3 +1,4 @@
+pub mod guardrails;
 pub mod routes;
 pub mod state;
 pub mod auth;
@@ -191,12 +192,39 @@ async fn serve() {
     // never issues a query.
     observability::db_health::register_pool(app_state.db_pool.clone());
 
+    // Bounds on time, body size and concurrency. Read once, here, so a misconfigured
+    // value is logged at startup rather than discovered under load.
+    let guardrails = guardrails::Guardrails::from_env();
+
+    // The two Server-Sent Events endpoints, deliberately in a router of their own.
+    //
+    // These connections are *supposed* to stay open for the whole time the app is in
+    // the foreground — they carry the real-time half of sync, and hold themselves open
+    // with a 240-second keep-alive ping. A request deadline applied over the top of
+    // them would sever every client's stream on a fixed timer and turn real-time sync
+    // into 30-second polling, which is a far worse outage than the one the deadline is
+    // there to prevent, and a silent one.
+    //
+    // Splitting them out is what makes that structural. The timeout below applies to
+    // routers, not routes, so the only way an SSE endpoint can acquire a deadline is if
+    // someone moves it back into `api_routes` — which is a visible edit, not an
+    // accident. (Today's `TimeoutLayer` happens to bound the response *future* rather
+    // than the response *body*, so it would not in fact cut a stream that has already
+    // begun; that is an implementation detail of one layer, and not something the
+    // routing should quietly depend on.)
+    let api_stream_routes = Router::new()
+        .route("/sync/stream", axum::routing::get(routes::sync::stream::sync_stream_handler))
+        .route("/v1/sync/stream", axum::routing::get(routes::sync::stream::sync_stream_handler))
+        .route_layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            auth::middleware::require_auth,
+        ))
+        .with_state(app_state.clone());
+
     // api routes group
     let api_routes = Router::new()
         .route("/sync", axum::routing::post(routes::sync::sync_handler))
         .route("/sync/status", axum::routing::get(routes::sync::status::sync_status_handler))
-        .route("/sync/stream", axum::routing::get(routes::sync::stream::sync_stream_handler))
-        .route("/v1/sync/stream", axum::routing::get(routes::sync::stream::sync_stream_handler))
         .route("/categorize", axum::routing::post(routes::ai::handlers::categorize_item_handler))
 
         .route("/assign-icon", axum::routing::post(routes::ai::handlers::assign_todo_icon_handler))
@@ -212,7 +240,13 @@ async fn serve() {
             app_state.clone(),
             auth::middleware::require_auth,
         ))
-        .with_state(app_state.clone());
+        .with_state(app_state.clone())
+        // Outside `require_auth` on purpose: the auth middleware talks to Postgres, so
+        // it is itself something that can stall, and a deadline that starts after it
+        // would not bound the request at all. Then the SSE endpoints are merged back in
+        // underneath `/api`, having missed the layer.
+        .layer(guardrails.timeout_layer())
+        .merge(api_stream_routes);
 
     // Per-IP rate limits for the auth group. Built here rather than inside the router so the
     // limiter state can also be handed to the sweeper that drops buckets for addresses that
@@ -241,6 +275,15 @@ async fn serve() {
         )
         .route("/device/claim", axum::routing::post(auth::device::claim_handler))
         .route("/device/poll", axum::routing::post(auth::device::poll_handler))
+        // Every one of these calls out to Google or Postgres before it answers, so they
+        // get the same deadline as `/api`. None of them is long-lived: `/device/poll` is
+        // a short poll that returns immediately, not a hanging GET.
+        //
+        // `route_layer` here rather than `layer`, so the rate limiter below can sit
+        // outside it: refusing an over-quota caller is the cheapest answer this router
+        // can give, and it should not be queued behind a deadline that exists to bound
+        // work the caller is not going to be allowed to do.
+        .route_layer(guardrails.timeout_layer())
         // `route_layer`, not `layer`: a request that matches no auth route should 404 without
         // spending anyone's quota. Nothing outside this nest is metered — in particular
         // `/healthz/*` must stay free, or a throttled probe restarts the pod under load.
@@ -271,23 +314,41 @@ async fn serve() {
         ]);
 
     // Build our application with multiple routes
-    let app = Router::new()
+    let routed = Router::new()
+        // No deadline on these three: each is a constant string with no I/O behind it,
+        // so there is nothing for a timeout to bound.
         .route("/hello", get(|| async { "world" }))
         .route("/hellov2", get(|| async { "world2" }))
         // Superseded by `/healthz/live`. Kept until the cluster's probes have
         // been repointed, so this deploy cannot strand a rollout; delete after.
         .route("/healthcheck", get(|| async { "OK" }))
-        .merge(observability::health::health_routes(app_state.redis_client.clone()))
+        // `/healthz/ready` does reach for Redis, so it does get one — a probe that can
+        // hang forever is a probe that never reports unready.
+        .merge(
+            observability::health::health_routes(app_state.redis_client.clone())
+                .layer(guardrails.timeout_layer()),
+        )
         .nest("/api", api_routes)
         .nest("/auth", auth_routes)
-        .layer(cors)
-        // Read bottom-up: `Router::layer` makes the *last* call the outermost, so
-        // this runs SetRequestId → track_request → Propagate. The order matters and
-        // is not cosmetic — SetRequestId must precede the middleware that logs the
-        // id, and Propagate must sit inside both so it sees the stamped request on
-        // the way in and can copy the id onto the response on the way out.
-        // `track_request` is outside `require_auth`, so rejected requests are
-        // measured too.
+        .layer(cors);
+
+    // Read bottom-up: `Router::layer` makes the *last* call the outermost, so this
+    // runs SetRequestId → track_request → Propagate → guardrails → CORS → routes.
+    // The order matters and is not cosmetic — SetRequestId must precede the
+    // middleware that logs the id, and Propagate must sit inside both so it sees the
+    // stamped request on the way in and can copy the id onto the response on the way
+    // out. `track_request` is outside `require_auth`, so rejected requests are
+    // measured too.
+    //
+    // The guardrails go *inside* that trio for the same reason: the requests they
+    // refuse — 413 for an oversized body, 503 for a shed one, 500 for a caught panic —
+    // are exactly the ones an incident needs to see, and a request rejected outside
+    // `track_request` would be invisible to the metrics and carry no request id. They
+    // go *outside* CORS and everything below it because a panic guard that sits inside
+    // the code it guards guards nothing. `guardrails.apply` documents its own internal
+    // ordering.
+    let app = guardrails
+        .apply(routed)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(middleware::from_fn(observability::http::track_request))
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));

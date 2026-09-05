@@ -114,14 +114,14 @@ pub async fn sync_stream_handler(
             .and_then(|s| Uuid::parse_str(s).ok())
     });
 
-    // 0. Claim a concurrency slot before anything expensive. Each stream pins a
-    // dedicated Redis pub/sub connection for its whole lifetime, and accounts are
-    // free, so an uncapped endpoint lets one account exhaust Redis `maxclients` —
-    // which fails the Redis ping in `/healthz/ready` on *every* replica, not just
-    // the abuser's. Refusing here, ahead of the config query and the subscribe,
-    // also means a refused caller costs neither a database round trip nor a Redis
-    // connection. The guard is dropped on every exit path below, including the
-    // `?` returns, and finally by the stream itself when the client disconnects.
+    // 0. Claim a concurrency slot before anything expensive. Streams no longer cost
+    // a Redis connection apiece — they share one, see [`super::fanout`] — but they
+    // still cost a task, a buffered broadcast receiver and a snapshot query each,
+    // and accounts are free, so an uncapped endpoint still lets one account push a
+    // replica over. Refusing here, ahead of the config query and the registration,
+    // means a refused caller costs neither a database round trip nor a place in the
+    // fan-out. The guard is dropped on every exit path below, including the `?`
+    // returns, and finally by the stream itself when the client disconnects.
     let stream_slot = state
         .stream_slots
         .try_acquire(&user_id)
@@ -139,21 +139,34 @@ pub async fn sync_stream_handler(
         resolve_stream_device(&state.db_pool, &user_uuid, requested_device, query.scope.as_deref())
             .await?;
 
-    // 1. Subscribe to Redis Pub/Sub channels FIRST to prevent race conditions. The
+    // 1. Register with the shared subscriber FIRST to prevent race conditions. The
     // account-wide channel always; the device channel too when the stream resolved to a
     // device, which is where config writes for that tablet are published.
+    //
+    // `SyncFanout::subscribe` returns only once the process-wide connection has
+    // actually issued `SUBSCRIBE` to Redis (or has confirmed an existing subscription
+    // already covers this channel), so this is the same ordering barrier the old
+    // per-stream `pubsub.subscribe` was — see step 2. What has changed is the cost:
+    // the listener is a `broadcast` receiver on a connection shared by every stream in
+    // the process, not a Redis connection of its own.
     let channel_name = get_channel_name(&user_id);
-    let mut pubsub = state.redis_client.get_async_pubsub().await?;
-    pubsub.subscribe(&channel_name).await?;
+    let mut listeners = Vec::with_capacity(2);
+    listeners.push(state.sync_fanout.subscribe(&channel_name).await?);
     if let Some(device) = device_uuid {
-        pubsub.subscribe(&get_device_channel_name(&user_id, &device)).await?;
+        listeners.push(
+            state
+                .sync_fanout
+                .subscribe(&get_device_channel_name(&user_id, &device))
+                .await?,
+        );
     }
 
     // 2. Query the primary DB for the initial state: the configs this stream is about to
     // receive updates for. Scoped to the device the stream resolved to, account-wide
     // when it resolved to none — the same split the sync endpoint draws between a tablet and the cloud
-    // dashboard. Reading after the subscribe means a write landing in between is replayed
-    // as an event rather than lost.
+    // dashboard. Reading after the registration means a write landing in between is
+    // replayed as an event rather than lost: it is already in this stream's broadcast
+    // buffer by the time the snapshot returns, and the loop below drains it.
     let configs = fetch_config_snapshot(&state.db_pool, &user_uuid, device_uuid).await?;
     let initial_event = SyncSseEvent::InitialState {
         entity: "config".to_string(),
@@ -162,42 +175,41 @@ pub async fn sync_stream_handler(
     let initial_payload = serde_json::to_string(&initial_event)
         .unwrap_or_else(|_| "{}".to_string());
 
-    // Convert Redis PubSub stream into an async message stream
-    let pubsub_stream = pubsub.into_on_message();
+    // The two channels' listeners merge into one stream. Each carries its own
+    // registry reference count, so both are released together when this stream ends.
+    let events = futures_util::stream::select_all(listeners);
 
     // 3 & 4. Flush initial state down SSE stream, then listen to Redis Pub/Sub
     let stream = stream::unfold(
-        (Some(initial_payload), pubsub_stream, client_id, device_uuid),
-        |(initial, mut pubsub_stream, client_id, device_uuid)| async move {
+        (Some(initial_payload), events, client_id, device_uuid),
+        |(initial, mut events, client_id, device_uuid)| async move {
             if let Some(init_payload) = initial {
                 let event = Event::default().event("message").data(init_payload);
-                return Some((Ok(event), (None, pubsub_stream, client_id, device_uuid)));
+                return Some((Ok(event), (None, events, client_id, device_uuid)));
             }
 
-            while let Some(msg) = pubsub_stream.next().await {
-                if let Ok(payload_str) = msg.get_payload::<String>() {
-                    if let Ok(event) = serde_json::from_str::<SyncSseEvent>(&payload_str) {
-                        // Echo filtering logic: skip event if sender matches current client
-                        if let Some(ref current_client) = client_id {
-                            match &event {
-                                SyncSseEvent::DirectUpdate { sender_client_id, .. }
-                                | SyncSseEvent::Invalidate { sender_client_id, .. }
-                                    if sender_client_id.as_ref() == Some(current_client) =>
-                                {
-                                    continue;
-                                }
-                                _ => {}
+            while let Some(payload_str) = events.next().await {
+                if let Ok(event) = serde_json::from_str::<SyncSseEvent>(&payload_str) {
+                    // Echo filtering logic: skip event if sender matches current client
+                    if let Some(ref current_client) = client_id {
+                        match &event {
+                            SyncSseEvent::DirectUpdate { sender_client_id, .. }
+                            | SyncSseEvent::Invalidate { sender_client_id, .. }
+                                if sender_client_id.as_ref() == Some(current_client) =>
+                            {
+                                continue;
                             }
-                        }
-                        // A stream watching one tablet ignores events aimed at another,
-                        // which the account-wide channel can still carry.
-                        if !event_targets_device(&event, device_uuid) {
-                            continue;
+                            _ => {}
                         }
                     }
-                    let event = Event::default().event("message").data(payload_str);
-                    return Some((Ok(event), (None, pubsub_stream, client_id, device_uuid)));
+                    // A stream watching one tablet ignores events aimed at another,
+                    // which the account-wide channel can still carry.
+                    if !event_targets_device(&event, device_uuid) {
+                        continue;
+                    }
                 }
+                let event = Event::default().event("message").data(payload_str);
+                return Some((Ok(event), (None, events, client_id, device_uuid)));
             }
             None
         },

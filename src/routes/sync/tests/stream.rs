@@ -523,3 +523,232 @@ fn test_limit_errors_map_to_their_status_codes() {
         StatusCode::SERVICE_UNAVAILABLE
     );
 }
+
+// --- The shared Redis pub/sub connection ------------------------------------
+//
+// These drive `SyncFanout` through its test seam rather than a live Redis: the
+// manager task is the only part that needs a server, CI has none, and the parts
+// worth pinning — one subscription per channel however many streams want it, the
+// unsubscribe when the last one leaves, and the ordering the SSE handler's snapshot
+// race depends on — are all above it. One end-to-end test against a real Redis
+// follows, and skips when there is none, matching the tests above.
+
+use crate::routes::sync::fanout::testing::{stubbed_fanout, RedisOp};
+use crate::routes::sync::publisher::publish_user_event;
+
+const FANOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Two streams on one account cost **one** Redis subscription, not two — the whole
+/// point of the shared connection. The second registration must not reach Redis at
+/// all: the first stream's subscription already covers it.
+#[tokio::test]
+async fn test_two_streams_for_one_user_share_a_single_subscription() {
+    let (fanout, ops) = stubbed_fanout();
+    let channel = get_channel_name("user-1");
+
+    let first = fanout.subscribe(&channel).await.expect("first listener");
+    let second = fanout.subscribe(&channel).await.expect("second listener");
+
+    assert_eq!(fanout.listener_count(&channel), 2);
+    assert_eq!(
+        fanout.subscribed_channels(),
+        1,
+        "both streams must share one channel entry"
+    );
+    assert_eq!(
+        ops.ops(),
+        vec![RedisOp::Subscribe(channel.clone())],
+        "the second stream must not issue a second SUBSCRIBE"
+    );
+
+    drop((first, second));
+}
+
+/// One published event reaches every stream listening on the channel. Fan-out in
+/// process has to deliver what a per-connection subscribe used to deliver per
+/// socket.
+#[tokio::test]
+async fn test_one_event_reaches_every_listener_on_a_channel() {
+    let (fanout, _ops) = stubbed_fanout();
+    let channel = get_channel_name("user-1");
+
+    let mut first = fanout.subscribe(&channel).await.expect("first listener");
+    let mut second = fanout.subscribe(&channel).await.expect("second listener");
+
+    let event = SyncSseEvent::Invalidate {
+        entity: "config".to_string(),
+        sender_client_id: None,
+        device_uuid: None,
+    };
+    let payload = serde_json::to_string(&event).unwrap();
+    fanout.deliver_for_test(&channel, &payload);
+
+    for listener in [&mut first, &mut second] {
+        let received = tokio::time::timeout(FANOUT_TIMEOUT, listener.next())
+            .await
+            .expect("a listener should not have to wait for an already-published event")
+            .expect("the listener's stream should still be open");
+        assert_eq!(received, payload);
+    }
+}
+
+/// A stream that goes away releases its place, and the last one out takes the Redis
+/// subscription with it. Without this the shared connection would accumulate
+/// subscriptions for disconnected users — the same unbounded growth in a new place.
+#[tokio::test]
+async fn test_the_last_listener_to_leave_unsubscribes_the_channel() {
+    let (fanout, ops) = stubbed_fanout();
+    let channel = get_channel_name("user-1");
+
+    let first = fanout.subscribe(&channel).await.expect("first listener");
+    let second = fanout.subscribe(&channel).await.expect("second listener");
+
+    drop(first);
+    assert_eq!(
+        fanout.listener_count(&channel),
+        1,
+        "one stream leaving must not unregister the other"
+    );
+    assert_eq!(
+        ops.ops(),
+        vec![RedisOp::Subscribe(channel.clone())],
+        "a channel somebody is still listening to must stay subscribed"
+    );
+
+    drop(second);
+    assert_eq!(fanout.listener_count(&channel), 0);
+    assert_eq!(
+        fanout.subscribed_channels(),
+        0,
+        "the channel entry must be removed, not left behind at zero listeners"
+    );
+    assert_eq!(
+        ops.wait_for(2).await,
+        vec![
+            RedisOp::Subscribe(channel.clone()),
+            RedisOp::Unsubscribe(channel),
+        ]
+    );
+}
+
+/// The race the handler's ordering exists for: an event published after the stream
+/// registered but before its snapshot query returns must still be delivered, not
+/// fall down the gap between the two reads.
+#[tokio::test]
+async fn test_event_published_between_registration_and_snapshot_is_still_delivered() {
+    let (fanout, _ops) = stubbed_fanout();
+    let channel = get_channel_name("user-1");
+
+    // Step 1 of the handler: register.
+    let mut listener = fanout.subscribe(&channel).await.expect("listener");
+
+    // A write lands here — after the subscribe, before the snapshot.
+    let payload = serde_json::to_string(&SyncSseEvent::DirectUpdate {
+        entity: "config".to_string(),
+        key: "theme".to_string(),
+        value: json!("dark"),
+        sender_client_id: Some("someone-else".to_string()),
+        device_uuid: None,
+        is_deleted: false,
+    })
+    .unwrap();
+    fanout.deliver_for_test(&channel, &payload);
+
+    // Step 2: the snapshot query, which takes a while and is not polling the
+    // listener. The buffered event has to survive it.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let received = tokio::time::timeout(FANOUT_TIMEOUT, listener.next())
+        .await
+        .expect("the event published during the snapshot must not be lost")
+        .expect("the listener's stream should still be open");
+    assert_eq!(received, payload);
+}
+
+/// End to end over a real Redis: one shared connection, two streams for the same
+/// account, one publish, both fed. Skipped when no Redis is reachable — the same
+/// stance as the Pub/Sub test above.
+#[sqlx::test]
+async fn test_shared_connection_feeds_two_streams_end_to_end(pool: PgPool) {
+    let state = setup_state(pool);
+    if state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .is_err()
+    {
+        eprintln!("SKIPPING test_shared_connection_feeds_two_streams_end_to_end: no Redis");
+        return;
+    }
+
+    // A channel of its own, so a sibling test's traffic cannot be mistaken for ours.
+    let user_id = format!("user-{}", uuid::Uuid::new_v4());
+    let channel = get_channel_name(&user_id);
+
+    let mut first = state.sync_fanout.subscribe(&channel).await.expect("first");
+    let mut second = state.sync_fanout.subscribe(&channel).await.expect("second");
+    assert_eq!(
+        state.sync_fanout.listener_count(&channel),
+        2,
+        "two streams, one shared subscription"
+    );
+
+    let event = SyncSseEvent::Invalidate {
+        entity: "config".to_string(),
+        sender_client_id: None,
+        device_uuid: None,
+    };
+    publish_user_event(&state.redis_publisher, &user_id, &event)
+        .await
+        .expect("publish should reach Redis");
+
+    for listener in [&mut first, &mut second] {
+        let payload = tokio::time::timeout(FANOUT_TIMEOUT, listener.next())
+            .await
+            .expect("timed out waiting for the event on the shared connection")
+            .expect("the listener's stream should still be open");
+        assert_eq!(
+            serde_json::from_str::<SyncSseEvent>(&payload).unwrap(),
+            event
+        );
+    }
+
+    // And the account leaves nothing behind when both streams end.
+    drop((first, second));
+    assert_eq!(state.sync_fanout.listener_count(&channel), 0);
+}
+
+/// The single shared connection is a single point of failure, so what a listener
+/// sees when it drops is part of the contract: its stream **ends**, which ends the
+/// SSE response and sends the client back to reconnect into a fresh snapshot. That
+/// is the recovery the old per-stream connection got for free when its own socket
+/// died, and it is why a listener is never left holding a connection that has gone
+/// deaf. The registry is emptied with it, so nothing is left to leak.
+#[tokio::test]
+async fn test_losing_the_shared_connection_ends_every_listener() {
+    let (fanout, _ops) = stubbed_fanout();
+    let channel = get_channel_name("user-1");
+
+    let mut listener = fanout.subscribe(&channel).await.expect("listener");
+    fanout.drop_connection_for_test();
+
+    let ended = tokio::time::timeout(FANOUT_TIMEOUT, listener.next())
+        .await
+        .expect("the listener should be woken by the drop, not left hanging");
+    assert!(
+        ended.is_none(),
+        "a listener on a dead connection must end so the client reconnects"
+    );
+    assert_eq!(
+        fanout.subscribed_channels(),
+        0,
+        "the registry must not keep entries for a connection that is gone"
+    );
+
+    // And the fan-out is usable again once the manager reconnects.
+    let _reconnected = fanout
+        .subscribe(&channel)
+        .await
+        .expect("a stream opened after the drop should register again");
+    assert_eq!(fanout.listener_count(&channel), 1);
+}

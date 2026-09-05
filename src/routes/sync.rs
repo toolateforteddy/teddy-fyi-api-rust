@@ -25,6 +25,12 @@ pub use config::*;
 pub mod drawing;
 pub use drawing::*;
 
+pub mod fanout;
+pub use fanout::*;
+
+pub mod publish_conn;
+pub use publish_conn::*;
+
 pub mod publisher;
 pub use publisher::*;
 

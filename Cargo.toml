@@ -34,7 +34,7 @@ tower = { version = "0.5", features = ["limit", "load-shed", "util"] }
 tower-http = { version = "0.6.10", features = ["catch-panic", "cors", "limit", "request-id", "timeout", "trace", "util"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
 futures-util = "0.3"
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 sha2 = "0.11.0"

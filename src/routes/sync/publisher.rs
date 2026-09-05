@@ -1,7 +1,7 @@
 use crate::observability::http::{hash_user_id, log_hash_salt_from_env};
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::routes::sync::publish_conn::RedisPublisher;
 use crate::routes::sync::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,15 +124,14 @@ pub fn get_channel_name(user_id: &str) -> String {
 
 /// Publishes an SSE event payload to Redis Pub/Sub for a specific user after DB mutations commit.
 pub async fn publish_user_event(
-    redis_client: &redis::Client,
+    publisher: &RedisPublisher,
     user_id: &str,
     event: &SyncSseEvent,
 ) -> Result<(), AppError> {
     let payload = serde_json::to_string(event)?;
     let channel = get_channel_name(user_id);
 
-    let mut conn = redis_client.get_multiplexed_async_connection().await?;
-    conn.publish::<_, _, ()>(&channel, payload).await?;
+    publisher.publish(&channel, payload).await?;
     log_published(CHANNEL_KIND_USER, user_id, None, event);
     Ok(())
 }
@@ -147,7 +146,7 @@ pub fn get_device_channel_name(user_id: &str, device_uuid: &Uuid) -> String {
 
 /// Publishes an SSE event to a single device's Pub/Sub channel after DB mutations commit.
 pub async fn publish_device_event(
-    redis_client: &redis::Client,
+    publisher: &RedisPublisher,
     user_id: &str,
     device_uuid: &Uuid,
     event: &SyncSseEvent,
@@ -155,8 +154,7 @@ pub async fn publish_device_event(
     let payload = serde_json::to_string(event)?;
     let channel = get_device_channel_name(user_id, device_uuid);
 
-    let mut conn = redis_client.get_multiplexed_async_connection().await?;
-    conn.publish::<_, _, ()>(&channel, payload).await?;
+    publisher.publish(&channel, payload).await?;
     log_published(CHANNEL_KIND_DEVICE, user_id, Some(device_uuid), event);
     Ok(())
 }

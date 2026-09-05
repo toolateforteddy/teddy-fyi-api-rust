@@ -18,6 +18,16 @@ pub struct AppState {
     /// [`crate::routes::ai::gemini::build_http_client`], which also sets the
     /// outbound timeout.
     pub http_client: reqwest::Client,
+    /// The process-wide Redis Pub/Sub subscriber every SSE stream fans out from.
+    ///
+    /// One connection for the whole replica rather than one per open stream: see
+    /// [`crate::routes::sync::fanout`] for why the per-stream version was a
+    /// service-wide hazard and how the ordering the handler depends on survives
+    /// the change.
+    pub sync_fanout: Arc<crate::routes::sync::fanout::SyncFanout>,
+    /// The cached connection sync events are published *on*, so a write no longer
+    /// dials Redis per event. See [`crate::routes::sync::publish_conn`].
+    pub redis_publisher: Arc<crate::routes::sync::publish_conn::RedisPublisher>,
     /// `Domain` attribute for the `access_token` cookie, from `COOKIE_DOMAIN`. Empty means
     /// no `Domain` attribute at all — a host-only cookie, and a perfectly ordinary
     /// single-host deployment.

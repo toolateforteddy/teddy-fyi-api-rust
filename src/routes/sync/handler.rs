@@ -509,7 +509,7 @@ pub async fn sync_handler(
             is_deleted: broadcast.item.is_deleted,
         };
         if let Err(err) = publish_device_event(
-            &state.redis_client,
+            &state.redis_publisher,
             &claims.sub,
             &broadcast.device_uuid,
             &event,

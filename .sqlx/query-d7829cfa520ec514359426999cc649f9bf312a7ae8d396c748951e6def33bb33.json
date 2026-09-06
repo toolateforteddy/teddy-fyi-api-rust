@@ -1,0 +1,63 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE configs SET version = v.version, client_uuid = $1, last_modified = $2, sync_state = 'SYNCED' FROM UNNEST($3::uuid[], $4::int4[], $5::uuid[]) AS v(id, version, device_uuid) WHERE configs.id = v.id AND configs.user_id = $6 AND configs.device_uuid = v.device_uuid RETURNING configs.id, configs.device_uuid, configs.version, configs.is_deleted, configs.last_modified, configs.key, configs.value",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "device_uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_deleted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_modified",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "value",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "UuidArray",
+        "Int4Array",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d7829cfa520ec514359426999cc649f9bf312a7ae8d396c748951e6def33bb33"
+}

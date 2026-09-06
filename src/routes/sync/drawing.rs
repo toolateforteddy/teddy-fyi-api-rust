@@ -1,6 +1,7 @@
 use crate::routes::sync::device::{
     ItemDeviceRule, registered_device_set, resolve_item_device_cached,
 };
+use crate::routes::sync::batching::RunTracker;
 use crate::routes::sync::deletes::ack_unsynced_delete;
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
@@ -207,6 +208,143 @@ fn peek_delta_device(explicit: Option<Uuid>, data: Option<&serde_json::Value>) -
     })
 }
 
+/// The kinds of write these two processors issue. A run may only contain one of them; see
+/// `crate::routes::sync::batching`.
+#[derive(PartialEq, Eq)]
+enum WriteKind {
+    Upsert,
+    VersionBump,
+    Delete,
+}
+
+/// The column vectors for the run currently being accumulated: one `Vec` per column that
+/// varies across rows, because that is the shape `UNNEST($1::uuid[], $2::int4[], ...)` zips
+/// back into rows. `user_id`, `client_uuid` and `last_modified` are the same for every row
+/// this request writes, so they stay scalar parameters.
+///
+/// Shared by `process_drawing_changes` and `process_drawing_sync_items`: the two loops
+/// differ in what they read, not in what they write.
+#[derive(Default)]
+struct Pending {
+    up_id: Vec<Uuid>,
+    up_device_uuid: Vec<Uuid>,
+    up_version: Vec<i32>,
+    up_is_deleted: Vec<bool>,
+    up_client_last_modified: Vec<i64>,
+    up_created_at: Vec<i64>,
+    up_data: Vec<serde_json::Value>,
+
+    bump_id: Vec<Uuid>,
+    bump_version: Vec<i32>,
+
+    del_id: Vec<Uuid>,
+    del_version: Vec<i32>,
+}
+
+impl Pending {
+    fn is_empty(&self) -> bool {
+        self.up_id.is_empty() && self.bump_id.is_empty() && self.del_id.is_empty()
+    }
+
+    /// Issues the buffered run — at most one statement per write kind, and in practice
+    /// exactly one, because a run only ever holds a single kind.
+    async fn flush(
+        &mut self,
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: &Uuid,
+        client_id: &Uuid,
+        server_ms: i64,
+    ) -> Result<(), AppError> {
+        if !self.up_id.is_empty() {
+            // The `WHERE drawings.user_id = EXCLUDED.user_id` guard on the conflict target
+            // is carried over verbatim from the per-item statement, and matters for the
+            // same reason: drawing ids are hashed from client strings when they are not
+            // UUIDs, so the same id can arrive from two different accounts, and without it
+            // one account's upload would overwrite the other's row.
+            sqlx::query!(
+                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, created_at, data) \
+                 SELECT v.id, $1, v.device_uuid, $2, v.version, v.is_deleted, $3, v.client_last_modified, 'SYNCED'::text::sync_state, v.created_at, v.data \
+                 FROM UNNEST($4::uuid[], $5::uuid[], $6::int4[], $7::bool[], $8::int8[], $9::int8[], $10::jsonb[]) \
+                      AS v(id, device_uuid, version, is_deleted, client_last_modified, created_at, data) \
+                 ON CONFLICT (id) DO UPDATE SET \
+                     device_uuid = EXCLUDED.device_uuid, \
+                     client_uuid = EXCLUDED.client_uuid, \
+                     version = EXCLUDED.version, \
+                     is_deleted = EXCLUDED.is_deleted, \
+                     last_modified = EXCLUDED.last_modified, \
+                     client_last_modified = EXCLUDED.client_last_modified, \
+                     sync_state = EXCLUDED.sync_state, \
+                     data = EXCLUDED.data \
+                 WHERE drawings.user_id = EXCLUDED.user_id",
+                user_id,
+                client_id,
+                server_ms,
+                &self.up_id,
+                &self.up_device_uuid,
+                &self.up_version,
+                &self.up_is_deleted,
+                &self.up_client_last_modified,
+                &self.up_created_at,
+                &self.up_data
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            self.up_id.clear();
+            self.up_device_uuid.clear();
+            self.up_version.clear();
+            self.up_is_deleted.clear();
+            self.up_client_last_modified.clear();
+            self.up_created_at.clear();
+            self.up_data.clear();
+        }
+
+        if !self.bump_id.is_empty() {
+            sqlx::query!(
+                "UPDATE drawings SET version = v.version, client_uuid = $1, last_modified = $2, sync_state = 'SYNCED' \
+                 FROM UNNEST($3::uuid[], $4::int4[]) AS v(id, version) \
+                 WHERE drawings.id = v.id AND drawings.user_id = $5",
+                client_id,
+                server_ms,
+                &self.bump_id,
+                &self.bump_version,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            self.bump_id.clear();
+            self.bump_version.clear();
+        }
+
+        if !self.del_id.is_empty() {
+            // No `RETURNING` here, unlike the batched deletes in the grocery and todo
+            // processors: those derive the new version in SQL (`version + 1`) and have to
+            // read it back, whereas every drawing version comes from `advance_version` in
+            // Rust and the caller already knows it. A delete for a row the server does not
+            // have never reaches this buffer — the `version_of` lookup above answers `None`
+            // and the caller acknowledges it directly.
+            sqlx::query!(
+                "UPDATE drawings SET is_deleted = TRUE, version = v.version, client_uuid = $1, last_modified = $2, sync_state = 'PENDING_DELETE' \
+                 FROM UNNEST($3::uuid[], $4::int4[]) AS v(id, version) \
+                 WHERE drawings.id = v.id AND drawings.user_id = $5",
+                client_id,
+                server_ms,
+                &self.del_id,
+                &self.del_version,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            self.del_id.clear();
+            self.del_version.clear();
+        }
+
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn process_drawing_changes(
     tx: &mut Transaction<'_, Postgres>,
@@ -245,9 +383,21 @@ pub async fn process_drawing_changes(
     let registered = registered_device_set(tx, user_id, device_rule, &devices).await?;
     let mut batch = DrawingBatch::load(tx, user_id, device_filter, &ids, &blob_ids).await?;
 
+    let mut pending = Pending::default();
+    let mut runs: RunTracker<WriteKind> = RunTracker::new();
+
     for change in changes {
         let change_id = &change.id;
         let change_uuid = super::remote_mutations::parse_or_hash_uuid(change_id);
+
+        // Before anything reads this row. `DrawingBatch` marks an id stale once written
+        // and re-reads it from the database, so a buffered write for the same id has to be
+        // in the database by the time that re-read happens or it would see the pre-write
+        // version. See `RunTracker::contains`.
+        if runs.contains(change_id) {
+            pending.flush(tx, user_id, client_id, server_ms).await?;
+            runs.clear();
+        }
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing drawing {}", change_id);
@@ -329,33 +479,18 @@ pub async fn process_drawing_changes(
                             // Drawing ids are hashed from client strings when they are not UUIDs, so the same
                             // id can arrive from two different accounts. Without the guard on the conflict
                             // target, one account's upload would overwrite the other's row.
-                            sqlx::query!(
-                                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, created_at, data) \
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::sync_state, $10, $11) \
-                                 ON CONFLICT (id) DO UPDATE SET \
-                                     device_uuid = EXCLUDED.device_uuid, \
-                                     client_uuid = EXCLUDED.client_uuid, \
-                                     version = EXCLUDED.version, \
-                                     is_deleted = EXCLUDED.is_deleted, \
-                                     last_modified = EXCLUDED.last_modified, \
-                                     client_last_modified = EXCLUDED.client_last_modified, \
-                                     sync_state = EXCLUDED.sync_state, \
-                                     data = EXCLUDED.data \
-                                 WHERE drawings.user_id = EXCLUDED.user_id",
-                                change_uuid,
-                                user_id,
-                                device_uuid,
-                                client_id,
-                                next_version,
-                                item.is_deleted,
-                                server_ms,
-                                item.last_modified,
-                                "SYNCED",
-                                item.created_at,
-                                item.data
-                            )
-                            .execute(&mut **tx)
-                            .await?;
+                            if runs.needs_flush(&WriteKind::Upsert, change_id) {
+                                pending.flush(tx, user_id, client_id, server_ms).await?;
+                                runs.clear();
+                            }
+                            pending.up_id.push(change_uuid);
+                            pending.up_device_uuid.push(device_uuid);
+                            pending.up_version.push(next_version);
+                            pending.up_is_deleted.push(item.is_deleted);
+                            pending.up_client_last_modified.push(item.last_modified);
+                            pending.up_created_at.push(item.created_at);
+                            pending.up_data.push(item.data.clone());
+                            runs.record(WriteKind::Upsert, change_id.clone());
 
                             batch.note_write(change_uuid);
 
@@ -380,16 +515,13 @@ pub async fn process_drawing_changes(
                         // `last_modified` moves with the write, here as everywhere else:
                         // it is the cursor the account's other devices poll against, so a
                         // row that changes without it changing is a change they never see.
-                        sqlx::query!(
-                            "UPDATE drawings SET version = $1, client_uuid = $2, last_modified = $3, sync_state = 'SYNCED' WHERE id = $4 AND user_id = $5",
-                            next_version,
-                            client_id,
-                            server_ms,
-                            change_uuid,
-                            user_id
-                        )
-                        .execute(&mut **tx)
-                        .await?;
+                        if runs.needs_flush(&WriteKind::VersionBump, change_id) {
+                            pending.flush(tx, user_id, client_id, server_ms).await?;
+                            runs.clear();
+                        }
+                        pending.bump_id.push(change_uuid);
+                        pending.bump_version.push(next_version);
+                        runs.record(WriteKind::VersionBump, change_id.clone());
 
                         batch.note_write(change_uuid);
 
@@ -410,16 +542,13 @@ pub async fn process_drawing_changes(
                     tracing::info!("Applying drawing soft-delete for {}. Next version: {}", change_id, next_version);
                     // Stamped for the same reason as the update above: a soft-delete the
                     // cursor cannot see is a deletion the sibling tablet never applies.
-                    sqlx::query!(
-                        "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE' WHERE id = $4 AND user_id = $5",
-                        next_version,
-                        client_id,
-                        server_ms,
-                        change_uuid,
-                        user_id
-                    )
-                    .execute(&mut **tx)
-                    .await?;
+                    if runs.needs_flush(&WriteKind::Delete, change_id) {
+                        pending.flush(tx, user_id, client_id, server_ms).await?;
+                        runs.clear();
+                    }
+                    pending.del_id.push(change_uuid);
+                    pending.del_version.push(next_version);
+                    runs.record(WriteKind::Delete, change_id.clone());
 
                     batch.note_write(change_uuid);
 
@@ -444,6 +573,12 @@ pub async fn process_drawing_changes(
             }
         }
     }
+    // The last run has no successor to trigger it.
+    if !pending.is_empty() {
+        pending.flush(tx, user_id, client_id, server_ms).await?;
+        runs.clear();
+    }
+
     Ok(())
 }
 
@@ -529,8 +664,19 @@ pub async fn process_drawing_sync_items(
     let registered = registered_device_set(tx, user_id, device_rule, &devices).await?;
     let mut batch = DrawingBatch::load(tx, user_id, device_filter, &ids, &[]).await?;
 
+    let mut pending = Pending::default();
+    let mut runs: RunTracker<WriteKind> = RunTracker::new();
+
     for item in items {
         let is_delete = item.is_deleted || item.sync_state == "PENDING_DELETE";
+        let item_key = item.id.to_string();
+
+        // Same reason as `process_drawing_changes`: get a buffered write for this id into
+        // the database before the stale-marked cache re-reads it.
+        if runs.contains(&item_key) {
+            pending.flush(tx, user_id, client_id, server_ms).await?;
+            runs.clear();
+        }
 
         if is_delete {
             let existing = batch.version_of(tx, item.id).await?;
@@ -538,16 +684,13 @@ pub async fn process_drawing_sync_items(
             if let Some(version) = existing {
                 let next_version = advance_version("Drawing", &item.id.to_string(), version)?;
                 tracing::info!("Applying drawing soft-delete for {}. Next version: {}", item.id, next_version);
-                sqlx::query!(
-                    "UPDATE drawings SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE'::text::sync_state WHERE id = $4 AND user_id = $5",
-                    next_version,
-                    client_id,
-                    server_ms,
-                    item.id,
-                    user_id
-                )
-                .execute(&mut **tx)
-                .await?;
+                if runs.needs_flush(&WriteKind::Delete, &item_key) {
+                    pending.flush(tx, user_id, client_id, server_ms).await?;
+                    runs.clear();
+                }
+                pending.del_id.push(item.id);
+                pending.del_version.push(next_version);
+                runs.record(WriteKind::Delete, item_key.clone());
 
                 batch.note_write(item.id);
             }
@@ -593,39 +736,31 @@ pub async fn process_drawing_sync_items(
             // Drawing ids are hashed from client strings when they are not UUIDs, so the same
             // id can arrive from two different accounts. Without the guard on the conflict
             // target, one account's upload would overwrite the other's row.
-            sqlx::query!(
-                "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, created_at, data) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::sync_state, $10, $11) \
-                 ON CONFLICT (id) DO UPDATE SET \
-                     device_uuid = EXCLUDED.device_uuid, \
-                     client_uuid = EXCLUDED.client_uuid, \
-                     version = EXCLUDED.version, \
-                     is_deleted = EXCLUDED.is_deleted, \
-                     last_modified = EXCLUDED.last_modified, \
-                     client_last_modified = EXCLUDED.client_last_modified, \
-                     sync_state = EXCLUDED.sync_state, \
-                     data = EXCLUDED.data \
-                 WHERE drawings.user_id = EXCLUDED.user_id",
-                item.id,
-                user_id,
-                device_uuid,
-                client_id,
-                next_version,
-                item.is_deleted,
-                server_ms,
-                item.last_modified,
-                "SYNCED",
-                item.created_at,
-                item.data
-            )
-            .execute(&mut **tx)
-            .await?;
+            if runs.needs_flush(&WriteKind::Upsert, &item_key) {
+                pending.flush(tx, user_id, client_id, server_ms).await?;
+                runs.clear();
+            }
+            pending.up_id.push(item.id);
+            pending.up_device_uuid.push(device_uuid);
+            pending.up_version.push(next_version);
+            pending.up_is_deleted.push(item.is_deleted);
+            pending.up_client_last_modified.push(item.last_modified);
+            pending.up_created_at.push(item.created_at);
+            pending.up_data.push(item.data.clone());
+            runs.record(WriteKind::Upsert, item_key.clone());
 
             batch.note_write(item.id);
 
             success_uuids.push(item.id);
         }
     }
+
+    // The last run has no successor to trigger it.
+    if !pending.is_empty() {
+        pending.flush(tx, user_id, client_id, server_ms).await?;
+        runs.clear();
+    }
+
     Ok(())
 }
 

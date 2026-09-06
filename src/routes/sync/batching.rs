@@ -73,6 +73,21 @@ impl<K: PartialEq> RunTracker<K> {
         }
     }
 
+    /// Whether the buffered run already holds a write for `id`, whatever its kind.
+    ///
+    /// `needs_flush` answers the same question for a write that is about to be buffered.
+    /// This one exists for the *reads*: `config.rs` and `drawing.rs` cache their prefetched
+    /// rows and mark an id stale once written, so the next lookup for it goes back to the
+    /// database. That was exact while every write landed before the next read, and
+    /// deferring writes into runs breaks it — the re-read would return the row as it was
+    /// before the buffered write, and the second write would be numbered from a version
+    /// that is already spent. So those two processors flush whenever this returns true,
+    /// *before* consulting their cache, which puts the row in the database in time for the
+    /// re-read to see it.
+    pub fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
     /// Notes that `(kind, id)` has been buffered into the current run.
     pub fn record(&mut self, kind: K, id: String) {
         self.kind = Some(kind);

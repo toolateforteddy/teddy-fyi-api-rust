@@ -162,7 +162,7 @@ pub async fn reap_stale_users(
             Err(err) => {
                 summary.failed += 1;
                 tracing::error!(
-                    user_id = %user.user_id,
+                    user_hash = %hash_reaped_user(&user.user_id),
                     "Failed to delete stale account, leaving it for the next sweep: {:?}",
                     err
                 );
@@ -172,6 +172,20 @@ pub async fn reap_stale_users(
 
     tracing::info!(summary = ?summary, "Stale account sweep finished");
     Ok(summary)
+}
+
+/// Names a reaped account in the logs without writing the account down.
+///
+/// The sharp edge here rather than anywhere else: this job's whole purpose is erasure, so
+/// a sweep that logged the subjects it deleted would leave, in the one store no erasure
+/// path can reach, a list of exactly the users this service promised to forget. Same
+/// digest as everywhere else, read from the environment because a subcommand has no
+/// `AppState`.
+fn hash_reaped_user(user_id: &str) -> String {
+    crate::observability::http::hash_user_id(
+        user_id,
+        &crate::observability::http::log_hash_salt_from_env(),
+    )
 }
 
 /// Erases one account, or rolls the erase back when dry-running so the logged counts are
@@ -188,7 +202,7 @@ async fn reap_one(
     if dry_run {
         tx.rollback().await?;
         tracing::info!(
-            user_id = %user.user_id,
+            user_hash = %hash_reaped_user(&user.user_id),
             last_activity = %user.last_activity,
             would_delete = ?deleted,
             "DRY RUN: stale account left intact"
@@ -198,7 +212,7 @@ async fn reap_one(
 
     tx.commit().await?;
     tracing::info!(
-        user_id = %user.user_id,
+        user_hash = %hash_reaped_user(&user.user_id),
         last_activity = %user.last_activity,
         deleted = ?deleted,
         "Deleted stale account"

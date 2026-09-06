@@ -1089,8 +1089,9 @@ pub async fn fetch_config_download(
         Page::Truncated { next_cursor_ms } => Some(next_cursor_ms),
         Page::WholeMillisecond { ms } => {
             tracing::warn!(
-                "More than a page of configs for user {} share last_modified {}; serving that millisecond whole",
-                user_id, ms
+                user_hash = %hash_sync_user(user_id),
+                last_modified = ms,
+                "More than a page of configs share one last_modified; serving that millisecond whole"
             );
             rows = fetch_config_page(tx, user_id, client_id, device_filter, ms - 1, Some(ms), is_initial_sync, i64::MAX).await?;
             Some(ms)

@@ -179,6 +179,36 @@ else
          "See CLAUDE.md constraint 5."
 fi
 
+# A second tripwire for the same constraint, over the whole tree rather than the
+# sync path: no tracing call site may name a user by the raw identifier. The
+# emitted-event tests cover the branches they exercise; this covers the call site
+# nobody wrote a test for, which is how `refresh_handler` came to log the raw
+# Google subject on fourteen lines with the sync guard green the whole time.
+# Textual and therefore fallible -- it knows `user_id = %x` and "for user {}", not
+# a raw id reached by some other spelling -- but those two are the shapes the
+# repo actually wrote. `dev_bypass.rs` is exempt: constraint 1 keeps that file's
+# `dev-auth` gate out of every shipped binary, so its warning cannot reach Cloud
+# Logging, and it is the one line where a local developer needs the id it was
+# handed.
+CHECKS=$((CHECKS + 1))
+RAW_USER_LOGS=$(grep -rn --include='*.rs' \
+    -e 'user_id = %' \
+    -e 'for user {}' \
+    src/ 2>/dev/null \
+    | grep -v '^src/auth/dev_bypass.rs:' \
+    | grep -v '/tests\?\.rs:' \
+    | grep -v '^src/routes/sync/tests/' || true)
+if [ -z "$RAW_USER_LOGS" ]; then
+    pass "no log call site names a user by the raw identifier"
+else
+    fail "a log line names a user by the raw identifier" \
+         "Cloud Logging is reachable by neither DELETE /api/user/data nor" \
+         "jobs::reap_stale_users, so this is a copy of a user identifier that no" \
+         "erasure path can delete. Log observability::http::hash_user_id(id, salt) as" \
+         "user_hash instead. See CLAUDE.md constraint 5." ""
+    findings "$RAW_USER_LOGS"
+fi
+
 # --- 6. No manifest names a moving image tag ----------------------------------
 #
 # Not one of CLAUDE.md's five, but the same shape of failure: nothing lints it and

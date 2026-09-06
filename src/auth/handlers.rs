@@ -452,9 +452,21 @@ pub async fn refresh_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshRequest>,
 ) -> Result<Response, Response> {
+    // Constraint: no identifier reaches the logs raw. `payload.user_id` is the raw Google
+    // subject, and Cloud Logging is reachable by neither `DELETE /api/user/data` nor
+    // `jobs::reap_stale_users` -- so a subject logged here is a copy of user-identifying
+    // data that no erasure path can ever delete. Every line below names the user by the
+    // same salted digest the `http_request` line and the sync path already use, which
+    // keeps a failing refresh correlatable with that request line while leaving nothing
+    // identifying behind. Computed once: this endpoint logs on most of its paths.
+    let user_hash = crate::observability::http::hash_user_id(
+        &payload.user_id,
+        &crate::observability::http::log_hash_salt(&state.jwt_secret),
+    );
+
     let mut tx = state.db_pool.begin().await.map_err(|e| {
         tracing::error!(
-            user_id = %payload.user_id,
+            user_hash = %user_hash,
             client_uuid = %payload.client_uuid,
             db_error = ?e,
             "Failed to start transaction"
@@ -471,7 +483,7 @@ pub async fn refresh_handler(
         payload.client_uuid
     ).fetch_optional(&mut *tx).await.map_err(|e| {
         tracing::error!(
-            user_id = %payload.user_id,
+            user_hash = %user_hash,
             client_uuid = %payload.client_uuid,
             db_error = ?e,
             "Database error during refresh"
@@ -484,7 +496,7 @@ pub async fn refresh_handler(
         Some(s) => s,
         None => {
             tracing::info!(
-                user_id = %payload.user_id,
+                user_hash = %user_hash,
                 client_uuid = %payload.client_uuid,
                 "Refresh failed: No active session found in database"
             );
@@ -503,7 +515,7 @@ pub async fn refresh_handler(
     if is_current {
         if session.expires_at < chrono::Utc::now() {
             tracing::info!(
-                user_id = %payload.user_id,
+                user_hash = %user_hash,
                 client_uuid = %payload.client_uuid,
                 expires_at = ?session.expires_at,
                 server_time = ?chrono::Utc::now(),
@@ -527,7 +539,7 @@ pub async fn refresh_handler(
             let age_secs = age.num_seconds();
             if age_secs > REFRESH_GRACE_SECS {
                 tracing::warn!(
-                    user_id = %payload.user_id,
+                    user_hash = %user_hash,
                     client_uuid = %payload.client_uuid,
                     rotated_at = ?rotated_at,
                     age_seconds = age_secs,
@@ -550,7 +562,7 @@ pub async fn refresh_handler(
 
             if session.expires_at < chrono::Utc::now() {
                 tracing::info!(
-                    user_id = %payload.user_id,
+                    user_hash = %user_hash,
                     client_uuid = %payload.client_uuid,
                     expires_at = ?session.expires_at,
                     rotated_at = ?rotated_at,
@@ -577,7 +589,7 @@ pub async fn refresh_handler(
             // an old token of unbounded age; the honest client pays one sign-in. The NULL
             // itself is a bug on our side, hence error rather than warn.
             tracing::error!(
-                user_id = %payload.user_id,
+                user_hash = %user_hash,
                 client_uuid = %payload.client_uuid,
                 "Data consistency: old refresh token matched but rotated_at is NULL. Cannot prove the token is inside the grace window, so invalidating this session."
             );
@@ -618,7 +630,7 @@ pub async fn refresh_handler(
         if failed_attempts >= FAILED_REFRESH_ALERT_THRESHOLD {
             auth_metrics::record_refresh_bruteforce_alert();
             tracing::warn!(
-                user_id = %payload.user_id,
+                user_hash = %user_hash,
                 client_uuid = %payload.client_uuid,
                 failed_refresh_attempts = failed_attempts,
                 "Refresh rejected: {} consecutive unrecognised refresh tokens for this session. Session left intact -- an unauthenticated caller must never be able to delete it -- but this looks like brute force.",
@@ -626,7 +638,7 @@ pub async fn refresh_handler(
             );
         } else {
             tracing::warn!(
-                user_id = %payload.user_id,
+                user_hash = %user_hash,
                 client_uuid = %payload.client_uuid,
                 provided_token_length = payload.refresh_token.len(),
                 has_old_hash = session.old_refresh_token_hash.is_some(),
@@ -676,7 +688,7 @@ pub async fn refresh_handler(
     )
     .map_err(|e| {
         tracing::error!(
-            user_id = %payload.user_id,
+            user_hash = %user_hash,
             client_uuid = %payload.client_uuid,
             token_error = ?e,
             "Failed to generate access token during refresh"
@@ -706,7 +718,7 @@ pub async fn refresh_handler(
         payload.client_uuid
     ).execute(&mut *tx).await.map_err(|e| {
         tracing::error!(
-            user_id = %payload.user_id,
+            user_hash = %user_hash,
             client_uuid = %payload.client_uuid,
             db_error = ?e,
             "Failed to rotate token"
@@ -728,7 +740,7 @@ pub async fn refresh_handler(
     .await
     .map_err(|e| {
         tracing::error!(
-            user_id = %payload.user_id,
+            user_hash = %user_hash,
             db_error = ?e,
             "Failed to read the surrogate id during refresh"
         );
@@ -740,7 +752,7 @@ pub async fn refresh_handler(
 
     tx.commit().await.map_err(|e| {
         tracing::error!(
-            user_id = %payload.user_id,
+            user_hash = %user_hash,
             client_uuid = %payload.client_uuid,
             db_error = ?e,
             "Failed to commit transaction"
@@ -763,7 +775,7 @@ pub async fn refresh_handler(
             header::HeaderValue::from_str(&cookie_header_value)
                 .map_err(|e| {
                     tracing::error!(
-                        user_id = %payload.user_id,
+                        user_hash = %user_hash,
                         client_uuid = %payload.client_uuid,
                         header_error = ?e,
                         "Failed to set access token cookie header"

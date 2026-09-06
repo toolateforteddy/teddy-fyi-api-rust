@@ -445,10 +445,17 @@ pub async fn claim_for_user(
     raw_user_code: &str,
     product: Option<Product>,
 ) -> Result<StatusCode, StatusCode> {
+    // See `refresh_handler`: the raw subject never reaches the logs, because Cloud Logging
+    // is outside the reach of every erasure path this service has.
+    let user_hash = crate::observability::http::hash_user_id(
+        user_id,
+        &crate::observability::http::log_hash_salt(&state.jwt_secret),
+    );
+
     if claim_failures_exhausted(state, user_id).await.inspect_err(|_| {
         auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_ERROR);
     })? {
-        tracing::warn!(user_id = %user_id, "Device claim rate limit reached");
+        tracing::warn!(user_hash = %user_hash, "Device claim rate limit reached");
         auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_RATE_LIMITED);
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
@@ -494,7 +501,7 @@ pub async fn claim_for_user(
     match claimed {
         Some(row) => {
             tracing::info!(
-                user_id = %user_id,
+                user_hash = %user_hash,
                 client_uuid = %row.client_uuid,
                 "Device authorization claimed"
             );
@@ -558,7 +565,13 @@ async fn record_claim_failure(state: &AppState, user_id: &str, user_code: &str) 
         tracing::error!("Failed to increment device authorization attempts: {:?}", e);
     }
 
-    tracing::info!(user_id = %user_id, "Device claim failed");
+    tracing::info!(
+        user_hash = %crate::observability::http::hash_user_id(
+            user_id,
+            &crate::observability::http::log_hash_salt(&state.jwt_secret),
+        ),
+        "Device claim failed"
+    );
 }
 
 /// `POST /auth/device/poll` — unauthenticated. The tablet's side of the handshake.
@@ -712,7 +725,10 @@ pub async fn poll_handler(
     auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_AUTHORIZED);
 
     tracing::info!(
-        user_id = %user_id,
+        user_hash = %crate::observability::http::hash_user_id(
+            &user_id,
+            &crate::observability::http::log_hash_salt(&state.jwt_secret),
+        ),
         client_uuid = %payload.client_uuid,
         "Device authorization consumed"
     );

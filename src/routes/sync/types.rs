@@ -4,6 +4,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Names an account in a sync-path log line without writing the account down.
+///
+/// The sync side carries the *derived* identity — `parse_or_hash_uuid` of the Google
+/// subject, the key `configs`, `drawings` and `devices` are stored under
+/// (`context/2026-09-05_user_identity_derivation.md`). Derived is not anonymous: one
+/// value still names one account for as long as the account exists, so it belongs in
+/// Cloud Logging no more than the subject does. Same salted digest and same
+/// `user_hash` field as `observability::http::track_request` and
+/// `sync::publisher::log_published`, so the sync lines correlate with the request line
+/// that produced them.
+pub(crate) fn hash_sync_user(user_id: &Uuid) -> String {
+    crate::observability::http::hash_user_id(&user_id.to_string(), &log_hash_salt_from_env())
+}
+
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

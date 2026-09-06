@@ -372,9 +372,9 @@ pub async fn sync_handler(
                 // host it happens to run on, which is not what is being written to.
                 let request_device = if scope == SyncScope::ScribbleKeepCloud {
                     tracing::debug!(
-                        "Cloud sync for user {} from client {}; device comes from each row",
-                        user_uuid,
-                        client_uuid
+                        user_hash = %hash_sync_user(&user_uuid),
+                        client_uuid = %client_uuid,
+                        "Cloud sync; device comes from each row"
                     );
                     None
                 } else {

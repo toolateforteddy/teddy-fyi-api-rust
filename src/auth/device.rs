@@ -31,6 +31,7 @@ use sha2::{Digest, Sha256};
 
 use crate::auth::handlers::{issue_session, AuthResponse};
 use crate::auth::product::Product;
+use crate::auth::metrics as auth_metrics;
 use crate::state::AppState;
 
 /// Characters a `user_code` is drawn from, written out in the order the spec gives them
@@ -277,9 +278,11 @@ pub async fn start_handler(
     // that discovers how long they are. Counted in bytes rather than characters because
     // bytes are what the storage and the log line actually cost.
     if payload.client_uuid.len() > MAX_CLIENT_UUID_LEN {
+        auth_metrics::record_device_start(auth_metrics::DEVICE_START_INVALID_REQUEST);
         return Err(StatusCode::BAD_REQUEST);
     }
     if payload.app.as_ref().is_some_and(|app| app.len() > MAX_APP_LEN) {
+        auth_metrics::record_device_start(auth_metrics::DEVICE_START_INVALID_REQUEST);
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -298,6 +301,7 @@ pub async fn start_handler(
     .await
     .map_err(|e| {
         tracing::error!("Failed to count outstanding device authorizations: {:?}", e);
+        auth_metrics::record_device_start(auth_metrics::DEVICE_START_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -306,6 +310,7 @@ pub async fn start_handler(
             client_uuid = %payload.client_uuid,
             "Device start refused: outstanding authorization cap reached"
         );
+        auth_metrics::record_device_start(auth_metrics::DEVICE_START_CAPPED);
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -330,6 +335,7 @@ pub async fn start_handler(
         .await
         .map_err(|e| {
             tracing::error!("Failed to retire expired device authorization: {:?}", e);
+            auth_metrics::record_device_start(auth_metrics::DEVICE_START_ERROR);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -349,6 +355,7 @@ pub async fn start_handler(
         .await
         .map_err(|e| {
             tracing::error!("Failed to create device authorization: {:?}", e);
+            auth_metrics::record_device_start(auth_metrics::DEVICE_START_ERROR);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -358,6 +365,7 @@ pub async fn start_handler(
                 app = ?payload.app,
                 "Device authorization started"
             );
+            auth_metrics::record_device_start(auth_metrics::DEVICE_START_SUCCESS);
             return Ok(Json(StartResponse {
                 device_code,
                 user_code: format_user_code(&user_code),
@@ -373,6 +381,7 @@ pub async fn start_handler(
         client_uuid = %payload.client_uuid,
         "Exhausted user code generation attempts"
     );
+    auth_metrics::record_device_start(auth_metrics::DEVICE_START_ERROR);
     Err(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -392,9 +401,13 @@ pub async fn claim_handler(
         .google_client
         .validate_id_token(&payload.google_auth_token)
         .await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        .map_err(|_| {
+            auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_INVALID_TOKEN);
+            StatusCode::UNAUTHORIZED
+        })?;
 
     if !audience_is_allowed(&state.client_catalog, &google_payload.aud) {
+        auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_UNKNOWN_AUDIENCE);
         tracing::warn!(
             "Audience mismatch: {} is not a configured client ID",
             google_payload.aud
@@ -409,6 +422,15 @@ pub async fn claim_handler(
     // into. It is recorded on the authorization row here and read back by the poll that
     // mints the session, because the tablet's own request carries no proof of anything.
     let product = state.client_catalog.product_for(&google_payload.aud);
+    // See the matching line in `login_handler`: the authorized party is a client
+    // identifier, logged rather than labelled, and on this path it is the one thing that
+    // names which app the parent redeemed from.
+    tracing::info!(
+        aud = %google_payload.aud,
+        azp = google_payload.azp.as_deref().unwrap_or("<absent>"),
+        product = product.map_or("unclassified", Product::as_wire),
+        "Device claim audience resolved"
+    );
 
     claim_for_user(&state, &user_id, email.as_deref(), &payload.user_code, product).await
 }
@@ -430,8 +452,11 @@ pub async fn claim_for_user(
         &crate::observability::http::log_hash_salt(&state.jwt_secret),
     );
 
-    if claim_failures_exhausted(state, user_id).await? {
+    if claim_failures_exhausted(state, user_id).await.inspect_err(|_| {
+        auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_ERROR);
+    })? {
         tracing::warn!(user_hash = %user_hash, "Device claim rate limit reached");
+        auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_RATE_LIMITED);
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -450,6 +475,7 @@ pub async fn claim_for_user(
     .await
     .map_err(|e| {
         tracing::error!("Failed to upsert user: {:?}", e);
+        auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -468,6 +494,7 @@ pub async fn claim_for_user(
     .await
     .map_err(|e| {
         tracing::error!("Failed to claim device authorization: {:?}", e);
+        auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -478,10 +505,15 @@ pub async fn claim_for_user(
                 client_uuid = %row.client_uuid,
                 "Device authorization claimed"
             );
+            auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_SUCCESS);
             Ok(StatusCode::NO_CONTENT)
         }
         None => {
             record_claim_failure(state, user_id, &user_code).await;
+            // Unknown, expired and already-claimed collapse into this one label, exactly as
+            // they collapse into one `404` for the caller. Splitting them here would be a
+            // second, quieter version of the oracle that response shape exists to deny.
+            auth_metrics::record_device_claim(auth_metrics::DEVICE_CLAIM_NOT_FOUND);
             Err(StatusCode::NOT_FOUND)
         }
     }
@@ -557,6 +589,7 @@ pub async fn poll_handler(
 ) -> Result<Response, StatusCode> {
     let mut tx = state.db_pool.begin().await.map_err(|e| {
         tracing::error!("Failed to start transaction: {:?}", e);
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -583,22 +616,26 @@ pub async fn poll_handler(
     .await
     .map_err(|e| {
         tracing::error!("Failed to load device authorization: {:?}", e);
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     let Some(row) = row else {
         let _ = tx.rollback().await;
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_NOT_FOUND);
         return Err(StatusCode::NOT_FOUND);
     };
 
     // Terminal states first: a spent or expired code says so regardless of pacing.
     if row.consumed_at.is_some() || row.expires_at < Utc::now() {
         let _ = tx.rollback().await;
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_EXPIRED);
         return Err(StatusCode::GONE);
     }
 
     if polled_too_soon(row.last_polled_at, Utc::now()) {
         let _ = tx.rollback().await;
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_RATE_LIMITED);
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -610,6 +647,7 @@ pub async fn poll_handler(
     .await
     .map_err(|e| {
         tracing::error!("Failed to record poll: {:?}", e);
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -619,8 +657,12 @@ pub async fn poll_handler(
         _ => {
             tx.commit().await.map_err(|e| {
                 tracing::error!("Failed to commit poll: {:?}", e);
+                auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+            // The healthy steady state, and the highest-volume series here: a tablet polls
+            // every few seconds for the whole time the parent is typing the code.
+            auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_PENDING);
             return Ok((
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({ "status": "pending" })),
@@ -644,16 +686,19 @@ pub async fn poll_handler(
     .await
     .map_err(|e| {
         tracing::error!("Failed to consume device authorization: {:?}", e);
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     if spent.is_none() {
         let _ = tx.rollback().await;
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_EXPIRED);
         return Err(StatusCode::GONE);
     }
 
     tx.commit().await.map_err(|e| {
         tracing::error!("Failed to commit device authorization: {:?}", e);
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -670,7 +715,14 @@ pub async fn poll_handler(
         crate::auth::handlers::DEFAULT_SESSION_SECS,
         product,
     )
-    .await?;
+    .await
+    .inspect_err(|_| {
+        // The code is already spent at this point, deliberately (see above), so this is a
+        // pairing the tablet cannot retry -- worth counting as an error rather than
+        // letting it vanish into the 500s.
+        auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_ERROR);
+    })?;
+    auth_metrics::record_device_poll(auth_metrics::DEVICE_POLL_AUTHORIZED);
 
     tracing::info!(
         user_hash = %crate::observability::http::hash_user_id(

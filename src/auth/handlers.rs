@@ -1,6 +1,7 @@
 use axum::{extract::{State, Json}, http::{header, StatusCode}, response::{IntoResponse, Response}};
 use serde::{Deserialize, Serialize};
 use crate::state::AppState;
+use crate::auth::metrics as auth_metrics;
 use crate::auth::product::Product;
 use crate::auth::tokens::{create_access_token, hash_refresh_token, verify_refresh_token};
 use rand::RngExt;
@@ -260,35 +261,76 @@ pub async fn login_handler(
     // travels out of here alongside the identity, into the claim and onto the session row.
     // The dev bypass names no audience and therefore no product, which is the same
     // "unknown" an unclassified client ID produces -- see `crate::auth::product`.
-    let (user_id, email, product) = match crate::auth::dev_bypass::dev_bypass_identity(
-        &payload.google_auth_token,
-        &payload.user_id,
-    ) {
-        Some((user_id, email)) => (user_id, email, None),
-        None => {
-            // Verify Google Token (reusing existing google_client)
-            let google_payload = state.google_client.validate_id_token(&payload.google_auth_token).await
-                .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // `product_metric_label` is carried separately from `product` because the two answer
+    // different questions. `None` means "no product claim on this session" for both the dev
+    // bypass and an unclassified client ID, but on a dashboard those are opposite findings:
+    // the bypass never had an audience to classify, while an unclassified ID is configuration
+    // work outstanding. See `auth::metrics::PRODUCT_NONE`.
+    let (user_id, email, product, product_metric_label) =
+        match crate::auth::dev_bypass::dev_bypass_identity(
+            &payload.google_auth_token,
+            &payload.user_id,
+        ) {
+            Some((user_id, email)) => (user_id, email, None, auth_metrics::PRODUCT_NONE),
+            None => {
+                // Verify Google Token (reusing existing google_client)
+                let google_payload = state
+                    .google_client
+                    .validate_id_token(&payload.google_auth_token)
+                    .await
+                    .map_err(|_| {
+                        auth_metrics::record_login(
+                            auth_metrics::LOGIN_INVALID_TOKEN,
+                            auth_metrics::PRODUCT_NONE,
+                        );
+                        StatusCode::UNAUTHORIZED
+                    })?;
 
-            if !state.client_catalog.is_allowed(&google_payload.aud) {
-                tracing::warn!(
-                    "Audience mismatch: {} is not a configured client ID",
-                    google_payload.aud
-                );
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-            let product = state.client_catalog.product_for(&google_payload.aud);
-            if product.is_none() {
-                tracing::warn!(
+                if !state.client_catalog.is_allowed(&google_payload.aud) {
+                    // The counter this endpoint most needs. A genuine Google token whose
+                    // audience nobody configured is a whole app unable to sign in, and it is
+                    // answered with the same 401 as an expired token -- so without this it is
+                    // invisible in `http_requests_total` and shows up as a support ticket.
+                    auth_metrics::record_login(
+                        auth_metrics::LOGIN_UNKNOWN_AUDIENCE,
+                        auth_metrics::PRODUCT_NONE,
+                    );
+                    tracing::warn!(
+                        "Audience mismatch: {} is not a configured client ID",
+                        google_payload.aud
+                    );
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+                let product = state.client_catalog.product_for(&google_payload.aud);
+                // The authorized party, logged rather than made a metric label: `azp` is a
+                // client ID, and the accepted set grows by editing configuration, so labelling
+                // by it would let a secret edit multiply the series. As a log field it is the
+                // inventory this service cannot otherwise state -- which app actually requested
+                // each token, as resolved by Google from the caller's package name and signing
+                // certificate rather than asserted by the caller. Both fields are client
+                // identifiers, not user data: no subject and no email, per hard constraint 5.
+                tracing::info!(
                     aud = %google_payload.aud,
-                    "Login through a client ID that is not classified per product; this session \
-                     gets no product claim and its sync scopes cannot be enforced. Add the ID to \
-                     TEDDY_FYI_CLIENT_IDS or SCRIBBLEROUTE_CLIENT_IDS."
+                    azp = google_payload.azp.as_deref().unwrap_or("<absent>"),
+                    product = product.map_or("unclassified", Product::as_wire),
+                    "Sign-in audience resolved"
                 );
+                if product.is_none() {
+                    tracing::warn!(
+                        aud = %google_payload.aud,
+                        "Login through a client ID that is not classified per product; this session \
+                         gets no product claim and its sync scopes cannot be enforced. Add the ID to \
+                         TEDDY_FYI_CLIENT_IDS or SCRIBBLEROUTE_CLIENT_IDS."
+                    );
+                }
+                (
+                    google_payload.sub,
+                    google_payload.email.clone(),
+                    product,
+                    auth_metrics::product_label(product),
+                )
             }
-            (google_payload.sub, google_payload.email.clone(), product)
-        }
-    };
+        };
 
     let duration_secs = payload.expires_in_secs.unwrap_or(DEFAULT_SESSION_SECS);
     let duration_secs = if duration_secs <= 0 || duration_secs > DEFAULT_SESSION_SECS {
@@ -305,7 +347,14 @@ pub async fn login_handler(
         duration_secs,
         product,
     )
-    .await?;
+    .await
+    .inspect_err(|_| {
+        // Counted with the product rather than as an anonymous failure: the caller
+        // authenticated fine and we broke, and which product's sign-ins are breaking is
+        // the first thing anyone would ask.
+        auth_metrics::record_login(auth_metrics::LOGIN_ERROR, product_metric_label);
+    })?;
+    auth_metrics::record_login(auth_metrics::LOGIN_SUCCESS, product_metric_label);
 
     if payload.use_cookie.unwrap_or(false) {
         let cookie_header_value = session_cookie(&state.cookie_domain, &access_token, duration_secs);
@@ -422,6 +471,7 @@ pub async fn refresh_handler(
             db_error = ?e,
             "Failed to start transaction"
         );
+        auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
@@ -438,6 +488,7 @@ pub async fn refresh_handler(
             db_error = ?e,
             "Database error during refresh"
         );
+        auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
@@ -449,6 +500,7 @@ pub async fn refresh_handler(
                 client_uuid = %payload.client_uuid,
                 "Refresh failed: No active session found in database"
             );
+            auth_metrics::record_refresh(auth_metrics::REFRESH_NO_SESSION);
             let _ = tx.rollback().await;
             return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
         }
@@ -469,6 +521,7 @@ pub async fn refresh_handler(
                 server_time = ?chrono::Utc::now(),
                 "Refresh failed: Session expired. Invalidating single session."
             );
+            auth_metrics::record_refresh(auth_metrics::REFRESH_EXPIRED);
             sqlx::query!(
                 "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
                 payload.user_id,
@@ -494,6 +547,7 @@ pub async fn refresh_handler(
                     grace_seconds = REFRESH_GRACE_SECS,
                     "Breach mitigation: Old refresh token reused outside the rotation grace period. Deleting single session."
                 );
+                auth_metrics::record_refresh(auth_metrics::REFRESH_REUSE_OUTSIDE_GRACE);
                 sqlx::query!(
                     "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
                     payload.user_id,
@@ -515,6 +569,7 @@ pub async fn refresh_handler(
                     server_time = ?chrono::Utc::now(),
                     "Refresh failed: Session expired during old token grace period. Invalidating single session."
                 );
+                auth_metrics::record_refresh(auth_metrics::REFRESH_EXPIRED);
                 sqlx::query!(
                     "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
                     payload.user_id,
@@ -538,6 +593,7 @@ pub async fn refresh_handler(
                 client_uuid = %payload.client_uuid,
                 "Data consistency: old refresh token matched but rotated_at is NULL. Cannot prove the token is inside the grace window, so invalidating this session."
             );
+            auth_metrics::record_refresh(auth_metrics::REFRESH_ROTATED_AT_NULL);
             sqlx::query!(
                 "DELETE FROM sessions WHERE user_id = $1 AND client_uuid = $2",
                 payload.user_id,
@@ -570,7 +626,9 @@ pub async fn refresh_handler(
         .await
         .unwrap_or(session.failed_refresh_attempts + 1);
 
+        auth_metrics::record_refresh(auth_metrics::REFRESH_UNKNOWN_TOKEN);
         if failed_attempts >= FAILED_REFRESH_ALERT_THRESHOLD {
+            auth_metrics::record_refresh_bruteforce_alert();
             tracing::warn!(
                 user_hash = %user_hash,
                 client_uuid = %payload.client_uuid,
@@ -591,6 +649,17 @@ pub async fn refresh_handler(
         let _ = tx.commit().await;
         return Err(refresh_error(StatusCode::UNAUTHORIZED, "unauthorized"));
     }
+
+    // Which success this is. `is_old` here can only mean the grace-window branch fell
+    // through to rotation -- every other `is_old` path returned above -- so a rise in
+    // `success_in_grace` is clients retrying into their own rotation, which is a client
+    // behaviour question and not a failure. Recorded at the end rather than here because a
+    // rotation that fails to commit is not a success.
+    let refresh_outcome = if is_old {
+        auth_metrics::REFRESH_SUCCESS_IN_GRACE
+    } else {
+        auth_metrics::REFRESH_SUCCESS
+    };
 
     // 3. Rotate tokens
     let duration_secs = payload.expires_in_secs.unwrap_or(DEFAULT_SESSION_SECS);
@@ -624,6 +693,7 @@ pub async fn refresh_handler(
             token_error = ?e,
             "Failed to generate access token during refresh"
         );
+        auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     })?;
 
@@ -653,6 +723,7 @@ pub async fn refresh_handler(
             db_error = ?e,
             "Failed to rotate token"
         );
+        auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
@@ -673,6 +744,7 @@ pub async fn refresh_handler(
             db_error = ?e,
             "Failed to read the surrogate id during refresh"
         );
+        auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?
     .flatten();
@@ -685,6 +757,7 @@ pub async fn refresh_handler(
             db_error = ?e,
             "Failed to commit transaction"
         );
+        auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
@@ -707,11 +780,14 @@ pub async fn refresh_handler(
                         header_error = ?e,
                         "Failed to set access token cookie header"
                     );
+                    auth_metrics::record_refresh(auth_metrics::REFRESH_ERROR);
                     refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
                 })?,
         );
+        auth_metrics::record_refresh(refresh_outcome);
         Ok(response)
     } else {
+        auth_metrics::record_refresh(refresh_outcome);
         Ok(Json(AuthResponse { access_token, refresh_token: new_refresh_token, user_uuid }).into_response())
     }
 }

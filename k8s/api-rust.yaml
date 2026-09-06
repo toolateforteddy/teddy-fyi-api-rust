@@ -196,7 +196,14 @@ spec:
               name: api-rust-secret-env
               key: SCRIBBLEKEEP_CLOUD_CLIENT_ID
         ports:
-        - containerPort: 8080
+        - name: http
+          containerPort: 8080
+        # The Prometheus exporter's own listener (METRICS_PORT, default 9090). Named so
+        # k8s/monitoring.yaml can select it by name. Declared here only so the scrape
+        # target resolves -- `api-rust-svc` deliberately does not expose it, so it stays
+        # unreachable from the ingress. See k8s/monitoring.yaml.
+        - name: metrics
+          containerPort: 9090
         volumeMounts:
         - mountPath: "/var/secrets"
           name: gcp-secrets

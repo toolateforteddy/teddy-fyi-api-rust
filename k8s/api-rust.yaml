@@ -92,6 +92,21 @@ spec:
         app: api-rust
     spec:
       serviceAccountName: api-rust-ksa
+      # The uid/gid here are the ones the Dockerfile creates and selects with
+      # `USER 10001:10001`; they are stated again at this level so the guarantee lives in
+      # the cluster rather than in the image. If the image ever loses its `USER` line, or
+      # is replaced by one that has not got that user, `runAsNonRoot` fails the pod at
+      # admission instead of quietly starting it as root. Changing either number without
+      # changing the Dockerfile is a crash loop, not a hardening.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # The kubelet's default profile: everything glibc and tokio need, none of the
+        # syscalls a container has no business making. `Unconfined` is what you get
+        # without this line on a cluster whose default is not already RuntimeDefault.
+        seccompProfile:
+          type: RuntimeDefault
       # Spread replicas across nodes, which during a rollout means the surge pod lands
       # somewhere other than the pod it is replacing. Without this both fit on one node,
       # and a deploy that is meant to be zero-downtime still has a single node as its
@@ -218,6 +233,19 @@ spec:
           preStop:
             exec:
               command: ["sleep", "10"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          # The service is a single static binary that talks to Postgres, Redis and Google
+          # over the network and writes nothing to disk — no temp files, no cache, no
+          # crate in the dependency tree that reaches for `env::temp_dir()`. The only
+          # mount it has is the secrets CSI volume, which is `readOnly: true` in its own
+          # right. So there is nothing for a writable root filesystem to be for, and
+          # anything that did start writing to it would be a bug worth failing loudly.
+          # If a future feature genuinely needs scratch space, add an `emptyDir` at the
+          # path it needs rather than turning this off.
+          readOnlyRootFilesystem: true
       volumes:
       - name: gcp-secrets
         csi:

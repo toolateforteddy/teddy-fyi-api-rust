@@ -19,6 +19,18 @@ spec:
       labels:
         app: cache
     spec:
+      # 999:1000 is the `valkey` user the upstream image creates, not a number of our
+      # choosing — `valkey/valkey:8-alpine` has uid 999 in group 1000 (gid 1000 is also
+      # named `valkey`, which is why the two numbers differ). The image's entrypoint
+      # chowns /data and drops to that user *only when it starts as root*; starting as the
+      # user directly skips that branch, which is fine because the /data mount below is an
+      # emptyDir the kubelet already makes writable.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: valkey
         image: valkey/valkey:8-alpine
@@ -57,6 +69,16 @@ spec:
         # without being OOM-killed first; a low cap fails the connection loudly instead.
         - --maxclients
         - "256"
+        # /data is the image's WORKDIR and its declared VOLUME. With
+        # `readOnlyRootFilesystem: true` it would otherwise be part of the read-only root,
+        # so it gets an emptyDir. Nothing is expected to land in it — `--save ""` and
+        # `--appendonly no` above mean valkey writes no RDB and no AOF — but it is where
+        # valkey would write if it ever did (a CONFIG REWRITE, a DEBUG RELOAD, or a future
+        # change to those two flags), and an emptyDir is exactly the right durability for
+        # a cache whose whole contents are disposable: it dies with the pod, like the data.
+        volumeMounts:
+        - name: valkey-data
+          mountPath: /data
         ports:
         - containerPort: 6379
           name: redis
@@ -88,6 +110,13 @@ spec:
           allowPrivilegeEscalation: false
           capabilities:
             drop: ["ALL"]
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: valkey-data
+        emptyDir:
+          # A bound, so a runaway writer fills its own volume rather than the node's disk.
+          # Nothing should approach this; the in-memory dataset itself is capped at 96mb.
+          sizeLimit: 128Mi
 ---
 apiVersion: v1
 kind: Service

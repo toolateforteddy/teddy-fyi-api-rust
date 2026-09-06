@@ -2,6 +2,10 @@
 
 This is the centralized, high-performance Sync Gatekeeper and source of truth backend service for the **teddy.fyi** ecosystem. Built with Rust, it manages multi-tenant, collaborative, local-first data streams (e.g., shared household grocery lists and private todo lists) for both iOS and Android clients.
 
+> Working in this repo rather than calling it? Start with [`CLAUDE.md`](CLAUDE.md):
+> the module map, how to build, test and validate a change here, and the five hard
+> constraints. This file is the API contract and the setup guide.
+
 ---
 
 ## 🏗 System Architecture & Tech Stack

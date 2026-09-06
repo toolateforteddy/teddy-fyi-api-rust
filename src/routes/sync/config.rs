@@ -924,7 +924,11 @@ pub async fn process_config_changes(
                         }
                         Err(err) => {
                             tracing::error!("Failed to deserialize ConfigData for config {}: {:?}. Data: {:?}", change_id, err, data);
-                            return Err(AppError::Serialization(err));
+                            return Err(crate::routes::sync::rejections::item_payload_rejected(
+                                "config",
+                                &change_id.to_string(),
+                                &err,
+                            ));
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {

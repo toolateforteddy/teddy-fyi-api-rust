@@ -88,7 +88,7 @@ Rules that keep concurrent work from colliding:
 | 17 | Tenancy columns are nullable | 7 | At the freeze |
 | 18 | ~~`grocery_list_members.id` embeds the raw Google subject~~ **landed; `userId` still does** | 7 | Now |
 | 19 | Sessions have no absolute lifetime | 7 | Anytime |
-| 20 | One bad item fails the whole batch | 7 | Now |
+| 20 | ~~One bad item fails the whole batch~~ **model decided and named** | 7 | Now |
 | 21 | No caps on grocery/todo field sizes — ~~batch length~~ **landed** | 7 | Now |
 | 22 | Deployment has no `securityContext` | 7 | Now |
 | 23 | Valkey has no `maxmemory` or eviction policy | 7 | Now |
@@ -635,7 +635,34 @@ children's tablets that leave the house.
 `ACCESS_TOKEN_TTL_SECS` has a long, careful comment about the sign-out window. The session behind
 it has no ceiling at all.
 
-## 20. One bad item fails the whole batch — **7**, Now
+## 20. One bad item fails the whole batch — **7**, Now — **LANDED**
+
+**Landed** in [#79](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/79),
+as the decision this item asked for rather than a change of behaviour.
+
+**The model, now written down in `src/routes/sync/rejections.rs`: a batch is
+all-or-nothing, and a refusal names the item that caused it.** All-or-nothing is what
+`validate_sync_payload` already chose and argued for; what was missing was the second half,
+without which the first is the worst of both worlds.
+
+The authorization refusals were already fine — every `AppError::Forbidden` a processor
+returns interpolates the id. The gap was the *payload* refusals: ten processors returned
+`AppError::Serialization(err)`, a 400 whose body is serde's own message ("missing field
+`name` at line 1 column 50") for a payload that is an array of hundreds. The id went to the
+server log and was dropped from the response, so the client could not tell which row to
+drop and resent the identical batch forever — the same wedge item 3 removed, arriving by a
+different door. All ten now go through `item_payload_rejected`, which names the entity, the
+id and serde's reason, and `tests::rejections` fails the build if an eleventh table is
+written by copying one of the old ones.
+
+**Per-item failure reporting was considered and deliberately not done.** Committing the
+good rows and reporting the rejected ones in `upload_status` is a wire-contract change on a
+response two client families parse, and a client that does not learn to quarantine a
+rejected item retries it forever anyway. It is also exactly the partial-commit question
+item 27 is still holding open, so implementing it here would settle item 27 by accident.
+If it is ever wanted, it wants 27 answered first and both clients in the room.
+
+The description below is what was there before.
 
 Every processor does `return Err(AppError::Forbidden(...))` or `return Err(AppError::Serialization(...))`
 on a single item, which aborts that entity's transaction and — through `try_join!` — the request.

@@ -392,7 +392,11 @@ pub async fn process_grocery_list_member_changes(
                                 err,
                                 data
                             );
-                            return Err(AppError::Serialization(err));
+                            return Err(crate::routes::sync::rejections::item_payload_rejected(
+                                "grocery list member",
+                                &change.id.to_string(),
+                                &err,
+                            ));
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {

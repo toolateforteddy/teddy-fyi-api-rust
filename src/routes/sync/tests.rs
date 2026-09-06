@@ -15,6 +15,7 @@ mod log_hygiene;
 mod misc;
 mod pagination;
 mod product_scope;
+mod rejections;
 mod remote_mutations;
 mod scribble;
 mod stream;

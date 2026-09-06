@@ -28,6 +28,19 @@
 //! | `GOOGLE_CLIENT_IDS` | unclassified |
 //! | `GOOGLE_IOS_CLIENT_IDS` | unclassified |
 //!
+//! One further single-ID var is not legacy and is classified for the same reason the two
+//! above are — its name states its product:
+//!
+//! * `SCRIBBLEKEEP_CLOUD_CLIENT_ID` — the ScribbleKeep Cloud Android app, wired in `k8s/`
+//!   from the `scribbleroute-keepcloud-client-id` secret. It is a ScribbleRoute audience
+//!   like any other; it has its own variable rather than an entry in
+//!   `SCRIBBLEROUTE_CLIENT_IDS` because it is the one audience whose identity is about to
+//!   carry a second meaning — see `context/2026-09-06_scribblekeep_cloud_entitlement.md`,
+//!   where only Cloud may create an account — and a check written against "the Cloud
+//!   client ID" needs to be able to name it, not scan a comma-separated list of every
+//!   ScribbleRoute client. Listing it in `SCRIBBLEROUTE_CLIENT_IDS` as well is harmless:
+//!   an ID classified twice for one product is a duplicate, not a conflict.
+//!
 //! **The three unclassified rows are a deliberate gap, not an oversight.**
 //! `GOOGLE_IOS_CLIENT_IDS` is one comma-separated secret holding *both* products' iOS
 //! apps, and nothing in this repository records which ID is which — that fact lives in
@@ -56,7 +69,18 @@ const UNCLASSIFIED_SINGLE_ID_ENV_VARS: &[&str] = &["GOOGLE_CLIENT_ID"];
 const CLASSIFIED_SINGLE_ID_ENV_VARS: &[(&str, Product)] = &[
     ("GOOGLE_CLIENT_ID_GROCERY_WEB", Product::TeddyFyi),
     ("SCRIBBLEROUTE_API_CLIENT_ID", Product::ScribbleRoute),
+    (SCRIBBLEKEEP_CLOUD_CLIENT_ID_ENV_VAR, Product::ScribbleRoute),
 ];
+
+/// The ScribbleKeep Cloud Android app's own client ID.
+///
+/// Named as a constant rather than spelled inline because it is the audience the
+/// entitlement rule is written against: possessing a Cloud ID token is what distinguishes
+/// a client that may create an account from one that may only sign in to an existing one
+/// (`context/2026-09-06_scribblekeep_cloud_entitlement.md`). Nothing enforces that yet;
+/// what this var does today is get the audience accepted and classified as ScribbleRoute,
+/// which is what every other ScribbleRoute client already gets.
+pub const SCRIBBLEKEEP_CLOUD_CLIENT_ID_ENV_VAR: &str = "SCRIBBLEKEEP_CLOUD_CLIENT_ID";
 
 /// Comma-separated, per-product client IDs. The preferred configuration: an ID listed
 /// here needs no name-based inference and no iOS special case.
@@ -296,6 +320,66 @@ mod tests {
 
         assert!(catalog.is_allowed("grocery-ios"));
         assert_eq!(catalog.len(), 1);
+    }
+
+    /// The wiring, asserted where it is cheap: ScribbleKeep Cloud's own var classifies as
+    /// ScribbleRoute. `load_client_catalog` reads the environment, which is process-wide and
+    /// so not testable here without racing every other test; the table it reads is not.
+    #[test]
+    fn scribblekeep_cloud_client_id_is_a_classified_scribbleroute_var() {
+        assert!(
+            CLASSIFIED_SINGLE_ID_ENV_VARS
+                .contains(&(SCRIBBLEKEEP_CLOUD_CLIENT_ID_ENV_VAR, Product::ScribbleRoute)),
+            "the ScribbleKeep Cloud client ID must be read, and read as ScribbleRoute: an \
+             unclassified Cloud audience signs in but carries no product claim, so the scope \
+             check cannot enforce its ScribbleKeep scopes"
+        );
+        assert!(
+            !UNCLASSIFIED_SINGLE_ID_ENV_VARS.contains(&SCRIBBLEKEEP_CLOUD_CLIENT_ID_ENV_VAR),
+            "one var, one meaning: reading it unclassified as well would put an ID this \
+             service can name into the bag it keeps for the ones it cannot"
+        );
+    }
+
+    /// Cloud is an ordinary ScribbleRoute audience: accepted for sign-in, and carrying the
+    /// product claim that `SyncScope` enforcement is written against.
+    #[test]
+    fn the_cloud_client_id_is_accepted_and_classified() {
+        let catalog = ClientCatalog::build(
+            vec![
+                ("scribbleroute-api".to_string(), Product::ScribbleRoute),
+                ("keepcloud-android".to_string(), Product::ScribbleRoute),
+                ("grocery-web".to_string(), Product::TeddyFyi),
+            ],
+            Vec::new(),
+        );
+
+        assert!(catalog.is_allowed("keepcloud-android"));
+        assert_eq!(
+            catalog.product_for("keepcloud-android"),
+            Some(Product::ScribbleRoute)
+        );
+        assert_eq!(catalog.classified_count(Product::ScribbleRoute), 2);
+        assert!(catalog.unclassified().is_empty());
+    }
+
+    /// The var and `SCRIBBLEROUTE_CLIENT_IDS` may both name Cloud — the same product twice
+    /// over, which is a duplicate rather than the conflict that refuses to start.
+    #[test]
+    fn cloud_listed_in_both_scribbleroute_vars_is_one_audience() {
+        let catalog = ClientCatalog::build(
+            vec![
+                ("keepcloud-android".to_string(), Product::ScribbleRoute),
+                ("keepcloud-android".to_string(), Product::ScribbleRoute),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(
+            catalog.product_for("keepcloud-android"),
+            Some(Product::ScribbleRoute)
+        );
     }
 
     #[test]

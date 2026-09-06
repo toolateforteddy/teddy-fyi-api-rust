@@ -79,8 +79,9 @@ pub fn dev_bypass_identity(
 ///   evidence was one `tracing::error!` line at boot. A process that cannot authenticate
 ///   anybody is not serving; failing to start turns a silent, total outage into a failed
 ///   rollout that a deploy actually blocks on. The prod deployment supplies its ID through
-///   the legacy `SCRIBBLEROUTE_API_CLIENT_ID` var, which `load_client_catalog` folds in,
-///   so this is already satisfied there.
+///   the legacy `SCRIBBLEROUTE_API_CLIENT_ID` var (and, since ScribbleKeep Cloud, the
+///   `SCRIBBLEKEEP_CLOUD_CLIENT_ID` one), which `load_client_catalog` folds in, so this is
+///   already satisfied there.
 /// * **With `dev-auth`.** An empty allowlist is the normal, expected local setup — the
 ///   `mock.` path needs no client ID. What is *not* normal is a dev-auth binary that also
 ///   carries real Google client IDs: that combination is exactly what a development build
@@ -109,10 +110,11 @@ pub fn assert_startup_config(catalog: &crate::auth::client_ids::ClientCatalog) {
             !catalog.is_empty(),
             "Refusing to start: no Google client IDs are configured, so every login would fail \
              the audience check. Set TEDDY_FYI_CLIENT_IDS and/or SCRIBBLEROUTE_CLIENT_IDS \
-             (the legacy GOOGLE_CLIENT_ID, GOOGLE_CLIENT_ID_GROCERY_WEB, \
-             SCRIBBLEROUTE_API_CLIENT_ID, GOOGLE_CLIENT_IDS and GOOGLE_IOS_CLIENT_IDS are \
-             still honoured, but classify nothing beyond the two whose names name a \
-             product). For local development without Google credentials, build with \
+             (SCRIBBLEKEEP_CLOUD_CLIENT_ID counts too, and the legacy GOOGLE_CLIENT_ID, \
+             GOOGLE_CLIENT_ID_GROCERY_WEB, SCRIBBLEROUTE_API_CLIENT_ID, GOOGLE_CLIENT_IDS \
+             and GOOGLE_IOS_CLIENT_IDS are still honoured, but classify nothing beyond the \
+             ones whose names name a product). For local development without Google \
+             credentials, build with \
              `--features dev-auth`, which is what `make dev` does."
         );
     }

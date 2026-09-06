@@ -43,6 +43,8 @@ spec:
         path: "scribbleroute-api-client-id"
       - resourceName: "projects/melodic-sunbeam-164916/secrets/api-rust-ios-client-ids/versions/latest"
         path: "api-rust-ios-client-ids"
+      - resourceName: "projects/melodic-sunbeam-164916/secrets/scribbleroute-keepcloud-client-id/versions/latest"
+        path: "scribbleroute-keepcloud-client-id"
   secretObjects:
     - secretName: api-rust-secret-env
       type: Opaque
@@ -61,6 +63,8 @@ spec:
           key: SCRIBBLEROUTE_API_CLIENT_ID
         - objectName: api-rust-ios-client-ids
           key: GOOGLE_IOS_CLIENT_IDS
+        - objectName: scribbleroute-keepcloud-client-id
+          key: SCRIBBLEKEEP_CLOUD_CLIENT_ID
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -182,6 +186,15 @@ spec:
             secretKeyRef:
               name: api-rust-secret-env
               key: GOOGLE_IOS_CLIENT_IDS
+        # ScribbleKeep Cloud's Android client ID. Classified as a ScribbleRoute audience by
+        # name in src/auth/client_ids.rs, so it needs no entry in SCRIBBLEROUTE_CLIENT_IDS
+        # and no code change to be accepted -- but it does need to be here, or the Cloud
+        # app's sign-in fails the audience check with a 401.
+        - name: SCRIBBLEKEEP_CLOUD_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: api-rust-secret-env
+              key: SCRIBBLEKEEP_CLOUD_CLIENT_ID
         ports:
         - containerPort: 8080
         volumeMounts:

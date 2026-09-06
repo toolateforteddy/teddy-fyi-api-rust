@@ -114,9 +114,10 @@ async fn test_fetch_remote_mutations_by_table(pool: PgPool) {
     .unwrap();
 
     // Verify TODO mutations
-    let (todo_lists, todo_items) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
+    let todo = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at, None)
         .await
         .unwrap();
+    let (todo_lists, todo_items) = (todo.list_changes, todo.changes);
 
     assert!(todo_lists.iter().any(|d| d.id == "todolist-remote-1"));
     assert!(todo_items.iter().any(|d| d.id == "todoitem-remote-1"));
@@ -288,9 +289,10 @@ async fn test_fetch_remote_mutations_initial_sync_none(pool: PgPool) {
     .unwrap();
 
     // Verify TODO mutations with last_synced_at = None
-    let (todo_lists, _) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
+    let todo = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at, None)
         .await
         .unwrap();
+    let (todo_lists, _) = (todo.list_changes, todo.changes);
 
     assert!(todo_lists.iter().any(|d| d.id == "todolist-initial-1"));
 
@@ -373,9 +375,10 @@ async fn test_fetch_remote_mutations_initial_sync_epoch(pool: PgPool) {
     .unwrap();
 
     // Verify TODO mutations with last_synced_at = Epoch
-    let (todo_lists, _) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
+    let todo = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at, None)
         .await
         .unwrap();
+    let (todo_lists, _) = (todo.list_changes, todo.changes);
 
     assert!(todo_lists.iter().any(|d| d.id == "todolist-epoch-1"));
 
@@ -537,9 +540,10 @@ async fn test_fetch_remote_mutations_echo_prevention(pool: PgPool) {
     .unwrap();
 
     // Verify TODO mutations (should be empty as we are the updater)
-    let (todo_lists, todo_items) = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at)
+    let todo = fetch_remote_todo_mutations(&mut tx, "user-1", client_id, last_synced_at, None)
         .await
         .unwrap();
+    let (todo_lists, todo_items) = (todo.list_changes, todo.changes);
 
     assert!(!todo_lists.iter().any(|d| d.id == "todolist-echo-1"));
     assert!(!todo_items.iter().any(|d| d.id == "todoitem-echo-1"));

@@ -39,6 +39,19 @@ pub async fn sync_handler(
     // drawing blob or an over-long config value fails the whole request with a 400 that
     // names the field, and nothing is written. See `crate::routes::sync::limits`.
     let limits = SyncLimits::from_env();
+
+    // A page is only a bound for a client that can ask for the next one. One that cannot
+    // is served whole, exactly as it was before paging existed: truncating it would not
+    // slow its download down, it would silently cost it every row past the page, on every
+    // sync, for good. See `SyncRequest::supports_paging`.
+    //
+    // Read once here rather than per future: all three downloads page against the same
+    // bound, and the reply carries one `server_timestamp` for all of them.
+    let download_page_size = if payload.supports_paging {
+        Some(limits.download_page_size)
+    } else {
+        None
+    };
     validate_sync_payload(&payload, &limits)?;
 
     // The device this request speaks for is the one in the token, never the one in the body.
@@ -132,13 +145,17 @@ pub async fn sync_handler(
                 )
                 .await?;
 
-                let (fetched_todo_list, fetched_todo) = fetch_remote_todo_mutations(
+                let todo_download = fetch_remote_todo_mutations(
                     &mut tx,
                     &claims.sub,
                     &payload.client_id,
                     payload.last_synced_at,
+                    download_page_size,
                 )
                 .await?;
+                let todo_next_cursor = todo_download.next_cursor;
+                let (fetched_todo_list, fetched_todo) =
+                    (todo_download.list_changes, todo_download.changes);
 
                 tx.commit().await?;
 
@@ -152,9 +169,9 @@ pub async fn sync_handler(
                     remote_todo_changes.extend(fetched_todo.into_iter().filter(|c| !existing_todo_ids.contains(&c.id)));
                 }
 
-                Ok::<_, AppError>((success_ids, upload_status, remote_todo_list_changes, remote_todo_changes))
+                Ok::<_, AppError>((success_ids, upload_status, remote_todo_list_changes, remote_todo_changes, todo_next_cursor))
             } else {
-                Ok((vec![], vec![], vec![], vec![]))
+                Ok((vec![], vec![], vec![], vec![], None))
             }
         }
     };
@@ -465,17 +482,6 @@ pub async fn sync_handler(
                 // whose predicates overlapped completely, so every row travelled twice
                 // through Postgres, through memory and onto the wire. They are two views
                 // of one page of rows now; the wire is unchanged.
-                // A page is only a bound for a client that can ask for the next one. One
-                // that cannot is served whole, exactly as it was before paging existed:
-                // truncating it would not slow its download down, it would silently cost
-                // it every row past the page, on every sync, for good. See
-                // `SyncRequest::supports_paging`.
-                let download_page_size = if payload.supports_paging {
-                    Some(limits.download_page_size)
-                } else {
-                    None
-                };
-
                 let config_download = if scope == SyncScope::ScribbleBox
                     || scope == SyncScope::ScribbleKeep
                     || scope == SyncScope::ScribbleKeepCloud
@@ -558,6 +564,7 @@ pub async fn sync_handler(
     upload_status.extend(todo_res.1);
     let remote_todo_list_changes = todo_res.2;
     let remote_todo_changes = todo_res.3;
+    let todo_next_cursor = todo_res.4;
 
     success_ids.extend(grocery_res.0);
     upload_status.extend(grocery_res.1);
@@ -714,16 +721,33 @@ pub async fn sync_handler(
     );
 
     // The cursor the client is handed. Normally this request's clock reading; when a
-    // download was paged, the last millisecond this reply delivered whole instead — the
+    // download was paged, the last instant this reply delivered whole instead — the
     // client's cursor may not move past rows it did not receive. Every entity in the
-    // reply shares one `server_timestamp`, so an unpaged one (todo, grocery) is simply
-    // re-read on the next sync, which its own echo-suppression filter makes cheap and
-    // which the sync protocol is idempotent under regardless.
-    let has_more = next_cursor_ms.is_some();
-    let server_timestamp = match next_cursor_ms {
-        Some(ms) => chrono::DateTime::from_timestamp_millis(ms).unwrap_or(server_timestamp),
-        None => server_timestamp,
-    };
+    // reply shares one `server_timestamp`, so an entity that had more room than the
+    // earliest truncation point simply re-reads its tail on the next sync, which its own
+    // echo-suppression filter makes cheap and which the protocol is idempotent under.
+    //
+    // The grocery download is the one that stays unpaged, and not for want of plumbing.
+    // Its queries include a row when *either* the row or the caller's membership of its
+    // list changed after the cursor (see `grocery/remote_mutations.rs`), so inclusion is
+    // not monotonic in `updated_at` — the column a page would have to order and cut on.
+    // A membership change pulls in rows of any age, ordering puts the oldest first, and a
+    // page would hand back a cursor *older* than the one the client arrived with. Paging
+    // it before that disjunct is narrowed would make an account's traffic worse, not
+    // bounded.
+    // Two cursor units meet here: `configs` and `drawings` page against a millisecond
+    // column, the todo tables against `updated_at`. Both become a timestamp before the
+    // comparison, because what the client stores is one `server_timestamp` for the whole
+    // reply and the earliest truncation point is the only one it can safely hold.
+    let scribble_next_cursor =
+        next_cursor_ms.and_then(chrono::DateTime::from_timestamp_millis);
+    let next_cursor = [scribble_next_cursor, todo_next_cursor]
+        .into_iter()
+        .flatten()
+        .min();
+
+    let has_more = next_cursor.is_some();
+    let server_timestamp = next_cursor.unwrap_or(server_timestamp);
 
     Ok(Json(SyncResponse {
         success_ids,

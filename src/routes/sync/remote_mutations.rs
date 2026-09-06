@@ -60,8 +60,12 @@ pub async fn fetch_remote_mutations(
     ),
     AppError,
 > {
+    // Unpaged for the same reason as the config and drawing reads below: this helper
+    // keeps only the change vectors and drops the cursor that says a page was cut short,
+    // so a bound here would truncate with nothing to tell the client where to resume.
     let (remote_todo_list_changes, remote_todo_changes) = if scope == SyncScope::All || scope == SyncScope::Todo {
-        fetch_remote_todo_mutations(tx, user_id, client_id, last_synced_at).await?
+        let download = fetch_remote_todo_mutations(tx, user_id, client_id, last_synced_at, None).await?;
+        (download.list_changes, download.changes)
     } else {
         (vec![], vec![])
     };

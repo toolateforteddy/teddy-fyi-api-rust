@@ -179,6 +179,27 @@ else
          "See CLAUDE.md constraint 5."
 fi
 
+# --- 6. No manifest names a moving image tag ----------------------------------
+#
+# Not one of CLAUDE.md's five, but the same shape of failure: nothing lints it and
+# the consequence is silent. `k8s/` pins `:IMAGE_TAG_PLACEHOLDER`, which
+# deploy.yml rewrites to the commit SHA before it applies. A manifest that names
+# `:latest` instead gives up rollback and provenance, and -- once
+# scribbleroute/backend is forked from this repo and pushes to the same registry
+# path -- lets that fork's merge to main replace the binary running here, with no
+# deploy of ours. See split plan section 1.3, and pre-split item 6.
+CHECKS=$((CHECKS + 1))
+MOVING_TAGS=$(grep -nE '^[[:space:]]*image:.*teddy-fyi-api-rust:(latest|main|stable)[[:space:]]*$' \
+    k8s/*.yaml 2>/dev/null || true)
+if [ -z "$MOVING_TAGS" ]; then
+    pass "no k8s manifest pins a moving image tag"
+else
+    fail "a manifest names a moving image tag" \
+         "Use gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:IMAGE_TAG_PLACEHOLDER;" \
+         ".github/workflows/deploy.yml substitutes the commit SHA before applying." ""
+    findings "$MOVING_TAGS"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "constraints: $CHECKS checks passed"

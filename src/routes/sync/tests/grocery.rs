@@ -2493,3 +2493,65 @@ async fn test_sync_member_cannot_promote_self_to_owner(pool: PgPool) {
     .unwrap();
     assert!(!list.is_deleted, "a member must not be able to delete a shared list");
 }
+
+/// A member who joins an existing list receives the items already in it.
+///
+/// This is what the `glm.updated_at > cursor` disjunct in every grocery download query
+/// buys, and it is not obvious from reading them: the disjunct means *any* change to the
+/// membership row re-sends the whole list, which reads like an accident and costs real
+/// bandwidth on a shared list. It is load-bearing. A joining member's cursor is their own
+/// account's last sync, which is newer than items the list has held for weeks, so without
+/// the disjunct `gi.updated_at > cursor` matches none of them and the list arrives empty
+/// and stays empty until somebody edits each item.
+///
+/// The cost is real and so is the reason. Anyone narrowing this — and it is worth
+/// narrowing, since a role change re-sends a list for no reason — has to keep this case
+/// working.
+#[sqlx::test]
+async fn test_new_member_receives_items_older_than_their_cursor(pool: PgPool) {
+    let state = setup_state(pool.clone());
+
+    // A list with an item on it, both stamped well in the past.
+    seed_list_with_member(&pool, "list-old", "member-owner", "user-owner", "OWNER").await;
+    sqlx::query!(
+        "INSERT INTO grocery_items (id, name, quantity, \"isBought\", \"createdAt\", position, \
+         \"timesBought\", \"userId\", \"isActive\", \"listId\", version, is_deleted, sync_state, updated_at) \
+         VALUES ($1, $2, '1', FALSE, 0, 0, 0, $3, TRUE, $4, 1, FALSE, 'SYNCED', now() - interval '30 days')",
+        "item-old",
+        "Milk",
+        "user-owner",
+        "list-old"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // user-1 joins today. Their membership row is new; the item is thirty days old.
+    seed_list_with_member(&pool, "list-old", "member-new", "user-1", "MEMBER").await;
+
+    // ...and syncs with a cursor from an hour ago, long after the item was written.
+    let mut req = member_sync_request(GroceryListMemberChangeDelta {
+        id: "unused".to_string(),
+        operation_type: OperationType::Update,
+        version: 1,
+        data: None,
+    });
+    // A pure download: no uploads at all, just a cursor from after the item was written.
+    req.grocery_list_member_changes = vec![];
+    req.last_synced_at = Some(Utc::now() - chrono::Duration::hours(1));
+
+    let res = sync_handler(State(state), AppJson(req))
+        .await
+        .expect("sync must succeed")
+        .0;
+
+    let ids: Vec<&str> = res
+        .remote_grocery_changes
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert!(
+        ids.contains(&"item-old"),
+        "a newly joined member must receive the items already on the list; got {ids:?}"
+    );
+}

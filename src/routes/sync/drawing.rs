@@ -642,8 +642,9 @@ pub async fn fetch_drawing_download(
             // only way the client ever gets past it; it is bounded by
             // `DEFAULT_MAX_ITEMS_PER_COLLECTION`, which is what makes that safe.
             tracing::warn!(
-                "More than a page of drawings for user {} share last_modified {}; serving that millisecond whole",
-                user_id, ms
+                user_hash = %hash_sync_user(user_id),
+                last_modified = ms,
+                "More than a page of drawings share one last_modified; serving that millisecond whole"
             );
             rows = fetch_drawing_page(tx, user_id, client_id, device_filter, ms - 1, Some(ms), is_initial_sync, i64::MAX).await?;
             Some(ms)

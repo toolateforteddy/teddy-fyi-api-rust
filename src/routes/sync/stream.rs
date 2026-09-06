@@ -17,7 +17,7 @@ use super::device::existing_fallback_device;
 use super::publisher::{get_channel_name, get_device_channel_name, SyncSseEvent};
 use super::remote_mutations::parse_or_hash_uuid;
 use super::stream_limits::StreamRefusal;
-use super::types::AppError;
+use super::types::{hash_sync_user, AppError};
 
 #[derive(Debug, Deserialize)]
 pub struct StreamQuery {
@@ -69,13 +69,13 @@ pub async fn resolve_stream_device(
     let fallback = existing_fallback_device(pool, user_uuid).await?;
     match fallback {
         Some(device) => tracing::debug!(
-            "Stream without device_uuid for user {}; falling back to device {}",
-            user_uuid,
-            device
+            user_hash = %hash_sync_user(user_uuid),
+            device_uuid = %device,
+            "Stream without device_uuid; falling back to the account's device"
         ),
         None => tracing::debug!(
-            "Stream without device_uuid for user {}; account has no device yet, staying account-wide",
-            user_uuid
+            user_hash = %hash_sync_user(user_uuid),
+            "Stream without device_uuid; account has no device yet, staying account-wide"
         ),
     }
     Ok(fallback)

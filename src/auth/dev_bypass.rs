@@ -50,6 +50,12 @@ pub fn dev_bypass_identity(
     if google_auth_token.starts_with(DEV_TOKEN_PREFIX) {
         // Loud on purpose. A `dev-auth` binary is not supposed to be anywhere a request can
         // reach it from outside a laptop, so every use of this path is worth a log line.
+        //
+        // The one place the raw id is still logged, deliberately: constraint 1 keeps this
+        // file's `dev-auth` gate out of every shipped binary, so this line cannot reach
+        // Cloud Logging and there is nothing here for an erasure path to miss -- while the
+        // id it was handed is exactly what a developer is looking at when they read it.
+        // `scripts/check_constraints.sh` exempts this file for that reason.
         tracing::warn!(
             user_id = %requested_user_id,
             "dev-auth: accepting an unverified `mock.` login. This build must never be deployed."

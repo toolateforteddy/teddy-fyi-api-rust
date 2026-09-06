@@ -264,7 +264,13 @@ pub(crate) async fn charge_gemini_call_on_day(
     }
     if user_calls > limits.per_user_per_day {
         tracing::warn!(
-            user_id = %user_id,
+            // Hashed like every other identifier that reaches the logs; the digest is
+            // stable within a retention window, so "which account is burning the budget"
+            // is still answerable from the log line alone.
+            user_hash = %crate::observability::http::hash_user_id(
+                user_id,
+                &crate::observability::http::log_hash_salt_from_env(),
+            ),
             calls = user_calls,
             limit = limits.per_user_per_day,
             "Gemini call refused: account over its daily budget"

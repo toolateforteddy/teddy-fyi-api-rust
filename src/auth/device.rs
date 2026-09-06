@@ -423,8 +423,15 @@ pub async fn claim_for_user(
     raw_user_code: &str,
     product: Option<Product>,
 ) -> Result<StatusCode, StatusCode> {
+    // See `refresh_handler`: the raw subject never reaches the logs, because Cloud Logging
+    // is outside the reach of every erasure path this service has.
+    let user_hash = crate::observability::http::hash_user_id(
+        user_id,
+        &crate::observability::http::log_hash_salt(&state.jwt_secret),
+    );
+
     if claim_failures_exhausted(state, user_id).await? {
-        tracing::warn!(user_id = %user_id, "Device claim rate limit reached");
+        tracing::warn!(user_hash = %user_hash, "Device claim rate limit reached");
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -467,7 +474,7 @@ pub async fn claim_for_user(
     match claimed {
         Some(row) => {
             tracing::info!(
-                user_id = %user_id,
+                user_hash = %user_hash,
                 client_uuid = %row.client_uuid,
                 "Device authorization claimed"
             );
@@ -526,7 +533,13 @@ async fn record_claim_failure(state: &AppState, user_id: &str, user_code: &str) 
         tracing::error!("Failed to increment device authorization attempts: {:?}", e);
     }
 
-    tracing::info!(user_id = %user_id, "Device claim failed");
+    tracing::info!(
+        user_hash = %crate::observability::http::hash_user_id(
+            user_id,
+            &crate::observability::http::log_hash_salt(&state.jwt_secret),
+        ),
+        "Device claim failed"
+    );
 }
 
 /// `POST /auth/device/poll` — unauthenticated. The tablet's side of the handshake.
@@ -660,7 +673,10 @@ pub async fn poll_handler(
     .await?;
 
     tracing::info!(
-        user_id = %user_id,
+        user_hash = %crate::observability::http::hash_user_id(
+            &user_id,
+            &crate::observability::http::log_hash_salt(&state.jwt_secret),
+        ),
         client_uuid = %payload.client_uuid,
         "Device authorization consumed"
     );

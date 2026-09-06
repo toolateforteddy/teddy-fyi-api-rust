@@ -312,3 +312,133 @@ async fn a_sync_that_declares_paging_is_bounded_and_says_so(pool: PgPool) {
     assert_eq!(res.drawings.len(), page_size as usize);
     assert!(res.has_more, "a truncated download must say it was truncated");
 }
+
+// --- todo ---------------------------------------------------------------------------
+//
+// The todo tables page on the same rule as configs and drawings, against `updated_at`
+// rather than a millisecond count (`paging::trim_page_at`). They are safe to page for a
+// reason the grocery tables are not: inclusion here is `"userId" = $1 AND updated_at > $2`,
+// so a row is in the download only when its own cursor column says so, and ordering by
+// that column agrees with the filter. The grocery download's membership disjunct breaks
+// exactly that property — see `grocery/remote_mutations.rs`.
+
+use crate::routes::sync::fetch_remote_todo_mutations;
+
+/// Inserts `count` todo items for `user_id`, each a second apart so a page can stop.
+async fn seed_todos(pool: &PgPool, user_id: &str, count: i64) {
+    for n in 0..count {
+        sqlx::query!(
+            "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \
+             \"scheduledAt\", \"userId\", \"isDaily\", priority, sync_state, version, is_deleted, \
+             updated_at, updated_by_client) \
+             VALUES ($1, $2, FALSE, 0, 0, 0, $3, FALSE, 0, 'SYNCED', 1, FALSE, \
+                     now() - interval '1 day' + ($4 || ' seconds')::interval, 'other-client')",
+            format!("todo-{n}"),
+            format!("Task {n}"),
+            user_id,
+            n.to_string()
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+/// A todo download larger than one page stops at the page and says where to resume.
+#[sqlx::test]
+async fn a_large_todo_download_is_bounded_and_resumable(pool: PgPool) {
+    seed_todos(&pool, "user-1", 25).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let first = fetch_remote_todo_mutations(&mut tx, "user-1", "client-1", None, Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(first.changes.len(), 10, "the page bound was not applied");
+    let cursor = first
+        .next_cursor
+        .expect("a truncated page must hand back a cursor");
+
+    // Resuming from that cursor picks up where the page stopped, with no row delivered
+    // twice and none skipped.
+    let second = fetch_remote_todo_mutations(&mut tx, "user-1", "client-1", Some(cursor), Some(10))
+        .await
+        .unwrap();
+    assert_eq!(second.changes.len(), 10);
+
+    let first_ids: Vec<&str> = first.changes.iter().map(|c| c.id.as_str()).collect();
+    let second_ids: Vec<&str> = second.changes.iter().map(|c| c.id.as_str()).collect();
+    assert!(
+        second_ids.iter().all(|id| !first_ids.contains(id)),
+        "the second page repeated rows from the first: {first_ids:?} then {second_ids:?}"
+    );
+
+    // Walking the cursor to the end reaches every row exactly once.
+    let mut seen = first.changes.len() + second.changes.len();
+    let mut cursor = second.next_cursor.expect("still more to come");
+    loop {
+        let page = fetch_remote_todo_mutations(&mut tx, "user-1", "client-1", Some(cursor), Some(10))
+            .await
+            .unwrap();
+        seen += page.changes.len();
+        match page.next_cursor {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+    assert_eq!(seen, 25, "walking the pages did not deliver every row exactly once");
+}
+
+/// A client that cannot resume is served whole, exactly as before paging existed.
+#[sqlx::test]
+async fn a_todo_download_for_a_client_without_paging_is_not_bounded(pool: PgPool) {
+    seed_todos(&pool, "user-1", 25).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let all = fetch_remote_todo_mutations(&mut tx, "user-1", "client-1", None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(all.changes.len(), 25);
+    assert!(all.next_cursor.is_none(), "an unpaged read must never truncate");
+}
+
+/// More rows than a page share one instant — the case a `>` cursor cannot split.
+///
+/// One sync request stamps every row it writes with the same clock reading, so this is
+/// what a single large upload looks like on the next device's download. The instant is
+/// served whole rather than half-delivered, because a cursor landing inside it would make
+/// the remainder unreachable.
+#[sqlx::test]
+async fn a_todo_instant_bigger_than_a_page_is_served_whole(pool: PgPool) {
+    // 15 rows sharing one updated_at, against a page size of 10.
+    for n in 0..15 {
+        sqlx::query!(
+            "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \
+             \"scheduledAt\", \"userId\", \"isDaily\", priority, sync_state, version, is_deleted, \
+             updated_at, updated_by_client) \
+             VALUES ($1, $2, FALSE, 0, 0, 0, 'user-1', FALSE, 0, 'SYNCED', 1, FALSE, \
+                     TIMESTAMPTZ '2026-01-01 00:00:00Z', 'other-client')",
+            format!("todo-{n}"),
+            format!("Task {n}")
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let mut tx = pool.begin().await.unwrap();
+    let page = fetch_remote_todo_mutations(&mut tx, "user-1", "client-1", None, Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        page.changes.len(),
+        15,
+        "an instant larger than a page must be served whole, not split"
+    );
+    assert!(
+        page.next_cursor.is_some(),
+        "serving the instant whole still has to move the cursor onto it"
+    );
+}

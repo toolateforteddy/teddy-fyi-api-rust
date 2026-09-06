@@ -25,7 +25,16 @@ pub async fn delete_user_data_handler(
     let (deleted, affected_users) = delete_user_data(&mut tx, &user_id).await?;
     tx.commit().await?;
 
-    tracing::info!(user_id = %user_id, deleted = ?deleted, "Deleted all data for user");
+    // The erasure endpoint above all: a raw subject here would survive, in Cloud Logging,
+    // the very request that was meant to remove it.
+    tracing::info!(
+        user_hash = %crate::observability::http::hash_user_id(
+            &user_id,
+            &crate::observability::http::log_hash_salt(&state.jwt_secret),
+        ),
+        deleted = ?deleted,
+        "Deleted all data for user"
+    );
 
     announce_deletion(&state.redis_publisher, &user_id, &affected_users).await;
 

@@ -1,4 +1,4 @@
-use crate::routes::sync::types::AppError;
+use crate::routes::sync::types::{hash_sync_user, AppError};
 use sqlx::{Postgres, Transaction};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -26,9 +26,9 @@ pub async fn resolve_sync_device(
         None => {
             let device_uuid = fallback_device(tx, user_id, requested_name).await?;
             tracing::debug!(
-                "Sync request without device_uuid for user {}; falling back to device {}",
-                user_id,
-                device_uuid
+                user_hash = %hash_sync_user(user_id),
+                device_uuid = %device_uuid,
+                "Sync request without device_uuid; falling back to the account's device"
             );
             Ok(device_uuid)
         }
@@ -234,7 +234,7 @@ pub async fn ensure_device(
                 // 429 and not 403: nothing about the request is wrong, the account simply
                 // has no room. Removing a device it no longer uses makes this succeed.
                 tracing::warn!(
-                    user_id = %user_id,
+                    user_hash = %hash_sync_user(user_id),
                     registered,
                     "Device registration refused: per-account device cap reached"
                 );
@@ -244,7 +244,11 @@ pub async fn ensure_device(
                 )));
             }
 
-            tracing::info!("Registering device {} for user {}", device_uuid, user_id);
+            tracing::info!(
+                user_hash = %hash_sync_user(user_id),
+                device_uuid = %device_uuid,
+                "Registering device"
+            );
             sqlx::query!(
                 "INSERT INTO devices (id, user_id, name) VALUES ($1, $2, $3)",
                 device_uuid,

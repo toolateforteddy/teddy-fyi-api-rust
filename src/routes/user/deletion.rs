@@ -249,7 +249,14 @@ pub async fn announce_deletion(
         device_uuid: None,
     };
     if let Err(err) = publish_user_event(publisher, user_id, &event).await {
-        tracing::warn!("Failed to publish deletion event for user {}: {:?}", user_id, err);
+        tracing::warn!(
+            user_hash = %crate::observability::http::hash_user_id(
+                user_id,
+                &crate::observability::http::log_hash_salt_from_env(),
+            ),
+            "Failed to publish deletion event for user: {:?}",
+            err
+        );
     }
 }
 

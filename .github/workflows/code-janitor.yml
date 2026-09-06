@@ -55,4 +55,5 @@ jobs:
           test_command: 'SQLX_OFFLINE=true DATABASE_URL=postgres://postgres:password@localhost:5432/test_db cargo test'
           max_line_diff: 80
           draft_pr: false
+          assignees: 'toolateforteddy'
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}

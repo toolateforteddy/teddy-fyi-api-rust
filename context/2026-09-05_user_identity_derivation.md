@@ -95,15 +95,26 @@ is no server secret in it. Anyone who knows a user's Google `sub` can compute th
 `configs.user_id` / `drawings.user_id` / `devices.user_id` offline, in one line, with no access to
 anything.
 
-And the subject is not secret. Two confirmed exposures inside this service:
+And the subject is not secret. This list said "two confirmed exposures" until 2026-09-06; the
+count was wrong, and the correction is the point. **Six fields across five tables** hand the
+subject to co-members, all in `src/routes/sync/grocery/remote_mutations.rs`, each query joining
+through membership and returning the row's owning subject:
 
-- `grocery_list_members` rows carry `"userId"` and are handed to **every co-member** of a shared
-  list — see the `updated_members` query in `src/routes/sync/grocery/remote_mutations.rs`, which
-  self-joins the table and returns each member row's `userId` in the sync response. Anyone you
-  share a grocery list with learns your raw subject.
-- `join_handler` in `src/routes/lists/handlers.rs` builds membership row ids as
-  `format!("{}-member-{}", list_id, user_id)`, so the subject is embedded in an id that travels
-  with the row.
+- `grocery_lists."ownerId"` (line 62) — the list owner's;
+- `grocery_list_members."userId"` (line 98) — **every member's**;
+- `stores."userId"` (line 135), `categories."userId"` (line 174),
+  `grocery_items."userId"` (line 215), `grocery_item_store_info."userId"` (line 267) — whoever
+  created the store, the category, the item, the price.
+
+So sharing one grocery list discloses the raw subject of everyone who has ever touched it, not
+just its members. A seventh channel is now closed: `join_handler` in
+`src/routes/lists/handlers.rs` used to build membership row ids as
+`format!("{}-member-{}", list_id, user_id)`, embedding the subject in an id that travelled with
+the row; those ids are `gen_random_uuid()` since
+[#78](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/78), though rows written before
+it keep their old ids.
+
+Closing the remaining six is `2026-09-05_pre_split_changes.md` item 46.
 
 ### What that does *not* enable today
 

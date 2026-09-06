@@ -114,6 +114,7 @@ Rules that keep concurrent work from colliding:
 | 43 | `sync_state` is an ENUM on two tables and TEXT on seven | 4 | At the freeze |
 | 44 | Login is a two-statement, non-transactional upsert | 4 | Anytime |
 | 45 | Rate limiting is per-process | 4 | Anytime |
+| 46 | The Google subject reaches co-members through six fields | 7 | Now |
 
 ---
 
@@ -971,6 +972,124 @@ freeze.
 effective limit is `burst × replicas` and a rollout resets every bucket. Redis is already a
 dependency and already the store for the AI budget. Low priority at one replica; worth knowing
 before the replica count changes.
+
+## 46. The Google subject reaches co-members through six fields — **7**, Now
+
+Split out of item 18, which named one channel of two and closed it. The id is fixed; the
+disclosure is not.
+
+### What leaks, and to whom
+
+Every shared-list download in `src/routes/sync/grocery/remote_mutations.rs` joins through
+membership and returns the row's owning subject:
+
+| Line | Table | Field | Whose subject a co-member learns |
+|---|---|---|---|
+| 62 | `grocery_lists` | `ownerId` | the list owner's |
+| 98 | `grocery_list_members` | `userId` | **every member's** |
+| 135 | `stores` | `userId` | whoever created the store |
+| 174 | `categories` | `userId` | whoever created the category |
+| 215 | `grocery_items` | `userId` | whoever added each item |
+| 267 | `grocery_item_store_info` | `userId` | whoever set the price |
+
+Each is copied straight into the payload struct (`GroceryListData.owner_id`,
+`GroceryListMemberData.user_id`, `StoreData`/`CategoryData`/`GroceryItemData`/
+`GroceryItemStoreInfoData.user_id`). So joining one shared list discloses the raw Google
+subject of everyone who has ever touched it — not just the members, but the authors of every
+item on it.
+
+The derivation note records the membership row and the id. It does not record the other five;
+that list is incomplete and is corrected in the same change that adds this item.
+
+### How bad it is
+
+The derivation note's own conclusion holds and is worth not inflating: **the derived UUID is
+an identifier, not a capability.** The middleware requires a signed JWT and every query scopes
+by the caller's own server-derived id, never a body field. Two things it does buy:
+
+* `parse_or_hash_uuid` is **unkeyed**, so a co-member who learns your subject computes your
+  `configs`/`drawings`/`devices` UUID offline. Useless today; trivially exploitable the day any
+  path accepts a user id from a request body.
+* It is a real disclosure about a real person regardless of exploitability. Blast radius is one
+  household today and grows the moment a list is shared past one.
+
+### Why Phase 5 does not fix it
+
+`2026-09-05_identity_model.md` §10 said teddy.fyi keeps raw subjects after the split, so the
+re-key would have fixed ScribbleRoute and left this untouched indefinitely. **That decision was
+revisited on 2026-09-06: one opaque surrogate on both sides.** §10 is amended accordingly.
+
+### The decision
+
+**A surrogate `users.id` — an opaque UUID derived from nothing — sent everywhere the subject is
+sent today.** Considered and rejected: sending `parse_or_hash_uuid(sub)` instead (cheap, but it
+puts ScribbleRoute's user key in teddy.fyi payloads and keeps a derived id the identity model is
+retiring) and a per-list opaque handle (most private, most work, and it forecloses nothing to
+defer).
+
+### What the clients actually do — the part that sizes this
+
+Checked in the client repos rather than assumed, because the cost turns entirely on where each
+client gets the id it holds. Split plan Phase 0 step 3 asks this question; this is its answer.
+
+**`toolateforteddy/teddy-fyi-android` (verified directly, at 4efe9c6).**
+`AuthUtils.extractUserIdFromToken` base64-decodes a JWT payload and reads `sub`. Its call sites
+disagree about whose JWT:
+
+* Google sign-in decodes **Google's** ID token — `MainActivity.kt:153`, `MainActivity.kt:243`,
+  `AuthRepository.kt:45`. The client never asks the server who it is.
+* Device pairing decodes **ours** — `DevicePairingRepository.kt:154`, because a Fire tablet has
+  no Google token to read.
+
+Both yield the same string today only because our `sub` *is* the Google subject. It is not held
+shallowly: persisted encrypted beside the tokens (`UserSession.kt`), sent as `user_id` in the
+refresh body, read in roughly 110 places under `app/src/main`, and stored **on local Room rows**
+— `GroceryItem`, `Store`, `Category`, `GroceryListMember`, `GroceryItemStoreInfo`, `TodoList`,
+`UserSyncMetadata`.
+
+**`ScribbleRoute-Labs/toybox` (second-hand — not verified here).** The repo is private and
+cannot be attached to a session that already holds `toolateforteddy` sources, so it was read by
+a separate session:
+<https://claude.ai/code/session_01BnszfeoSxX2kiQedj3wm3A>. Its summary reports a client release
+is needed there too — the Google path never learns the server id, and existing `account_id` rows
+strand — and that the pairing path *prefers a `user_id` field from the poll response* while the
+Google path does not. **Treat those as claims to confirm against that transcript, not as
+findings of this note.**
+
+One of them was checkable here and is worth knowing: `/auth/device/poll` returns `AuthResponse`,
+which is `access_token` and `refresh_token` and nothing else. There is no `user_id` field. So a
+client that already prefers one is preferring a field this server has never sent, and always
+falling through to decoding the token.
+
+### The shape that follows
+
+The cost splits by **sign-in path, not by product** — which is why ScribbleRoute, being
+pairing-first, is the cheaper side:
+
+| Path | Learns identity from | Cost |
+|---|---|---|
+| Device pairing | our token; toybox already looks for a server field | **Server-only**, backward compatible |
+| Google sign-in | Google's ID token, directly | **Client release** — not fixable server-side |
+
+So it stages, and the first stage needs nobody's permission:
+
+1. **Add `user_id` to the auth responses** (`AuthResponse`, and the device poll's). Additive,
+   backward compatible, no client release — and a client already reading the field starts
+   getting the right answer for free.
+2. **Client releases** teaching both repos to take identity from that field rather than from a
+   decoded token, on both sign-in paths.
+3. **Surrogate column and backfill**, then send it in the six fields above. Row *ids* do not
+   change, so nothing is orphaned — but every client's stored `userId` is stale until re-sync,
+   and the backfill bumps `updated_at`, so the whole grocery corpus re-downloads once. At one
+   household that is cheap; it is the moment to do it while it is.
+
+### Open before this is schedulable
+
+* The `account_id` stranding claim from the toybox session — does that repo need a local data
+  migration as well as a release?
+* Whether any client computes `parse_or_hash_uuid(sub)` itself rather than receiving ids. A
+  client that derives it locally cannot be corrected server-side at all. Asked of the toybox
+  session; the answer is in its transcript and is not restated here because it was not verified.
 
 ---
 

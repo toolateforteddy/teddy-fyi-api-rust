@@ -241,16 +241,30 @@ saving scales with the size of `drawings`, which at internal-testing volume is s
 re-checking that assumption against the real table size before the freeze; it is not expected to
 change the answer.
 
-## 10. Not doing: the teddy.fyi side
+## 10. ~~Not doing: the teddy.fyi side~~ — reversed on 2026-09-06
 
-`teddy-fyi-api-rust` keeps raw Google subjects after the split. One household, one provider, no
-published policy, and the grocery/todo tables carry the subject in `"userId"`/`"ownerId"` columns
-throughout. Divergence between the two repos is the point of splitting, not a debt to repay.
+**This section used to say teddy.fyi keeps raw Google subjects after the split.** The surrogate
+is now wanted on *both* sides, and the reason is the one this section dismissed too quickly.
 
-Two things stay true there and are worth remembering rather than rediscovering: the raw subject
-still leaks to co-members of a shared grocery list through `grocery_list_members`, and
-`join_handler` still embeds it in membership row ids. Both are documented in the derivation note.
-If the grocery iOS app ever needs Sign in with Apple, this note applies to it unchanged.
+The original argument was that divergence between the two repos is the point of splitting, not a
+debt to repay: one household, one provider, no published policy. What it under-weighted is that
+the subject is not merely *stored* on the teddy.fyi side — it is **disclosed**, to every
+co-member of a shared grocery list, through six fields across five tables and not the one this
+section named. Storage is a decision that can differ per product. Disclosing a person's Google
+account identifier to everyone they share a shopping list with is not a decision anybody made,
+and it does not become one by being written down here.
+
+Keeping raw subjects on one side would also mean the two repos disagree about what a user id
+*is* for as long as both exist, which is the kind of divergence that costs a translation layer
+rather than saving a migration.
+
+The inventory, the client-side cost and the staging are
+`2026-09-05_pre_split_changes.md` item 46. The short version: the cost splits by sign-in path,
+not by product — a pairing-first client can be corrected server-side, a Google-sign-in client
+cannot, because it reads `sub` from Google's own ID token and never asks us.
+
+If the grocery iOS app ever needs Sign in with Apple, the rest of this note applies to it
+unchanged, and now so does the surrogate.
 
 ## 11. Forward notes for the Apple work
 

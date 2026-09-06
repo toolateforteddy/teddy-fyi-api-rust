@@ -273,14 +273,27 @@ pub async fn join_handler(
     let list_id = invite.list_id;
 
     // Create or re-activate list membership for the caller.
-    let member_id = format!("{}-member-{}", list_id, user_id);
+    //
+    // The id is random, not derived. It used to be `format!("{}-member-{}", list_id,
+    // user_id)`, and that id syncs verbatim to every other member of the list -- so
+    // joining a shared grocery list handed the joiner's raw Google subject to everyone
+    // else on it. Keeping raw subjects in `users.id` is a storage decision the identity
+    // note makes deliberately; disclosing one to a co-member is not the same decision.
+    //
+    // What the derivation was silently buying is the `ON CONFLICT` below: a re-join has to
+    // find the row this account already has for this list and revive it, not add a second
+    // one. That now comes from the unique index on ("listId", "userId") added in
+    // 20260909120000, which is where the constraint belonged in the first place -- the
+    // string was only ever encoding it. An existing row keeps its old id and is still
+    // matched by the pair.
+    let member_id = uuid::Uuid::new_v4().to_string();
     let joined_at = Utc::now().timestamp_millis();
 
     sqlx::query!(
         r#"INSERT INTO grocery_list_members (
             id, "listId", "userId", role, "joinedAt", version, is_deleted, sync_state, updated_at, updated_by_client
         ) VALUES ($1, $2, $3, $4, $5, 1, FALSE, 'SYNCED', NOW(), NULL)
-        ON CONFLICT (id) DO UPDATE SET
+        ON CONFLICT ("listId", "userId") DO UPDATE SET
             is_deleted = FALSE,
             version = grocery_list_members.version + 1,
             updated_at = NOW(),

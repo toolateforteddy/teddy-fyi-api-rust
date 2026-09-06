@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grocery_list_members (id, \"listId\", \"userId\", role, \"joinedAt\", is_deleted)\n           VALUES ($1, $2, $3, 'MEMBER', 0, TRUE)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0d1bfae2ed3ee5fa023156d5a0c202e3a5e8c0c57d8075ccbe76acb480f5f3b6"
+}

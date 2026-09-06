@@ -718,7 +718,7 @@ rather than turn the setting off.
 **`k8s/maintenance.yaml` was the one pod left unhardened** — the nginx write-freeze
 responder added by [#61](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/61),
 which postdates this survey and which #74 did not reach. Closed in
-[#PRNUM](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/PRNUM), and it was not a
+[#83](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/83), and it was not a
 copy of the block above: nginx needs a writable pid file and temp directories, and the
 image's entrypoint writes to `/etc/nginx/conf.d` before nginx ever starts. All four pods in
 `k8s/` now carry the same guarantees.

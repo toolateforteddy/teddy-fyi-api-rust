@@ -637,7 +637,7 @@ it has no ceiling at all.
 
 ## 20. One bad item fails the whole batch — **7**, Now — **LANDED**
 
-**Landed** in [#PRNUM](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/PRNUM),
+**Landed** in [#79](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/79),
 as the decision this item asked for rather than a change of behaviour.
 
 **The model, now written down in `src/routes/sync/rejections.rs`: a batch is

@@ -1,3 +1,30 @@
+//! The download half of a grocery sync: everything the caller's devices have not seen.
+//!
+//! # The membership disjunct, and why it is not the accident it looks like
+//!
+//! Every query below carries a variant of
+//!
+//! ```sql
+//! AND (x.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))
+//! ```
+//!
+//! and the second half of it means *any* change to the caller's membership row re-sends
+//! the entire list — every item, store and category on it — however old those rows are.
+//! On a shared list that is the single largest driver of download volume here, and a role
+//! change or a re-saved membership triggers it for no benefit at all.
+//!
+//! It is still load-bearing, and removing it is a data-loss bug rather than an
+//! optimisation. A member who joins an existing list has a cursor from their *own*
+//! account's last sync, which is newer than items the list has held for weeks; with only
+//! `x.updated_at > $2` none of them match, so the list arrives empty and stays empty until
+//! somebody happens to edit each row. `tests::grocery::test_new_member_receives_items_older_than_their_cursor`
+//! pins that, and fails with an empty download if the disjunct is taken out.
+//!
+//! So it is worth *narrowing* — the case it exists for is gaining access, not every write
+//! to the row — but narrowing it needs a way to tell "this membership is new to me" from
+//! "this membership changed", which the row does not carry today. Anything that touches
+//! this has to keep that test passing.
+
 use crate::routes::sync::types::*;
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};

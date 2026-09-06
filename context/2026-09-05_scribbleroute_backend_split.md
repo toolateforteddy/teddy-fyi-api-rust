@@ -252,8 +252,12 @@ the current one has been observed healthy for at least a day of real tablet traf
    * the **orphan audit** — `configs`/`drawings`/`devices` rows whose `user_id` is the hash of no
      surviving `users.id`. Some are expected: those two tables predate `users` by one migration.
      A large count makes the re-key a different conversation.
-   * whether the Android and iOS clients read `sub` from **our** JWT or take Google's `sub` from
-     the Google ID token. The second answer means a client release before Phase 5.
+   * ~~whether the Android and iOS clients read `sub` from **our** JWT or take Google's `sub`
+     from the Google ID token.~~ **Answered 2026-09-06: they take Google's `sub`** — the second
+     answer, so a client release does precede Phase 5, and the compatibility shim it needs
+     outlives client versions rather than tokens. The release is behaviourally a no-op before the
+     cutover, so it can and should ship now: its adoption curve, not the freeze, is the long pole
+     in front of the Phase 5 re-key. See `context/2026-09-05_identity_model.md` §7.1-7.2.
 
 ### Phase 1 — The product profile (one repo, one deployment, no visible change)
 

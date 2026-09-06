@@ -158,14 +158,34 @@ does not need a flag day, a dual-write build, or a token version claim.
 
 Constraints on it:
 
-* **Lifetime: 30 days** after cutover — comfortably past the seven-day refresh TTL, so no live
-  session is severed.
+* ~~**Lifetime: 30 days** after cutover — comfortably past the seven-day refresh TTL, so no live
+  session is severed.~~ **Wrong; see the amendment below.**
 * Newly minted tokens carry the surrogate from the moment of cutover. `Claims.sub` never again
   carries a provider subject; that also stops a correlatable provider identifier riding in a token.
-* **Delete it on a date, with a test that pins its removal.** A shim with no expiry is a permanent
-  second identity path, which is the thing this note is trying to end.
+* **Delete it deliberately, with a test that pins its removal.** A shim with no expiry is a
+  permanent second identity path, which is the thing this note is trying to end. This still holds
+  — what changed is the trigger, not the intent.
 
-## 7. The open question that decides the scope
+**Amended 2026-09-06, when §7 was answered.** This section assumed the shim only had to outlive
+*tokens*. It has to outlive *client versions*: the clients derive `user_id` from Google's subject
+(§7), so every app build in the field keeps sending subjects indefinitely, and a lifetime pinned to
+the seven-day refresh TTL would sever exactly the sessions it was meant to protect. Two corrections
+follow. The shim's scope is both call sites in §7.1, not just refresh. And its removal trigger is
+the adoption counter of §7.2 step 2 — measured, with a floor date — rather than 30 days on a
+calendar.
+
+## 7. The question that decided the scope — **answered 2026-09-06**
+
+**The clients take Google's `sub` from the Google ID token.** They do not read `sub` out of our
+JWT. So the second branch below is the live one, and the consequences are larger than that branch
+states — large enough that §6 and §8 are both amended by it.
+
+*(Answered by the repo owner on 2026-09-06, not by an audit of the client repos. An earlier answer
+in the other direction was retracted the same day, so if this ever needs to be load-bearing under
+a freeze, confirm it in `toybox` before acting on it.)*
+
+The original analysis, kept because it is what the answer is an answer to:
+
 
 `user_id` is not internal to the server. It is a field of `LoginRequest` and `RefreshRequest`, and
 it comes back in `BrowserAuthResponse`. `refresh_handler` looks the session up by
@@ -182,9 +202,58 @@ Google's `sub` from the Google ID token itself. Which one it does decides the si
 * **Derives it from the Google ID token** → that client breaks permanently at cutover and needs a
   release *before* the migration, not after.
 
-**This must be checked in the Android and iOS clients before the migration is scheduled.** It is
-the one unknown that can turn a server-side change into a coordinated client rollout, and it is
-cheap to answer.
+This had to be checked in the Android and iOS clients before the migration could be scheduled. It
+was the one unknown that could turn a server-side change into a coordinated client rollout, and it
+was cheap to answer. It turned into one.
+
+### 7.1 What the answer actually breaks
+
+"A client release before the migration" undersells it in two directions.
+
+**The break is not bounded by the refresh TTL.** Every app version already in the field computes
+`user_id` from Google's subject and will keep doing so for as long as it runs. Waiting seven days,
+or thirty, changes nothing: the clock is client-version attrition, and on tablets that update
+rarely it is long. This is the assumption §6 got wrong.
+
+**It is not only the refresh path.** Two places take a user identifier from a client body and will
+disagree with a surrogate-bearing token:
+
+* `refresh_handler` looks the session up by `(user_id, client_uuid)` from an unauthenticated body
+  (`src/auth/handlers.rs`). Post-cutover `sessions.user_id` is the surrogate, the client sends the
+  Google subject, the lookup misses — and the miss paths delete sessions rather than no-op.
+* `grocery_list_members` sync compares a body-supplied `user_id` against the claims identity
+  (`item.user_id == user_id`, and a mismatch against the stored row is rejected outright, in
+  `src/routes/sync/grocery/grocery_list_members.rs`). An old client writing a membership row sends
+  the Google subject where the token now carries a surrogate.
+
+`login_handler` is *not* in this list: production identity comes from `google_payload.sub` on the
+validated token and `payload.user_id` is discarded, so login keeps working untouched. That matters
+— it means old clients can still authenticate, and only the paths above need the mapping.
+
+So the shim of §6 is not a courtesy for stale tokens. It is the compatibility surface for every
+client version that predates the fix, it has to canonicalise **both** paths above, and it cannot
+be deleted on a date derived from a token lifetime.
+
+### 7.2 The multi-step migration this forces
+
+The step that makes this tractable is that the client fix is a **no-op until cutover**: today
+`Claims.sub` *is* the Google subject, so a client reading `sub` from our JWT gets a byte-identical
+value to the one it computes now. The corrected client can therefore ship immediately and bake for
+months without waiting on any server work.
+
+1. **Ship the client fix now** — Android and iOS read `user_id` from our JWT's `sub`. Behaviourally
+   identical pre-cutover, so it carries no release risk and needs no coordination with the server.
+2. **Measure adoption server-side.** Count requests arriving on the two paths in §7.1 whose
+   `user_id` does not parse as a UUID. Pre-cutover that counter is every request; it decays as the
+   fleet updates, and it is the only honest signal for step 5.
+3. **Server cutover** in Phase 5's freeze, unchanged from §8 — the copy program mints the
+   surrogates and rewrites the children.
+4. **The shim serves the tail**, on both paths, for as long as step 2's counter is non-zero.
+5. **Remove the shim** when that counter reaches zero, or on a forced-update date, whichever the
+   product decision in §12 picks.
+
+Steps 1 and 2 are Phase 0 work — cheap, independent of the split, and the long pole is step 1's
+adoption curve, so starting it late is what actually delays Phase 5.
 
 ## 8. Where this happens: Phase 5 of the split
 
@@ -212,8 +281,11 @@ mapping. It needs the same Rust-side hash join as `find_stale_users` to find the
 
 **Prerequisites, in order:**
 
-1. Answer §7 for both clients. This and the orphan audit are Phase 0 of the split — cheap, and
-   much better answered before a freeze than during one.
+1. ~~Answer §7 for both clients.~~ **Answered 2026-09-06 — the clients read Google's `sub`, so
+   this prerequisite grew.** What it now requires is §7.2 steps 1 and 2: the corrected client
+   shipped, and the adoption counter in place to watch it land. Step 1 is a no-op pre-cutover, so
+   it can ship immediately — and because its adoption curve is the long pole in front of Phase 5,
+   it should. The orphan audit below is the other half of Phase 0.
 2. Run the orphan audit from the derivation note's step 2 — rows whose `user_id` is the hash of no
    surviving `users.id`. `configs` and `drawings` predate the `users` table by one migration, so
    some are expected; a large count makes this a different conversation.
@@ -288,7 +360,10 @@ Not part of this migration. Recorded so the schema above is not re-litigated whe
 
 | Item | Blocks | Owner |
 | :-- | :-- | :-- |
-| Do the Android/iOS clients read `sub` from our JWT or from Google's? (§7) | scheduling the migration | Phase 0, client repos |
+| ~~Do the Android/iOS clients read `sub` from our JWT or from Google's?~~ **Answered 2026-09-06: from Google's (§7).** | — | closed |
+| Ship the client fix: read `user_id` from our JWT's `sub` (§7.2 step 1) | the cutover, on its adoption curve | client repos, `toybox` |
+| Add the non-UUID `user_id` adoption counter (§7.2 step 2) | knowing when the shim can go | Phase 0 |
+| **Decide how the shim ends: attrition, or a forced-update date (§7.2 step 5)** | removing the second identity path | product |
 | Orphan audit: `configs`/`drawings`/`devices` rows with no surviving `users` row (§8) | sizing the copy program | Phase 0 |
 | Does App Store 4.8 oblige Sign in with Apple on the existing iOS clients? (§4) | priority of the Apple work | product |
 | `drawings` table size, to confirm §9's rejection | nothing; sanity check | before Phase 5 |

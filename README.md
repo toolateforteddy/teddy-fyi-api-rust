@@ -76,7 +76,9 @@ Ensure you have the following environment variables configured:
 * `GOOGLE_IOS_CLIENT_IDS`: Comma-separated client IDs of the iOS apps. Google's iOS sign-in flow issues ID tokens whose `aud` is the app's own client ID, so each of these is also accepted as an audience.
 * `GOOGLE_CLIENT_IDS`: Comma-separated client IDs for everything that is not an iOS app.
 
-  Between them these two form the accepted-audience allowlist, and at least one **must** be set in a real deployment — a normal build now refuses to start with the allowlist empty, because it could never authenticate anybody and used to say so only in a single log line at boot. The legacy single-value vars `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID_GROCERY_WEB`, and `SCRIBBLEROUTE_API_CLIENT_ID` are still honored and count towards it. Local dev omits all of them and signs in with `mock.` tokens instead; see [The `dev-auth` feature](#the-dev-auth-feature) below.
+* `SCRIBBLEKEEP_CLOUD_CLIENT_ID`: A single client ID — ScribbleKeep Cloud's Android app. It is accepted as an audience like any other, and the name of the variable classifies it as ScribbleRoute, so a Cloud session carries the `product` claim and its ScribbleKeep sync scopes are enforceable. In production it is wired from the `scribbleroute-keepcloud-client-id` secret (`k8s/api-rust.yaml`). Cloud may also be listed in `SCRIBBLEROUTE_CLIENT_IDS`; naming it twice for the same product is a duplicate, not the conflict that refuses to start.
+
+  Between them these form the accepted-audience allowlist, and at least one **must** be set in a real deployment — a normal build now refuses to start with the allowlist empty, because it could never authenticate anybody and used to say so only in a single log line at boot. The legacy single-value vars `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID_GROCERY_WEB`, and `SCRIBBLEROUTE_API_CLIENT_ID` are still honored and count towards it, as does `SCRIBBLEKEEP_CLOUD_CLIENT_ID` above. Local dev omits all of them and signs in with `mock.` tokens instead; see [The `dev-auth` feature](#the-dev-auth-feature) below.
 
   Device pairing has no bypass of its own: `POST /auth/device/claim` always validates the ID token, so the ScribbleRoute **web** client ID must be in this allowlist or every parent's claim returns `401`. It is currently supplied by `SCRIBBLEROUTE_API_CLIENT_ID`.
 * `CORS_ALLOWED_ORIGINS` (optional): Comma-separated browser origins allowed to call this API. Defaults to `https://teddy.fyi,https://scribbleroute.com,https://www.scribbleroute.com`. Never a wildcard — `allow_credentials` is on, which makes one invalid anyway.
@@ -106,7 +108,7 @@ cargo run --features dev-auth              # or: make run-dev-auth
 cargo watch -x 'run --features dev-auth'   # hot reload
 ```
 
-Leave `GOOGLE_CLIENT_IDS`, `GOOGLE_IOS_CLIENT_IDS` and the three legacy single-value vars unset in your `.env` when you do. If you specifically want to exercise *real* Google sign-in locally, drop the feature instead and configure a client ID — that is then the same binary shape production runs.
+Leave `GOOGLE_CLIENT_IDS`, `GOOGLE_IOS_CLIENT_IDS`, `SCRIBBLEKEEP_CLOUD_CLIENT_ID` and the three legacy single-value vars unset in your `.env` when you do. If you specifically want to exercise *real* Google sign-in locally, drop the feature instead and configure a client ID — that is then the same binary shape production runs.
 
 **Testing.** `make test` runs the production feature set, which is what CI runs and what proves a shipped binary rejects `mock.` tokens. `make test-dev-auth` runs the other half; a few tests exist only in one configuration or the other, so a change to `src/auth/dev_bypass.rs` wants both.
 

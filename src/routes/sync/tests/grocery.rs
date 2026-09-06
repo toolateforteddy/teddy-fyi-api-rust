@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use axum::extract::State;
 use axum::Extension;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, setup_state, sync_handler};
 use crate::routes::sync::{
     SyncRequest, SyncScope, GroceryListData, GroceryListChangeDelta, OperationType,
     GroceryListMemberData, GroceryListMemberChangeDelta, StoreData, StoreChangeDelta,
@@ -26,29 +26,13 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         sync_state: "SYNCED".to_string(),
     };
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&list_data).unwrap()),
         }],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -69,29 +53,13 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         sync_state: "SYNCED".to_string(),
     };
     let req_update = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-1".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&updated_list_data).unwrap()),
         }],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -112,29 +80,13 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
 
     // 3. Test Delete
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-1".to_string(),
             operation_type: OperationType::Delete,
             version: 3,
             data: None,
         }],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -198,29 +150,13 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         sync_state: "SYNCED".to_string(),
     };
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
         grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
             id: "member-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&member_data).unwrap()),
         }],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -257,29 +193,13 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         sync_state: "SYNCED".to_string(),
     };
     let req_update = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
         grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
             id: "member-1".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&updated_member_data).unwrap()),
         }],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -308,29 +228,13 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
 
     // 3. Test Delete
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
         grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
             id: "member-1".to_string(),
             operation_type: OperationType::Delete,
             version: 3,
             data: None,
         }],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -379,15 +283,6 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
             id: "10".to_string(),
             operation_type: OperationType::Insert,
@@ -400,13 +295,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
             version: 1,
             data: Some(serde_json::to_value(&category_data).unwrap()),
         }],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -440,15 +329,6 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         list_id: None,
     };
     let req_update = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
             id: "10".to_string(),
             operation_type: OperationType::Update,
@@ -461,13 +341,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
             version: 2,
             data: Some(serde_json::to_value(&updated_category).unwrap()),
         }],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -491,15 +365,6 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
 
     // 3. Test Delete
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
             id: "10".to_string(),
             operation_type: OperationType::Delete,
@@ -512,13 +377,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
             version: 3,
             data: None,
         }],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -609,17 +468,6 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "50".to_string(),
             operation_type: OperationType::Insert,
@@ -634,11 +482,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
             version: 1,
             data: Some(serde_json::to_value(&store_info).unwrap()),
         }],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -682,17 +526,6 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
     };
 
     let req_update = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "50".to_string(),
             operation_type: OperationType::Update,
@@ -707,11 +540,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
             version: 2,
             data: Some(serde_json::to_value(&updated_store_info).unwrap()),
         }],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -740,17 +569,6 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
 
     // 3. Test Delete
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "50".to_string(),
             operation_type: OperationType::Delete,
@@ -765,11 +583,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
             version: 3,
             data: None,
         }],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -844,23 +658,8 @@ async fn test_sync_handler_scope_grocery(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -910,29 +709,13 @@ async fn test_sync_unauthorized_grocery_list_access(pool: PgPool) {
     };
     
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-forbidden-1".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&list_data).unwrap()),
         }],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -975,13 +758,6 @@ async fn test_sync_creating_a_list_and_its_membership_in_one_batch(pool: PgPool)
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-fresh".to_string(),
             operation_type: OperationType::Insert,
@@ -994,15 +770,7 @@ async fn test_sync_creating_a_list_and_its_membership_in_one_batch(pool: PgPool)
             version: 1,
             data: Some(serde_json::to_value(&member_data).unwrap()),
         }],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -1058,29 +826,13 @@ async fn test_sync_self_insert_cannot_join_a_foreign_list(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
         grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
             id: "gatecrash-member".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&member_data).unwrap()),
         }],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1147,29 +899,13 @@ async fn test_sync_member_row_cannot_be_moved_between_lists(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
         grocery_list_member_changes: vec![GroceryListMemberChangeDelta {
             id: "glist-theirs-owner".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: Some(serde_json::to_value(&member_data).unwrap()),
         }],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1234,29 +970,13 @@ async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
     };
     
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "999".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&item_data).unwrap()),
         }],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1353,29 +1073,13 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "700".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&item_data).unwrap()),
         }],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -1512,24 +1216,8 @@ async fn test_sync_grocery_item_store_mapping_batch_of_shared_names(pool: PgPool
     .collect();
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes,
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -1607,23 +1295,7 @@ async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
     // 3. Call sync_handler for user-1
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -1682,29 +1354,14 @@ async fn test_grocery_list_delete_cascade(pool: PgPool) {
         product: None,
     };
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-cascade".to_string(),
             operation_type: OperationType::Delete,
             version: 1,
             data: None,
         }],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
@@ -1806,13 +1463,7 @@ async fn test_grocery_list_cascade_delete_conflict(pool: PgPool) {
         product: None,
     };
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-cascade-conflict".to_string(),
             operation_type: OperationType::Delete,
@@ -1851,11 +1502,7 @@ async fn test_grocery_list_cascade_delete_conflict(pool: PgPool) {
             version: 1,
             data: None,
         }],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
@@ -1960,29 +1607,14 @@ async fn test_grocery_list_delete_member_stop_collaborating(pool: PgPool) {
         product: None,
     };
     let req_delete = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "glist-stop-collab".to_string(),
             operation_type: OperationType::Delete,
             version: 1,
             data: None,
         }],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
@@ -2077,18 +1709,6 @@ async fn test_sync_grocery_item_store_info_custom_change_id(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
         grocery_item_store_info_changes: vec![GroceryItemStoreInfoChangeDelta {
             id: "custom-change-uuid-12345".to_string(),
             grocery_item_id: "item-custom-id".to_string(),
@@ -2097,11 +1717,7 @@ async fn test_sync_grocery_item_store_info_custom_change_id(pool: PgPool) {
             version: 1,
             data: Some(serde_json::to_value(&store_info).unwrap()),
         }],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -2193,23 +1809,8 @@ async fn test_collaborator_sync_pulls_existing_items(pool: PgPool) {
     };
     let req = SyncRequest {
         last_synced_at: Some(last_sync_time),
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res = crate::routes::sync::sync_handler(
@@ -2258,24 +1859,8 @@ async fn seed_list_with_member(pool: &PgPool, list_id: &str, member_id: &str, us
 
 fn member_sync_request(change: GroceryListMemberChangeDelta) -> SyncRequest {
     SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
         grocery_list_member_changes: vec![change],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     }
 }
 

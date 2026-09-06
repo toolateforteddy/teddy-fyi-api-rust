@@ -4,30 +4,12 @@ use crate::routes::sync::{
 };
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use crate::routes::sync::tests::helpers::request;
 
 /// A request with nothing in it. Each test fills in only the change vector it cares about,
 /// which keeps the interesting part of every test to a couple of lines.
 fn empty_request() -> SyncRequest {
-    SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
-    }
+    request("client-1")
 }
 
 /// Seeds a list with an owner and, optionally, extra members. Every row is stamped with the

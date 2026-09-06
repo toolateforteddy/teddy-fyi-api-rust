@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     SyncRequest, SyncScope, DrawingData, DrawingChangeDelta, ConfigData, ConfigChangeDelta,
     OperationType, AppJson, parse_or_hash_uuid
@@ -68,19 +68,7 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleBox),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
         drawing_changes: vec![DrawingChangeDelta {
             id: drawing_id.to_string(),
             operation_type: OperationType::Insert,
@@ -88,9 +76,7 @@ async fn test_sync_handler_scribble_box(pool: PgPool) {
             device_uuid: None,
             data: Some(serde_json::to_value(&drawing_data).unwrap()),
         }],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -175,18 +161,7 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
         config_changes: vec![ConfigChangeDelta {
             id: config_id.to_string(),
             operation_type: OperationType::Insert,
@@ -194,10 +169,7 @@ async fn test_sync_handler_scribble_keep(pool: PgPool) {
             device_uuid: None,
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -284,18 +256,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeepCloud),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
         config_changes: vec![ConfigChangeDelta {
             id: config_id.to_string(),
             operation_type: OperationType::Insert,
@@ -303,10 +264,7 @@ async fn test_sync_handler_scribble_keep_cloud(pool: PgPool) {
             device_uuid: Some(device_uuid),
             data: Some(serde_json::to_value(&config_data).unwrap()),
         }],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))

@@ -7,7 +7,7 @@ use crate::auth::tokens::Claims;
 use crate::routes::devices::handlers::{
     list_devices_handler, rename_device_handler, RenameDeviceRequest,
 };
-use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{self, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     AppError, AppJson, ConfigSyncItem, DrawingSyncItem, SyncRequest, SyncScope,
     parse_or_hash_uuid,
@@ -32,23 +32,11 @@ fn request(
 ) -> SyncRequest {
     SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: client_id.to_string(),
         device_uuid,
-        device_name: None,
         scope: Some(scope),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
         configs,
         drawings,
-        supports_paging: false,
+        ..helpers::request(client_id)
     }
 }
 

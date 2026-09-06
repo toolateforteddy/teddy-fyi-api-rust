@@ -4,7 +4,7 @@
 //! hold the line on both halves of it: the behaviour, through the real handler, and
 //! the shape of the call sites, which is what drifted in the first place.
 
-use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     AppError, AppJson, CategoryChangeDelta, ConfigChangeDelta, DrawingChangeDelta,
     GroceryChangeDelta, GroceryItemStoreInfoChangeDelta, GroceryListChangeDelta,
@@ -21,11 +21,7 @@ use uuid::Uuid;
 /// synced?" check is wrong: every pending delete it holds, in one request.
 fn unsynced_delete_batch(device_uuid: Uuid, live_todo: &TodoItemData) -> SyncRequest {
     SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
         device_uuid: Some(device_uuid),
-        device_name: None,
-        scope: None,
         todo_list_changes: vec![TodoListChangeDelta {
             id: "never-synced-todo-list".to_string(),
             operation_type: OperationType::Delete,
@@ -86,11 +82,7 @@ fn unsynced_delete_batch(device_uuid: Uuid, live_todo: &TodoItemData) -> SyncReq
             version: 3,
             data: None,
         }],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     }
 }
 
@@ -98,19 +90,8 @@ fn unsynced_delete_batch(device_uuid: Uuid, live_todo: &TodoItemData) -> SyncReq
 /// under the tablet scopes and so cannot ride along in the batch above.
 fn unsynced_scribble_delete_batch(device_uuid: Uuid, config_id: Uuid, drawing_id: Uuid) -> SyncRequest {
     SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
         device_uuid: Some(device_uuid),
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
         config_changes: vec![ConfigChangeDelta {
             id: config_id.to_string(),
             operation_type: OperationType::Delete,
@@ -125,9 +106,7 @@ fn unsynced_scribble_delete_batch(device_uuid: Uuid, config_id: Uuid, drawing_id
             device_uuid: Some(device_uuid),
             data: None,
         }],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     }
 }
 

@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     SyncRequest, SyncScope, ConfigSyncItem, DrawingSyncItem, AppJson, parse_or_hash_uuid
 };
@@ -47,23 +47,9 @@ async fn test_sync_handler_flat_configs(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
         configs: vec![config_item],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -128,23 +114,9 @@ async fn test_sync_handler_flat_drawings(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleBox),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
         drawings: vec![drawing_item],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -187,23 +159,9 @@ async fn test_sync_handler_flat_drawings_non_uuid_user_id(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleBox),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
         drawings: vec![drawing_item],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -257,23 +215,10 @@ async fn test_sync_handler_flat_drawings_scribble_keep(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
         configs: vec![config_item],
         drawings: vec![drawing_item],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -443,22 +388,7 @@ async fn the_same_drawing_twice_in_one_payload_versions_off_the_first(pool: PgPo
 fn blank_request() -> SyncRequest {
     SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     }
 }

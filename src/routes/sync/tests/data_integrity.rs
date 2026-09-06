@@ -7,7 +7,7 @@
 //! `crate::routes::sync::versioning` for the conflict policy and
 //! `crate::routes::sync::limits` for the bounds.
 
-use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::versioning::{MAX_SEED_VERSION, MAX_SYNC_VERSION};
 use crate::routes::sync::limits::{DEFAULT_MAX_ITEMS_PER_COLLECTION, DEFAULT_MAX_ITEMS_TOTAL};
 use crate::routes::sync::{
@@ -22,24 +22,8 @@ use uuid::Uuid;
 /// An otherwise empty sync body, so each test shows only the field it is about.
 fn blank_request(client_id: &str, scope: SyncScope) -> SyncRequest {
     SyncRequest {
-        last_synced_at: None,
-        client_id: client_id.to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(scope),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request(&client_id)
     }
 }
 

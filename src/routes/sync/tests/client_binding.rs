@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::tokens::Claims;
-use crate::routes::sync::tests::helpers::{seed_device, setup_state};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state};
 use crate::routes::sync::{
     parse_or_hash_uuid, AppJson, ConfigSyncItem, SyncRequest, SyncScope,
 };
@@ -31,23 +31,8 @@ fn claims_for(client_uuid: &str) -> Claims {
 fn empty_request(client_id: &str, scope: SyncScope, since: Option<chrono::DateTime<Utc>>) -> SyncRequest {
     SyncRequest {
         last_synced_at: since,
-        client_id: client_id.to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(scope),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request(&client_id)
     }
 }
 

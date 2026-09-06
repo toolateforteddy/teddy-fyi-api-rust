@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO todo_items (id, title, \"isCompleted\", \"createdAt\", position, \"scheduledAt\", \"userId\", \"isDaily\", priority, sync_state, version, is_deleted, updated_at, updated_by_client) VALUES ($1, $2, FALSE, 0, 0, 0, 'user-1', FALSE, 0, 'SYNCED', 1, FALSE, TIMESTAMPTZ '2026-01-01 00:00:00Z', 'other-client')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01c2f6c1051eec3435777d69c4c0c6272da58516f422178c15615c47cb6776b4"
+}

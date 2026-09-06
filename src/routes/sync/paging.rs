@@ -31,6 +31,8 @@
 //! which one oversized upload can produce — so the caller can serve that millisecond
 //! whole instead of stalling the client in a loop that never advances.
 
+use chrono::{DateTime, Utc};
+
 /// What a probe page turned out to be.
 ///
 /// The caller asks the database for `page_size + 1` rows ordered by `last_modified`; the
@@ -99,6 +101,56 @@ pub fn trim_page<T>(rows: &mut Vec<T>, page_size: usize, last_modified: impl Fn(
     match rows.last().map(&last_modified) {
         Some(next_cursor_ms) => Page::Truncated { next_cursor_ms },
         None => Page::WholeMillisecond { ms: boundary },
+    }
+}
+
+/// The `TIMESTAMPTZ` flavour of [`Page`].
+///
+/// `configs` and `drawings` store their cursor as a millisecond count; the todo and
+/// grocery tables store theirs as `updated_at TIMESTAMPTZ`. The paging *rule* is the same
+/// either way — a page must end on a whole instant, because the cursor comparison is a
+/// strict `>` against a value many rows share — so this is the same [`trim_page`] with the
+/// key read as microseconds and handed back as a timestamp.
+///
+/// Microseconds, not milliseconds: that is `timestamptz`'s own resolution, so the key is
+/// exact and the cursor that comes back out is a value a row genuinely holds. Rounding to
+/// milliseconds would hand back a cursor no row sits on, and a strict `>` against it would
+/// re-deliver or skip depending on which side of the rounding the row fell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageAt {
+    /// Everything matching the filter fitted.
+    Complete,
+    /// The page was cut short; this is the last instant it delivered whole.
+    Truncated { next_cursor: DateTime<Utc> },
+    /// More than a page of rows share this one instant, so it cannot be split. The caller
+    /// serves that instant whole rather than stalling the client in a loop that never
+    /// advances — see [`Page::WholeMillisecond`].
+    WholeInstant { at: DateTime<Utc> },
+}
+
+/// Trims a probe page of `updated_at`-cursored rows so that it ends on a whole instant.
+///
+/// The `TIMESTAMPTZ` counterpart of [`trim_page`], with the same contract: `rows` must be
+/// ordered by `updated_at` ascending and read with a limit of `page_size + 1`.
+pub fn trim_page_at<T>(
+    rows: &mut Vec<T>,
+    page_size: usize,
+    updated_at: impl Fn(&T) -> DateTime<Utc>,
+) -> PageAt {
+    // `timestamp_micros` saturates rather than wrapping, and the range it saturates at is
+    // ~±294,000 years, so no value Postgres can hold in a `timestamptz` column collides
+    // two distinct instants onto one key here.
+    match trim_page(rows, page_size, |row| updated_at(row).timestamp_micros()) {
+        Page::Complete => PageAt::Complete,
+        Page::Truncated { next_cursor_ms: micros } => PageAt::Truncated {
+            // Infallible in practice for the reason above; falling back to the row itself
+            // keeps a hypothetical out-of-range value from silently becoming the epoch.
+            next_cursor: DateTime::from_timestamp_micros(micros)
+                .unwrap_or_else(|| updated_at(rows.last().expect("Truncated implies a kept row"))),
+        },
+        Page::WholeMillisecond { ms: micros } => PageAt::WholeInstant {
+            at: DateTime::from_timestamp_micros(micros).unwrap_or_else(Utc::now),
+        },
     }
 }
 

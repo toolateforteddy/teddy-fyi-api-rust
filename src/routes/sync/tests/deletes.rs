@@ -90,6 +90,7 @@ fn unsynced_delete_batch(device_uuid: Uuid, live_todo: &TodoItemData) -> SyncReq
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 
@@ -126,6 +127,7 @@ fn unsynced_scribble_delete_batch(device_uuid: Uuid, config_id: Uuid, drawing_id
         }],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 

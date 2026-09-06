@@ -48,6 +48,7 @@ fn request(
         drawing_changes: vec![],
         configs,
         drawings,
+        supports_paging: false,
     }
 }
 

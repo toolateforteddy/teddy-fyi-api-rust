@@ -46,6 +46,7 @@ fn empty_request(scope: Option<SyncScope>) -> SyncRequest {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 

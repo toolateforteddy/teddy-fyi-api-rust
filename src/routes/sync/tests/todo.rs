@@ -42,6 +42,7 @@ async fn test_sync_handler_insert_todo_list(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -98,6 +99,7 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -142,6 +144,7 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -207,6 +210,7 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -285,6 +289,7 @@ async fn test_sync_handler_scope_todo(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -437,6 +442,7 @@ async fn test_sync_succeeds_without_icon_when_budget_is_exhausted(pool: PgPool) 
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let claims = crate::auth::tokens::Claims {

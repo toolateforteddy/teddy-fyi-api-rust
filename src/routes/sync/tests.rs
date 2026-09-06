@@ -13,6 +13,7 @@ mod grocery;
 mod identity;
 mod log_hygiene;
 mod misc;
+mod pagination;
 mod product_scope;
 mod remote_mutations;
 mod scribble;

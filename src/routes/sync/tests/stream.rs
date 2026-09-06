@@ -226,6 +226,7 @@ async fn test_config_write_publishes_to_device_channel(pool: PgPool) {
             last_modified: Utc::now().timestamp_millis(),
         }],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let _ = sync_handler(State(state), AppJson(req))

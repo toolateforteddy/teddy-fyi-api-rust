@@ -202,6 +202,19 @@ pub struct SyncRequest {
     pub configs: Vec<ConfigSyncItem>,
     #[serde(default)]
     pub drawings: Vec<DrawingSyncItem>,
+    /// Whether this client knows how to resume a download that was cut short.
+    ///
+    /// The download page bound in `crate::routes::sync::paging` is only safe for a client
+    /// that carries its cursor forward on `last_synced_at` and comes back for the rest. A
+    /// client that does not is served whole, exactly as before paging existed, because a
+    /// page it can never ask past is not a bound — it is data it will never see again.
+    ///
+    /// This cannot be inferred from `last_synced_at` being present: a client that pages
+    /// perfectly well still sends no cursor on its very first sync, which is precisely the
+    /// request most in need of a bound. So it is asked for explicitly, and defaults to
+    /// `false` for every client that shipped before the flag existed.
+    #[serde(default, alias = "supportsPaging")]
+    pub supports_paging: bool,
 }
 
 /// One request body, three readers.
@@ -275,6 +288,21 @@ pub struct SyncResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drawings: Vec<DrawingSyncItem>,
     pub server_timestamp: DateTime<Utc>,
+    /// Set when a download was cut short at a page boundary and the client still has rows
+    /// waiting for it. Additive and omitted when false, so nothing shipped today sees it.
+    ///
+    /// A client that ignores it is still correct, because `server_timestamp` carries the
+    /// truncation: it is walked back to the last millisecond this reply delivered in full,
+    /// so the ordinary "store it and send it back as `last_synced_at`" loop picks the rest
+    /// up on the next sync rather than skipping it. The flag only says "and you can do
+    /// that immediately, rather than on your next scheduled poll". See
+    /// `crate::routes::sync::paging`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_more: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug)]

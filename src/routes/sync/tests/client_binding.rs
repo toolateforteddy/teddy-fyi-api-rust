@@ -47,6 +47,7 @@ fn empty_request(client_id: &str, scope: SyncScope, since: Option<chrono::DateTi
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 

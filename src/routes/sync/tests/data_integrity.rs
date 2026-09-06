@@ -39,6 +39,7 @@ fn blank_request(client_id: &str, scope: SyncScope) -> SyncRequest {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 

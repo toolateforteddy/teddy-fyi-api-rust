@@ -213,12 +213,26 @@ Checks if the client needs to fetch new updates from the server.
 
 #### `POST /api/sync`
 Main synchronization payload reconciling local changes with remote updates.
+
+`last_synced_at` is the cursor. Store the `server_timestamp` from each reply and send it
+back here; the server then returns only what changed after it. Omitting it asks for
+everything the account owns.
+
+`supports_paging` (optional, default `false`) says the client will come back for the rest of
+a download the server cut short. When it is set, the download is bounded at
+`SYNC_DOWNLOAD_PAGE_SIZE` rows per entity, the reply carries `has_more: true`, and its
+`server_timestamp` is walked back to the last whole millisecond the reply delivered — so the
+ordinary "store it and send it back" loop resumes exactly where the page ended. When it is
+absent the reply is unbounded, because a page a client cannot ask past would cost it those
+rows rather than defer them.
+
 - **Request Body**:
   ```json
   {
     "last_synced_at": "2026-06-18T18:00:00Z",
     "client_id": "client-uuid-here",
     "scope": "ALL",
+    "supports_paging": true,
     "todoListChanges": [],
     "todoChanges": [
       {

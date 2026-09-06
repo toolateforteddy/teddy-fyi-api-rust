@@ -11,6 +11,9 @@ pub mod batching;
 pub mod limits;
 pub use limits::*;
 
+pub mod paging;
+pub use paging::*;
+
 pub mod scope_auth;
 pub use scope_auth::*;
 

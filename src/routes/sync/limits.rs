@@ -114,12 +114,36 @@ pub const DEFAULT_MAX_ITEMS_PER_COLLECTION: usize = 10_000;
 /// deliberately made of nothing.
 pub const DEFAULT_MAX_ITEMS_TOTAL: usize = 20_000;
 
+/// Largest number of rows one download hands back per entity, per request.
+///
+/// Every other constant in this file bounds what a client may *send*. This one bounds
+/// what the server sends back, which until now nothing did: the download queries have no
+/// `LIMIT`, and an initial sync drops the echo-suppression filter as well, so the reply
+/// is every row the account owns. At `DEFAULT_MAX_DRAWING_DATA_BYTES` apiece that is a
+/// response the process has to build in memory, inside the transaction, on the first
+/// request every reinstalled client makes.
+///
+/// 200 is sized off the drawing table, because drawings are three orders of magnitude
+/// heavier than configs and one page size covers both. A page of 200 is ~6 MiB of the
+/// tens-of-kilobytes drawings the apps actually produce, and 100 MiB only for an account
+/// whose every drawing sits on the 512 KiB ceiling — which is why the *number of rows* is
+/// the wrong unit in the long run and a byte budget is the right one; this is the
+/// smallest change that removes the cliff without a wire break. It is also far above a
+/// steady-state sync, which carries the handful of rows that changed since the last one,
+/// so only a first sync ever pages at all.
+///
+/// See `crate::routes::sync::paging` for how a client resumes: pages end on a whole
+/// millisecond and the reply's `server_timestamp` is walked back to it, so a client that
+/// already stores that value as its cursor pages correctly with no change of its own.
+pub const DEFAULT_SYNC_DOWNLOAD_PAGE_SIZE: usize = 200;
+
 const MAX_DRAWING_DATA_BYTES_ENV: &str = "SYNC_MAX_DRAWING_DATA_BYTES";
 const MAX_DRAWING_DATA_DEPTH_ENV: &str = "SYNC_MAX_DRAWING_DATA_DEPTH";
 const MAX_CONFIG_KEY_BYTES_ENV: &str = "SYNC_MAX_CONFIG_KEY_BYTES";
 const MAX_CONFIG_VALUE_BYTES_ENV: &str = "SYNC_MAX_CONFIG_VALUE_BYTES";
 const MAX_ITEMS_PER_COLLECTION_ENV: &str = "SYNC_MAX_ITEMS_PER_COLLECTION";
 const MAX_ITEMS_TOTAL_ENV: &str = "SYNC_MAX_ITEMS_TOTAL";
+const SYNC_DOWNLOAD_PAGE_SIZE_ENV: &str = "SYNC_DOWNLOAD_PAGE_SIZE";
 
 /// The bounds one request is checked against, resolved once per request.
 ///
@@ -134,6 +158,10 @@ pub struct SyncLimits {
     pub max_config_value_bytes: usize,
     pub max_items_per_collection: usize,
     pub max_items_total: usize,
+    /// The one bound here on the *response* rather than the request. See
+    /// [`DEFAULT_SYNC_DOWNLOAD_PAGE_SIZE`]; it rides along in this struct because it is
+    /// read from the environment once per request exactly like the others.
+    pub download_page_size: usize,
 }
 
 impl Default for SyncLimits {
@@ -145,12 +173,13 @@ impl Default for SyncLimits {
             max_config_value_bytes: DEFAULT_MAX_CONFIG_VALUE_BYTES,
             max_items_per_collection: DEFAULT_MAX_ITEMS_PER_COLLECTION,
             max_items_total: DEFAULT_MAX_ITEMS_TOTAL,
+            download_page_size: DEFAULT_SYNC_DOWNLOAD_PAGE_SIZE,
         }
     }
 }
 
 impl SyncLimits {
-    /// Reads the six overrides, falling back to the compiled defaults.
+    /// Reads the seven overrides, falling back to the compiled defaults.
     ///
     /// Zero and unparseable values fall back too, as everywhere else in this codebase: a
     /// zero bound would refuse every drawing in the product, and an operator typo must
@@ -164,6 +193,7 @@ impl SyncLimits {
             max_config_value_bytes: read_limit(MAX_CONFIG_VALUE_BYTES_ENV, defaults.max_config_value_bytes),
             max_items_per_collection: read_limit(MAX_ITEMS_PER_COLLECTION_ENV, defaults.max_items_per_collection),
             max_items_total: read_limit(MAX_ITEMS_TOTAL_ENV, defaults.max_items_total),
+            download_page_size: read_limit(SYNC_DOWNLOAD_PAGE_SIZE_ENV, defaults.download_page_size),
         }
     }
 }
@@ -377,6 +407,7 @@ mod tests {
             max_config_value_bytes: 16,
             max_items_per_collection: 3,
             max_items_total: 5,
+            download_page_size: DEFAULT_SYNC_DOWNLOAD_PAGE_SIZE,
         }
     }
 
@@ -448,6 +479,7 @@ mod tests {
             drawing_changes: vec![],
             configs: vec![],
             drawings: vec![],
+            supports_paging: false,
         }
     }
 

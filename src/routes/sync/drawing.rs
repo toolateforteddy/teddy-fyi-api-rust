@@ -3,6 +3,7 @@ use crate::routes::sync::device::{
 };
 use crate::routes::sync::batching::RunTracker;
 use crate::routes::sync::deletes::ack_unsynced_delete;
+use crate::routes::sync::paging::{probe_limit, trim_page, trim_size, Page};
 use crate::routes::sync::types::*;
 use crate::routes::sync::versioning::{advance_version, seed_version};
 use chrono::{DateTime, Utc};
@@ -582,61 +583,179 @@ pub async fn process_drawing_changes(
     Ok(())
 }
 
-pub async fn fetch_remote_drawing_mutations(
+/// One page of the drawings a client is owed, read from Postgres exactly once.
+///
+/// `remote_changes` and `items` are two views of the *same* rows. They used to be two
+/// queries — `fetch_remote_drawing_mutations` and the cloud branch of
+/// `fetch_drawings_for_response` — whose predicates were one a superset of the other, so
+/// every drawing on a cloud sync was read from Postgres twice, held in memory twice and
+/// serialized into the reply twice: a straight 2x on the heaviest payload in the service.
+///
+/// Both fields still go on the wire, unchanged, because there is no artifact anywhere in
+/// this repo that says which of `remote_drawing_changes` and `drawings` the shipped
+/// clients actually read (`context/2026-09-05_pre_split_changes.md` item 33 is the
+/// missing wire contract). Dropping either is a client-visible break and belongs with
+/// that contract; halving the database and memory cost of producing them does not, and is
+/// what this does.
+pub struct DrawingDownload {
+    pub remote_changes: Vec<DrawingChangeDelta>,
+    pub items: Vec<DrawingSyncItem>,
+    /// `Some(ms)` when the page was cut short: the client must resume from this
+    /// millisecond rather than from the request's `server_timestamp`. See
+    /// `crate::routes::sync::paging`.
+    pub next_cursor_ms: Option<i64>,
+}
+
+/// Reads at most one page of the drawings changed since the client's cursor.
+///
+/// Rows come back oldest-first so that the page has a well-defined edge to stop at; the
+/// download queries were previously unordered because they were unbounded and order did
+/// not matter.
+pub async fn fetch_drawing_download(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
     client_id: &Uuid,
     device_filter: Option<Uuid>,
     last_synced_at: Option<DateTime<Utc>>,
-) -> Result<Vec<DrawingChangeDelta>, AppError> {
-    let mut remote_changes = Vec::new();
+    // `None` serves the whole download in one reply, for a client that cannot resume a
+    // truncated one. See `SyncRequest::supports_paging`.
+    page_size: Option<usize>,
+) -> Result<DrawingDownload, AppError> {
     let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
     let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
 
-    let rows = sqlx::query!(
+    // One row over the page is the probe that says whether anything is left behind, which
+    // is cheaper than a second COUNT over the same predicate.
+    let probe_limit = probe_limit(page_size);
+    let mut rows = fetch_drawing_page(tx, user_id, client_id, device_filter, last_synced_ms, None, is_initial_sync, probe_limit).await?;
+
+    let next_cursor_ms = match trim_page(&mut rows, trim_size(page_size), |row| row.last_modified) {
+        Page::Complete => None,
+        Page::Truncated { next_cursor_ms } => Some(next_cursor_ms),
+        Page::WholeMillisecond { ms } => {
+            // One request wrote more than a page of drawings, so they all carry its one
+            // clock reading and no cursor can split them. Serving the group whole is the
+            // only way the client ever gets past it; it is bounded by
+            // `DEFAULT_MAX_ITEMS_PER_COLLECTION`, which is what makes that safe.
+            tracing::warn!(
+                "More than a page of drawings for user {} share last_modified {}; serving that millisecond whole",
+                user_id, ms
+            );
+            rows = fetch_drawing_page(tx, user_id, client_id, device_filter, ms - 1, Some(ms), is_initial_sync, i64::MAX).await?;
+            Some(ms)
+        }
+    };
+
+    let mut remote_changes = Vec::with_capacity(rows.len());
+    let mut items = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let sync_state = row.sync_state.unwrap_or_else(|| "SYNCED".to_string());
+
+        // `drawings` has always carried soft-deleted rows on an initial sync while
+        // `remote_drawing_changes` has always suppressed them. That asymmetry is on the
+        // wire, so it is reproduced here rather than unified — the two channels differ
+        // only in this one respect, and only on the first sync.
+        let data = if is_initial_sync && row.is_deleted {
+            row.data
+        } else {
+            // The blob is moved into `DrawingData`, serialized, and moved back out. That
+            // is one deep copy of it per drawing rather than the two the old pair of
+            // queries produced, and it is the floor while both channels carry the same
+            // drawing: `serde_json::to_value` has to build a `Value` tree, and the item
+            // needs a blob of its own afterwards. Dropping a channel is the only thing
+            // that removes the copy, and that is a wire change.
+            let mut item_data = DrawingData {
+                id: row.id,
+                user_id: row.user_id.to_string(),
+                client_uuid: row.client_uuid.to_string(),
+                device_uuid: Some(row.device_uuid),
+                version: row.version,
+                is_deleted: row.is_deleted,
+                last_modified: row.last_modified,
+                sync_state: sync_state.clone(),
+                created_at: row.created_at,
+                data: row.data,
+            };
+            let data_val = serde_json::to_value(&item_data)?;
+
+            remote_changes.push(DrawingChangeDelta {
+                id: row.id.to_string(),
+                operation_type: if row.is_deleted {
+                    OperationType::Delete
+                } else {
+                    OperationType::Update
+                },
+                version: row.version,
+                device_uuid: Some(row.device_uuid),
+                data: Some(data_val),
+            });
+
+            std::mem::take(&mut item_data.data)
+        };
+
+        items.push(DrawingSyncItem {
+            id: row.id,
+            user_id: Some(row.user_id.to_string()),
+            device_uuid: Some(row.device_uuid),
+            created_at: row.created_at,
+            data,
+            sync_state,
+            version: row.version,
+            is_deleted: row.is_deleted,
+            last_modified: row.last_modified,
+        });
+    }
+
+    Ok(DrawingDownload { remote_changes, items, next_cursor_ms })
+}
+
+/// The one download query, shared by the page read and the whole-millisecond re-read.
+#[allow(clippy::too_many_arguments)]
+async fn fetch_drawing_page(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &Uuid,
+    client_id: &Uuid,
+    device_filter: Option<Uuid>,
+    after_ms: i64,
+    through_ms: Option<i64>,
+    is_initial_sync: bool,
+    limit: i64,
+) -> Result<Vec<DrawingRow>, AppError> {
+    let rows = sqlx::query_as!(
+        DrawingRow,
         "SELECT id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
          FROM drawings \
-         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) AND ($4 = FALSE OR is_deleted = FALSE) \
-           AND ($5::uuid IS NULL OR device_uuid = $5)",
+         WHERE user_id = $1 AND last_modified > $2 AND ($4 OR client_uuid != $3) \
+           AND ($5::uuid IS NULL OR device_uuid = $5) \
+           AND ($6::bigint IS NULL OR last_modified <= $6) \
+         ORDER BY last_modified ASC, id ASC \
+         LIMIT $7",
         user_id,
-        last_synced_ms,
+        after_ms,
         client_id,
         is_initial_sync,
-        device_filter
+        device_filter,
+        through_ms,
+        limit
     )
     .fetch_all(&mut **tx)
     .await?;
 
-    for row in rows {
-        let item_data = DrawingData {
-            id: row.id,
-            user_id: row.user_id.to_string(),
-            client_uuid: row.client_uuid.to_string(),
-            device_uuid: Some(row.device_uuid),
-            version: row.version,
-            is_deleted: row.is_deleted,
-            last_modified: row.last_modified,
-            sync_state: row.sync_state.clone().unwrap_or_else(|| "SYNCED".to_string()),
-            created_at: row.created_at,
-            data: row.data,
-        };
+    Ok(rows)
+}
 
-        let data_val = serde_json::to_value(&item_data)?;
-
-        remote_changes.push(DrawingChangeDelta {
-            id: row.id.to_string(),
-            operation_type: if row.is_deleted {
-                OperationType::Delete
-            } else {
-                OperationType::Update
-            },
-            version: row.version,
-            device_uuid: Some(row.device_uuid),
-            data: Some(data_val),
-        });
-    }
-
-    Ok(remote_changes)
+struct DrawingRow {
+    id: Uuid,
+    user_id: Uuid,
+    device_uuid: Uuid,
+    client_uuid: Uuid,
+    version: i32,
+    is_deleted: bool,
+    last_modified: i64,
+    sync_state: Option<String>,
+    created_at: i64,
+    data: serde_json::Value,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -650,6 +769,12 @@ pub async fn process_drawing_sync_items(
     device_filter: Option<Uuid>,
     items: &[DrawingSyncItem],
     success_uuids: &mut Vec<Uuid>,
+    // Populated for the same reason the change-delta path populates it: `upload_status`
+    // is the documented channel for "processed, and here is the version the server gave
+    // it", and the flat `drawings[]` path was the one upload path that reported nothing
+    // there. Until it does, the echoed `drawings[]` rows are the only place a client can
+    // read the new version back, which is what keeps the blob in that echo.
+    upload_status: &mut Vec<SuccessResult>,
 ) -> Result<(), AppError> {
     // No need-update path on the flat list, so nothing here reads the `data` blob and the
     // prefetch is versions only.
@@ -693,6 +818,21 @@ pub async fn process_drawing_sync_items(
                 runs.record(WriteKind::Delete, item_key.clone());
 
                 batch.note_write(item.id);
+
+                upload_status.push(SuccessResult {
+                    id: item.id.to_string(),
+                    version: next_version,
+                    sync_state: "SYNCED".to_string(),
+                });
+            } else {
+                // Nothing to delete, so the delete has succeeded — acknowledged rather
+                // than dropped, exactly as in `process_drawing_changes`. See
+                // `crate::routes::sync::deletes`.
+                upload_status.push(SuccessResult {
+                    id: item.id.to_string(),
+                    version: ack_unsynced_delete("drawing", &item.id.to_string()),
+                    sync_state: "SYNCED".to_string(),
+                });
             }
             success_uuids.push(item.id);
         } else {
@@ -751,6 +891,11 @@ pub async fn process_drawing_sync_items(
 
             batch.note_write(item.id);
 
+            upload_status.push(SuccessResult {
+                id: item.id.to_string(),
+                version: next_version,
+                sync_state: "SYNCED".to_string(),
+            });
             success_uuids.push(item.id);
         }
     }
@@ -764,74 +909,46 @@ pub async fn process_drawing_sync_items(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The upload echo: the rows this very request just wrote, read back for the client.
+///
+/// Only the tablet scopes reach this. The cloud scope uploads no drawings, so its reply
+/// comes wholly from [`fetch_drawing_download`] and the two no longer overlap at all —
+/// which is the other half of the double-send this change removes.
+///
+/// It still carries `data`, i.e. the request body handed back out as the response body,
+/// and that is the one saving deliberately left on the table here. `DrawingSyncItem.data`
+/// is a required field, so a metadata-only echo is a wire break, and until this change
+/// the echo was also the *only* place a flat `drawings[]` upload could read its
+/// server-assigned version back — `process_drawing_sync_items` reported nothing in
+/// `upload_status`. It does now, which is the precondition for dropping the echo (or its
+/// blob) in a follow-up that is allowed to change the wire. This one is not.
 pub async fn fetch_drawings_for_response(
     tx: &mut Transaction<'_, Postgres>,
     user_id: &Uuid,
-    client_id: &Uuid,
-    device_filter: Option<Uuid>,
-    last_synced_at: Option<DateTime<Utc>>,
     success_uuids: &[Uuid],
-    include_remote_drawings: bool,
 ) -> Result<Vec<DrawingSyncItem>, AppError> {
-    let is_initial_sync = last_synced_at.is_none() || last_synced_at.map(|t| t.timestamp() <= 0).unwrap_or(true);
-    let last_synced_ms = last_synced_at.map(|t| t.timestamp_millis()).unwrap_or(0);
+    let rows = sqlx::query!(
+        "SELECT id, user_id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
+         FROM drawings \
+         WHERE user_id = $1 AND id = ANY($2)",
+        user_id,
+        success_uuids
+    )
+    .fetch_all(&mut **tx)
+    .await?;
 
-    let items = if include_remote_drawings {
-        let rows = sqlx::query!(
-            "SELECT id, user_id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
-             FROM drawings \
-             WHERE user_id = $1 AND ((last_modified > $2 AND ($5 OR client_uuid != $3)) OR id = ANY($4)) \
-               AND ($6::uuid IS NULL OR device_uuid = $6)",
-            user_id,
-            last_synced_ms,
-            client_id,
-            success_uuids,
-            is_initial_sync,
-            device_filter
-        )
-        .fetch_all(&mut **tx)
-        .await?;
-
-        rows.into_iter()
-            .map(|row| DrawingSyncItem {
-                id: row.id,
-                user_id: Some(row.user_id.to_string()),
-                device_uuid: Some(row.device_uuid),
-                created_at: row.created_at,
-                data: row.data,
-                sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
-                version: row.version,
-                is_deleted: row.is_deleted,
-                last_modified: row.last_modified,
-            })
-            .collect()
-    } else {
-        let rows = sqlx::query!(
-            "SELECT id, user_id, device_uuid, version, is_deleted, last_modified, sync_state::TEXT as sync_state, created_at, data \
-             FROM drawings \
-             WHERE user_id = $1 AND id = ANY($2)",
-            user_id,
-            success_uuids
-        )
-        .fetch_all(&mut **tx)
-        .await?;
-
-        rows.into_iter()
-            .map(|row| DrawingSyncItem {
-                id: row.id,
-                user_id: Some(row.user_id.to_string()),
-                device_uuid: Some(row.device_uuid),
-                created_at: row.created_at,
-                data: row.data,
-                sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
-                version: row.version,
-                is_deleted: row.is_deleted,
-                last_modified: row.last_modified,
-            })
-            .collect()
-    };
-
-    Ok(items)
+    Ok(rows
+        .into_iter()
+        .map(|row| DrawingSyncItem {
+            id: row.id,
+            user_id: Some(row.user_id.to_string()),
+            device_uuid: Some(row.device_uuid),
+            created_at: row.created_at,
+            data: row.data,
+            sync_state: row.sync_state.unwrap_or_else(|| "SYNCED".to_string()),
+            version: row.version,
+            is_deleted: row.is_deleted,
+            last_modified: row.last_modified,
+        })
+        .collect())
 }
-

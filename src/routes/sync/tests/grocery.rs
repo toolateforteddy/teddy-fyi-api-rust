@@ -48,6 +48,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -90,6 +91,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -132,6 +134,7 @@ async fn test_sync_handler_grocery_lists(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -217,6 +220,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -275,6 +279,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -325,6 +330,7 @@ async fn test_sync_handler_grocery_list_members(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -400,6 +406,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -460,6 +467,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -510,6 +518,7 @@ async fn test_sync_handler_stores_and_categories(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -629,6 +638,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -701,6 +711,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_update = sync_handler(State(state.clone()), AppJson(req_update))
@@ -758,6 +769,7 @@ async fn test_sync_handler_grocery_items_and_store_info(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_delete = sync_handler(State(state.clone()), AppJson(req_delete))
@@ -848,6 +860,7 @@ async fn test_sync_handler_scope_grocery(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -919,6 +932,7 @@ async fn test_sync_unauthorized_grocery_list_access(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -988,6 +1002,7 @@ async fn test_sync_creating_a_list_and_its_membership_in_one_batch(pool: PgPool)
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -1065,6 +1080,7 @@ async fn test_sync_self_insert_cannot_join_a_foreign_list(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1153,6 +1169,7 @@ async fn test_sync_member_row_cannot_be_moved_between_lists(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1239,6 +1256,7 @@ async fn test_sync_unauthorized_grocery_item_access(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let err = sync_handler(State(state.clone()), AppJson(req))
@@ -1357,6 +1375,7 @@ async fn test_sync_grocery_item_store_mapping_auto_population(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -1510,6 +1529,7 @@ async fn test_sync_grocery_item_store_mapping_batch_of_shared_names(pool: PgPool
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -1603,6 +1623,7 @@ async fn test_sync_grocery_items_without_list_id(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -1683,6 +1704,7 @@ async fn test_grocery_list_delete_cascade(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
@@ -1833,6 +1855,7 @@ async fn test_grocery_list_cascade_delete_conflict(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
@@ -1959,6 +1982,7 @@ async fn test_grocery_list_delete_member_stop_collaborating(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = crate::routes::sync::sync_handler(State(state.clone()), Extension(claims), AppJson(req_delete))
@@ -2077,6 +2101,7 @@ async fn test_sync_grocery_item_store_info_custom_change_id(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = sync_handler(State(state.clone()), AppJson(req))
@@ -2184,6 +2209,7 @@ async fn test_collaborator_sync_pulls_existing_items(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = crate::routes::sync::sync_handler(
@@ -2249,6 +2275,7 @@ fn member_sync_request(change: GroceryListMemberChangeDelta) -> SyncRequest {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 

@@ -216,6 +216,7 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res_not_member = crate::routes::sync::sync_handler(
@@ -349,6 +350,7 @@ async fn test_sync_handler_need_update_state_recovery(pool: PgPool) {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     };
 
     let res = crate::routes::sync::sync_handler(

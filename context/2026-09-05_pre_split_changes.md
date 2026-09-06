@@ -715,12 +715,13 @@ nothing). And `readOnlyRootFilesystem` is safe here only because the binary writ
 to disk — the comment tells a future feature needing scratch space to add an `emptyDir`
 rather than turn the setting off.
 
-**Still unhardened: `k8s/maintenance.yaml`**, the nginx write-freeze responder added by
-[#61](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/61), which has no
-`securityContext` at all. It postdates this survey and #74 did not reach it. It is not a
-copy of the block above — nginx needs writable paths for its pid file and temp dirs, so it
-needs `emptyDir` mounts to go with a read-only root. Worth its own small item before Phase 4
-runs it in anger.
+**`k8s/maintenance.yaml` was the one pod left unhardened** — the nginx write-freeze
+responder added by [#61](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/61),
+which postdates this survey and which #74 did not reach. Closed in
+[#83](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/83), and it was not a
+copy of the block above: nginx needs a writable pid file and temp directories, and the
+image's entrypoint writes to `/etc/nginx/conf.d` before nginx ever starts. All four pods in
+`k8s/` now carry the same guarantees.
 
 The description below is what was there before.
 

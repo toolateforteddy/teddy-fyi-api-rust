@@ -27,11 +27,28 @@ metadata:
 data:
   nginx.conf: |
     worker_processes 1;
+    # Not /var/run/nginx.pid, which is the compiled-in default: the container runs with a
+    # read-only root filesystem, so the one file nginx insists on writing has to live on a
+    # mount that is not the image. /tmp is an emptyDir; see the Deployment below.
+    pid /tmp/nginx.pid;
     events { worker_connections 1024; }
 
     http {
       access_log /dev/stdout;
       error_log /dev/stderr;
+
+      # Every path nginx writes to, named here rather than inherited from the build.
+      #
+      # The master creates all five of these at startup whether or not anything uses them,
+      # and this server uses none of them -- it proxies nothing and spools no request
+      # bodies. Their compiled-in defaults differ per build (/var/cache/nginx/* in the
+      # official image, /var/lib/nginx/* in Debian's), so pinning them under /tmp means the
+      # one writable mount this pod has is the one nginx actually wants, on any nginx.
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path       /tmp/proxy_temp;
+      fastcgi_temp_path     /tmp/fastcgi_temp;
+      uwsgi_temp_path       /tmp/uwsgi_temp;
+      scgi_temp_path        /tmp/scgi_temp;
 
       server {
         listen 8080 default_server;
@@ -139,8 +156,22 @@ spec:
         # Rolls the pods when the response body or headers change. nginx reads its config once
         # at start; without this a `kubectl apply` that edits the ConfigMap changes nothing that
         # is actually serving, which is a bad surprise to have mid-window.
-        checksum/config: "edit-me-when-the-configmap-changes"
+        checksum/config: "nonroot-readonly-rootfs-pid-in-tmp"
     spec:
+      # What `k8s/api-rust.yaml`, `cache.yaml` and `user-reaper.yaml` all say, arriving here
+      # late: this file was written after the pod-hardening pass and inherited none of it.
+      #
+      # 101 is the `nginx` user the upstream alpine image creates, so the cache and pid files
+      # this pod writes are owned by the account the image expects. Nothing resolves the
+      # *name* -- there is no `user` directive in the config above, and a non-root master
+      # could not honour one anyway -- so the number is all that matters, and an image
+      # rebuild that renumbered its user would not break this.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       topologySpreadConstraints:
       - maxSkew: 1
         topologyKey: kubernetes.io/hostname
@@ -154,13 +185,40 @@ spec:
       containers:
       - name: nginx
         image: nginx:1.29-alpine
+        # Straight to nginx, skipping the image's `/docker-entrypoint.sh`.
+        #
+        # That script runs everything in `/docker-entrypoint.d/`, and the first of them
+        # (`10-listen-on-ipv6-on-ipv4.sh`) does a `sed -i` on `/etc/nginx/conf.d/default.conf`
+        # -- a file this pod never loads, since the config above has no `include` for that
+        # directory. Under a read-only root filesystem that write fails, the entrypoint runs
+        # with `set -e`, and the container dies before nginx starts. The other two scripts
+        # (envsubst templating, worker autotuning) need environment variables and templates
+        # that are not here.
+        #
+        # So there is nothing in the entrypoint this pod wants, and one thing in it that
+        # would stop the pod from ever answering during the window it exists for.
+        command: ["nginx", "-g", "daemon off;"]
         ports:
         - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          # Everything nginx writes now lives under /tmp: the pid file and the five temp
+          # directories, both pinned there by the config above. It serves no files from
+          # disk either -- every response is a literal in the config -- so nothing outside
+          # that one mount has any business being writable.
+          readOnlyRootFilesystem: true
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
           readOnly: true
+        # One `emptyDir`, thrown away with the pod, holding the pid file and the five empty
+        # temp directories the config names above. A `medium: Memory` emptyDir would count
+        # against the 64Mi limit, which is not worth spending on an empty directory.
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             cpu: 10m
@@ -185,3 +243,5 @@ spec:
       - name: config
         configMap:
           name: scribbleroute-maintenance-nginx
+      - name: tmp
+        emptyDir: {}

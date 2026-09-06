@@ -90,8 +90,8 @@ Rules that keep concurrent work from colliding:
 | 19 | Sessions have no absolute lifetime | 7 | Anytime |
 | 20 | ~~One bad item fails the whole batch~~ **model decided and named** | 7 | Now |
 | 21 | No caps on grocery/todo field sizes — ~~batch length~~ **landed** | 7 | Now |
-| 22 | Deployment has no `securityContext` | 7 | Now |
-| 23 | Valkey has no `maxmemory` or eviction policy | 7 | Now |
+| 22 | ~~Deployment has no `securityContext`~~ **landed** | 7 | Now |
+| 23 | ~~Valkey has no `maxmemory` or eviction policy~~ **landed** | 7 | Now |
 | 24 | `GEMINI_API_KEY` is `expect`ed at boot for a teddy.fyi-only feature | 7 | Now |
 | 25 | The log-hashing privacy invariant holds in exactly one place | 7 | Anytime |
 | 26 | Row ids are client-chosen and globally unique across accounts | 6 | At the freeze |
@@ -697,7 +697,33 @@ The ScribbleRoute half of this service has per-item bounds, device quotas and an
 teddy.fyi half has none — and the teddy.fyi half is what stays in this repo. The asymmetry is
 worth closing while the good patterns are still in the same tree as the code that needs them.
 
-## 22. No `securityContext` on the Deployment — **7**, Now
+## 22. No `securityContext` on the Deployment — **7**, Now — **LANDED**
+
+**Landed** in [#74](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/74), which
+claimed in the manifest what the image had already done, and did it in three files rather
+than one. All six settings this item named are present: `runAsNonRoot`, `runAsUser` /
+`runAsGroup` 10001 and `seccompProfile: RuntimeDefault` at pod level;
+`allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]` and
+`readOnlyRootFilesystem: true` at container level. `k8s/cache.yaml` and
+`k8s/user-reaper.yaml` got the same treatment, which this item did not ask for and which is
+the right call — the reaper runs *this* image, so one image deserved one answer.
+
+Two details worth keeping: the reaper's pod-level block sits under `jobTemplate.spec
+.template.spec`, and the comment there says why (Kubernetes silently ignores unknown fields
+at the CronJob or Job level, so one nested a step too high would look applied and enforce
+nothing). And `readOnlyRootFilesystem` is safe here only because the binary writes nothing
+to disk — the comment tells a future feature needing scratch space to add an `emptyDir`
+rather than turn the setting off.
+
+**`k8s/maintenance.yaml` was the one pod left unhardened** — the nginx write-freeze
+responder added by [#61](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/61),
+which postdates this survey and which #74 did not reach. Closed in
+[#83](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/83), and it was not a
+copy of the block above: nginx needs a writable pid file and temp directories, and the
+image's entrypoint writes to `/etc/nginx/conf.d` before nginx ever starts. All four pods in
+`k8s/` now carry the same guarantees.
+
+The description below is what was there before.
 
 The Dockerfile creates a fixed uid 10001, chowns the binary to root, chmods it 755, and says why:
 
@@ -709,7 +735,16 @@ The Dockerfile creates a fixed uid 10001, chowns the binary to root, chmods it 7
 no `capabilities: drop: [ALL]`, no `seccompProfile`. The image did the work; the manifest never
 claimed it. The fork inherits the manifest.
 
-## 23. Valkey has no `maxmemory` — **7**, Now
+## 23. Valkey has no `maxmemory` — **7**, Now — **LANDED**
+
+**Landed** in [#60](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/60), which
+went further than the cap: `--maxmemory 96mb` against the 128Mi limit with
+`--maxmemory-policy allkeys-lru`, `--save ""` and `--appendonly no` (the default save points
+fork the process to write an RDB that is thrown away with the pod), and a tightened pub/sub
+hard limit so one stalled subscriber cannot buffer a quarter of the pod before valkey
+disconnects it. The reasoning for each number is written on the flag it sets.
+
+The description below is what was there before.
 
 `k8s/cache.yaml` gives the container `limits.memory: 128Mi` and passes Valkey no configuration at
 all. With no `maxmemory` and no `maxmemory-policy`, it grows into the cgroup limit and is

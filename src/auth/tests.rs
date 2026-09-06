@@ -1591,4 +1591,159 @@ mod tests {
         assert!(old_hash.starts_with("$argon2"));
         assert!(verify_refresh_token(&old_hash, raw_refresh));
     }
+
+    /// The surrogate id reaches the client on the path that mints a session.
+    ///
+    /// This is the field a client compares against what it currently thinks its user id is;
+    /// a mismatch is its signal to migrate its local database. It is worth pinning that the
+    /// value is the account's `users.surrogate_id` and not the subject, because the whole
+    /// point is that the two differ.
+    #[sqlx::test]
+    async fn issuing_a_session_returns_the_surrogate_id(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-surrogate-issue";
+
+        let issued = crate::auth::handlers::issue_session(
+            &state,
+            user_id,
+            None,
+            "client-surrogate-issue",
+            DEFAULT_SESSION_SECS,
+            None,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        let stored = sqlx::query_scalar!("SELECT surrogate_id FROM users WHERE id = $1", user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .expect("the column default backfills every row");
+
+        assert_eq!(issued.user_uuid.as_deref(), Some(stored.to_string().as_str()));
+        assert_ne!(
+            issued.user_uuid.as_deref(),
+            Some(user_id),
+            "the surrogate must not be the subject -- a client comparing the two is exactly \
+             what the mismatch signal relies on"
+        );
+    }
+
+    /// And on refresh, which is the path that matters for a device that was already signed
+    /// in when this shipped: it learns its surrogate on the next rotation rather than only
+    /// after a fresh sign-in.
+    #[sqlx::test]
+    async fn refreshing_returns_the_same_surrogate_id(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-surrogate-refresh";
+        let client_uuid = "client-surrogate-refresh";
+
+        let issued = crate::auth::handlers::issue_session(
+            &state,
+            user_id,
+            None,
+            client_uuid,
+            DEFAULT_SESSION_SECS,
+            None,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        let response = refresh_handler(
+            State(state.clone()),
+            Json(RefreshRequest {
+                user_id: user_id.to_string(),
+                client_uuid: client_uuid.to_string(),
+                refresh_token: issued.refresh_token,
+                use_cookie: Some(false),
+                expires_in_secs: None,
+            }),
+        )
+        .await
+        .expect("refresh should succeed");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refreshed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            refreshed["user_uuid"].as_str(),
+            issued.user_uuid.as_deref(),
+            "a rotation must not hand the client a different identity than the sign-in did"
+        );
+    }
+
+    /// The surrogate is stable across sign-ins. A client that stored it once and compares on
+    /// every login must not see a spurious mismatch and re-migrate its database.
+    #[sqlx::test]
+    async fn the_surrogate_id_is_stable_across_sessions(pool: PgPool) {
+        let state = setup_state(pool.clone());
+        let user_id = "user-surrogate-stable";
+
+        let first = crate::auth::handlers::issue_session(
+            &state, user_id, None, "client-a", DEFAULT_SESSION_SECS, None,
+        )
+        .await
+        .expect("issuing a session should succeed");
+
+        let second = crate::auth::handlers::issue_session(
+            &state, user_id, Some("later@example.com"), "client-b", DEFAULT_SESSION_SECS, None,
+        )
+        .await
+        .expect("issuing a second session should succeed");
+
+        assert!(first.user_uuid.is_some());
+        assert_eq!(
+            first.user_uuid, second.user_uuid,
+            "the upsert must not mint a new surrogate for an existing account"
+        );
+    }
+
+    /// Two accounts, two surrogates. Obvious, and cheap to pin: a shared or defaulted value
+    /// would make every client agree it had not changed identity.
+    #[sqlx::test]
+    async fn two_accounts_get_different_surrogates(pool: PgPool) {
+        let state = setup_state(pool.clone());
+
+        let one = crate::auth::handlers::issue_session(
+            &state, "user-surrogate-one", None, "client-1", DEFAULT_SESSION_SECS, None,
+        )
+        .await
+        .unwrap();
+        let two = crate::auth::handlers::issue_session(
+            &state, "user-surrogate-two", None, "client-2", DEFAULT_SESSION_SECS, None,
+        )
+        .await
+        .unwrap();
+
+        assert!(one.user_uuid.is_some() && two.user_uuid.is_some());
+        assert_ne!(one.user_uuid, two.user_uuid);
+    }
+
+    /// The field is additive: a client that has never heard of `user_uuid` sees a response
+    /// whose other fields are exactly what they were. `skip_serializing_if` also means a row
+    /// with no surrogate omits the key rather than sending `null`, which is the shape an
+    /// older parser tolerates best.
+    #[test]
+    fn the_surrogate_field_is_omitted_when_absent() {
+        let without = serde_json::to_value(crate::auth::handlers::AuthResponse {
+            access_token: "a".to_string(),
+            refresh_token: "r".to_string(),
+            user_uuid: None,
+        })
+        .unwrap();
+        assert!(without.get("user_uuid").is_none(), "{without}");
+        assert_eq!(without["access_token"], "a");
+        assert_eq!(without["refresh_token"], "r");
+
+        let with = serde_json::to_value(crate::auth::handlers::AuthResponse {
+            access_token: "a".to_string(),
+            refresh_token: "r".to_string(),
+            user_uuid: Some("11111111-2222-3333-4444-555555555555".to_string()),
+        })
+        .unwrap();
+        assert_eq!(with["user_uuid"], "11111111-2222-3333-4444-555555555555");
+    }
 }

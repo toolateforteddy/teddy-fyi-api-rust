@@ -162,6 +162,38 @@ All routes under `/api` require Google OAuth or JWT authorization.
 - `POST /auth/refresh` - Renews an expired access token.
 - `POST /auth/logout` - Revokes current session cookies.
 
+##### `user_uuid` on the login and refresh answers
+
+`/auth/login` and `/auth/refresh` both return an extra field alongside the tokens:
+
+```json
+{ "access_token": "...", "refresh_token": "...",
+  "user_uuid": "6f1b0c2e-...-9d41" }
+```
+
+`user_uuid` is `users.surrogate_id` — an opaque UUID that encodes nothing about the account.
+The browser-shaped answers (`?client=web`) carry it too, next to the existing `user_id`.
+
+It is deliberately **not** called `user_id`. That name is taken twice over and means the raw
+Google subject in both places: `BrowserAuthResponse.user_id` returns the subject, and
+`RefreshRequest.user_id` is the subject a client sends back. Returning a different kind of
+identifier under the same name is how a client ends up comparing two things that were never
+the same and concluding the wrong thing.
+
+**What a client should do with it.** Store it, and compare it against whatever it currently
+holds as its user id — today that is a subject a client base64-decoded out of a JWT. *A
+mismatch is the signal to migrate the local database*, whose rows are keyed by the old
+identifier. Shipping the field now, before any sync payload changes, is what gives clients a
+release in which to learn that check; see item 46 of
+`context/2026-09-05_pre_split_changes.md`.
+
+The field is **omitted** when the column is NULL, so a response without it parses exactly as
+today's does. In practice it is always present: the column has a `gen_random_uuid()` default
+and migration `20260911120000` backfilled every existing row.
+
+`POST /auth/device/poll` returns the same body `/auth/login` does, so a paired tablet gets
+`user_uuid` at the moment it collects its session rather than waiting for its first refresh.
+
 #### Device pairing (no Google Play Services)
 
 A Fire tablet has no Google identity provider on the device, so it can never produce the ID

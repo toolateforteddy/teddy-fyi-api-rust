@@ -34,6 +34,21 @@ jobs:
         entrypoint: docker-entrypoint.sh
         command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
 
+      # Redis backs the SSE fan-out and the Gemini budget counters, and this job runs the
+      # same `make test` as CI.yml -- so it needs the same services. Without Redis the
+      # tests that check for it skip silently (see `redis_or_skip`), leaving this gate
+      # weaker than the one the PR already passed, and the one test that connects
+      # unconditionally fails the deploy outright.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -49,6 +64,7 @@ jobs:
         env:
           SQLX_OFFLINE: true
           DATABASE_URL: postgres://postgres:password@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379
         run: make test
 
       # Authenticate to Google Cloud.

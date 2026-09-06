@@ -9,7 +9,19 @@ pub struct AppState {
     pub google_client: Arc<google_oauth::AsyncClient>,
     pub db_pool: sqlx::Pool<sqlx::Postgres>,
     pub jwt_secret: String,
-    pub gemini_api_key: String,
+    /// The Gemini API key, or `None` on a deployment that does not set one.
+    ///
+    /// `Option`, not `String`, because the AI endpoints are teddy.fyi's alone and this
+    /// service is about to be forked. `init_app_state` used to `expect` this variable, so a
+    /// ScribbleRoute deployment that dropped it would crash-loop on boot — the split plan's
+    /// risk register carries that as an entry, and the remedy it prescribes is a
+    /// three-way simultaneous edit of the code, this field and the manifest. Making the
+    /// key optional turns that into a no-op: drop the variable and the AI endpoints answer
+    /// 503, which is what a deployment without them should say anyway.
+    ///
+    /// Read through [`crate::routes::ai::require_gemini_api_key`], never directly, so that
+    /// "absent" has exactly one meaning at every call site.
+    pub gemini_api_key: Option<String>,
     pub redis_client: redis::Client,
     /// One HTTP client for outbound Gemini calls, shared by every request.
     ///

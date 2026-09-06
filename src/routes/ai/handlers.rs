@@ -44,12 +44,35 @@ pub(crate) fn check_title_length(field: &str, title: &str) -> Result<(), AppErro
     Ok(())
 }
 
+/// The Gemini API key, or the refusal to send when this deployment has none.
+///
+/// The one place [`AppState::gemini_api_key`](crate::state::AppState::gemini_api_key) is
+/// unwrapped, so "no key" means the same thing on every path that needs one. 503 rather
+/// than 500: the request is well formed and the caller has done nothing wrong — this
+/// deployment simply does not run the feature. [`AppError::NotConfigured`] rather than
+/// `Overloaded` so the body does not promise that waiting will help.
+///
+/// The third spender of the AI budget does *not* call this: `resolve_todo_icons` in the
+/// sync path checks the key itself and skips, because an icon is a garnish and a missing
+/// key must not fail somebody's sync.
+pub(crate) fn require_gemini_api_key(state: &AppState) -> Result<&str, AppError> {
+    state.gemini_api_key.as_deref().ok_or_else(|| {
+        AppError::NotConfigured("AI features are not configured on this deployment".to_string())
+    })
+}
+
 pub async fn categorize_item_handler(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Json(payload): Json<CategorizeItemRequest>,
 ) -> Result<Json<CategorizeItemResponse>, AppError> {
     check_title_length("item_title", &payload.item_title)?;
+
+    // Before the budget, and for the same reason the budget comes before the database:
+    // a call this deployment cannot make should cost nothing, and it should certainly not
+    // spend the caller's allowance on the way to failing. After the title check, though,
+    // so a malformed request still gets the 400 that tells the client what to fix.
+    let gemini_api_key = require_gemini_api_key(&state)?;
 
     // Budget first, before the database round trip below: a caller who is out of
     // allowance should cost us as little as possible, and the cheapest refusal is
@@ -91,7 +114,7 @@ pub async fn categorize_item_handler(
 
     let response: CategorizeItemResponse = call_gemini(
         &state.http_client,
-        &state.gemini_api_key,
+        gemini_api_key,
         Some(&system_prompt),
         &user_prompt,
         model,
@@ -107,13 +130,15 @@ pub async fn assign_todo_icon_handler(
 ) -> Result<Json<AssignTodoIconResponse>, AppError> {
     check_title_length("todo_title", &payload.todo_title)?;
 
+    let gemini_api_key = require_gemini_api_key(&state)?;
+
     // This handler used to ignore its claims entirely. It needs them now: an
     // account is the unit a spend budget is kept against.
     charge_gemini_call(&state.redis_client, BudgetLimits::cached(), &claims.sub).await?;
 
     let icon = super::service::assign_todo_icon(
         &state.http_client,
-        &state.gemini_api_key,
+        gemini_api_key,
         &payload.todo_title,
     )
     .await?;

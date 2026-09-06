@@ -108,7 +108,19 @@ async fn init_app_state() -> AppState {
     }
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-    let gemini_api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
+    // Optional, and an empty value counts as absent: a manifest that wires the variable to
+    // a secret nobody has filled in yet is the same situation as one that never named it,
+    // and an empty key would otherwise reach Gemini as a 401 on every call instead of a
+    // 503 that says what is actually wrong. See `AppState::gemini_api_key`.
+    let gemini_api_key = std::env::var("GEMINI_API_KEY")
+        .ok()
+        .filter(|key| !key.trim().is_empty());
+    if gemini_api_key.is_none() {
+        tracing::warn!(
+            "GEMINI_API_KEY is unset: POST /api/categorize and POST /api/assign-icon will \
+             answer 503, and syncing a todo with no icon will simply store it without one"
+        );
+    }
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://cache-svc:6379".to_string());
     let redis_client = redis::Client::open(redis_url).expect("Invalid Redis URL");
     let cookie_domain = std::env::var("COOKIE_DOMAIN").unwrap_or_else(|_| ".teddy.fyi".to_string());

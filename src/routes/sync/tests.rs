@@ -1,6 +1,7 @@
 pub mod helpers;
 
 mod affected_users;
+mod batched_writes;
 mod cache;
 mod client_binding;
 mod data_integrity;

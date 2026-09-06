@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO todo_items (\n                    id, title, \"isCompleted\", \"createdAt\", position, \"scheduledDate\",\n                    \"recurrenceRule\", \"scheduledAt\", \"userId\", \"parentId\", \"isDaily\",\n                    \"dueDate\", description, \"listId\", priority, icon, sync_state, version,\n                    is_deleted, updated_at, updated_by_client\n                )\n                SELECT\n                    v.id, v.title, v.is_completed, v.created_at, v.position, v.scheduled_date,\n                    v.recurrence_rule, v.scheduled_at, $19, v.parent_id, v.is_daily,\n                    v.due_date, v.description, v.list_id, v.priority, v.icon, 'SYNCED',\n                    v.version, v.is_deleted, $20, v.updated_by\n                FROM UNNEST(\n                    $1::text[], $2::text[], $3::bool[], $4::int8[], $5::int4[], $6::text[],\n                    $7::text[], $8::int8[], $9::text[], $10::bool[], $11::int8[], $12::text[],\n                    $13::text[], $14::int4[], $15::text[], $16::int4[], $17::bool[], $18::text[]\n                ) AS v(\n                    id, title, is_completed, created_at, position, scheduled_date,\n                    recurrence_rule, scheduled_at, parent_id, is_daily, due_date, description,\n                    list_id, priority, icon, version, is_deleted, updated_by\n                )\n                ON CONFLICT (id) DO UPDATE SET\n                    title = EXCLUDED.title,\n                    \"isCompleted\" = EXCLUDED.\"isCompleted\",\n                    position = EXCLUDED.position,\n                    \"scheduledDate\" = EXCLUDED.\"scheduledDate\",\n                    \"recurrenceRule\" = EXCLUDED.\"recurrenceRule\",\n                    \"scheduledAt\" = EXCLUDED.\"scheduledAt\",\n                    \"userId\" = EXCLUDED.\"userId\",\n                    \"parentId\" = EXCLUDED.\"parentId\",\n                    \"isDaily\" = EXCLUDED.\"isDaily\",\n                    \"dueDate\" = EXCLUDED.\"dueDate\",\n                    description = EXCLUDED.description,\n                    \"listId\" = EXCLUDED.\"listId\",\n                    priority = EXCLUDED.priority,\n                    icon = EXCLUDED.icon,\n                    sync_state = EXCLUDED.sync_state,\n                    version = EXCLUDED.version,\n                    is_deleted = EXCLUDED.is_deleted,\n                    updated_at = EXCLUDED.updated_at,\n                    updated_by_client = EXCLUDED.updated_by_client\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "BoolArray",
+        "Int8Array",
+        "Int4Array",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "TextArray",
+        "BoolArray",
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "Int4Array",
+        "TextArray",
+        "Int4Array",
+        "BoolArray",
+        "TextArray",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0221ce3919f06364ecf57cf356172d3e82e7bc49c7d2b93a8e0f9d27d1acbc1e"
+}

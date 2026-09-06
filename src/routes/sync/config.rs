@@ -1,6 +1,7 @@
 use crate::routes::sync::device::{
     ItemDeviceRule, registered_device_set, resolve_item_device_cached,
 };
+use crate::routes::sync::batching::RunTracker;
 use crate::routes::sync::deletes::ack_unsynced_delete;
 use crate::routes::sync::paging::{probe_limit, trim_page, trim_size, Page};
 use crate::routes::sync::types::*;
@@ -384,6 +385,230 @@ async fn resolve_config_target_uncached(
     Ok(ConfigTarget { existing, new_id })
 }
 
+/// The kinds of write these processors issue. A run may only contain one of them; see
+/// `crate::routes::sync::batching`.
+#[derive(PartialEq, Eq)]
+enum WriteKind {
+    Insert,
+    UpdateInPlace,
+    VersionBump,
+    Delete,
+}
+
+/// Everything a buffered config write invalidates, in the form the run tracker compares.
+///
+/// These are exactly the four things [`ConfigBatch::note_write`] marks stale, and for the
+/// same reason: an update can move a row onto a different id *and* a different key, so the
+/// pair it vacates has to bound a run as much as the pair it lands on. Two rows in one
+/// statement that swap keys would otherwise be checked against
+/// `unique_user_device_config_key` together and trip it, where the per-item writes they
+/// replace would have gone through one at a time.
+fn write_tokens(device_uuid: Uuid, target: &ConfigTarget, key: &str) -> Vec<String> {
+    let mut tokens = vec![
+        format!("id:{}", target.new_id),
+        format!("key:{}/{}", device_uuid, key),
+    ];
+    if let Some(ref existing) = target.existing {
+        tokens.push(format!("id:{}", existing.id));
+        tokens.push(format!("key:{}/{}", device_uuid, existing.key));
+    }
+    tokens
+}
+
+/// The column vectors for the run being accumulated. Columns that are the same for every
+/// row this request writes — `user_id`, `client_uuid`, `last_modified` — stay scalar.
+#[derive(Default)]
+struct ConfigPending {
+    ins_id: Vec<Uuid>,
+    ins_device_uuid: Vec<Uuid>,
+    ins_version: Vec<i32>,
+    ins_is_deleted: Vec<bool>,
+    ins_client_last_modified: Vec<i64>,
+    ins_key: Vec<String>,
+    ins_value: Vec<String>,
+
+    upd_id: Vec<Uuid>,
+    upd_device_uuid: Vec<Uuid>,
+    upd_version: Vec<i32>,
+    upd_is_deleted: Vec<bool>,
+    upd_client_last_modified: Vec<i64>,
+    upd_key: Vec<String>,
+    upd_value: Vec<String>,
+
+    bump_id: Vec<Uuid>,
+    bump_version: Vec<i32>,
+    bump_device_uuid: Vec<Uuid>,
+
+    del_id: Vec<Uuid>,
+    del_version: Vec<i32>,
+    del_device_uuid: Vec<Uuid>,
+}
+
+impl ConfigPending {
+    fn is_empty(&self) -> bool {
+        self.ins_id.is_empty()
+            && self.upd_id.is_empty()
+            && self.bump_id.is_empty()
+            && self.del_id.is_empty()
+    }
+
+    /// Issues the buffered run.
+    ///
+    /// The two `RETURNING` statements append to `broadcasts` here rather than in the loop,
+    /// so a run's broadcasts are ordered among themselves by what the statement returned
+    /// rather than by arrival. That is safe because a run cannot contain two writes to the
+    /// same `(device, key)` — `write_tokens` makes that a run boundary — and a broadcast is
+    /// an overwrite keyed on exactly that pair, so no listener can observe the difference.
+    async fn flush(
+        &mut self,
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: &Uuid,
+        client_id: &Uuid,
+        server_ms: i64,
+        broadcasts: &mut Vec<ConfigBroadcast>,
+    ) -> Result<(), AppError> {
+        if !self.ins_id.is_empty() {
+            sqlx::query!(
+                "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, key, value) \
+                 SELECT v.id, $1, v.device_uuid, $2, v.version, v.is_deleted, $3, v.client_last_modified, 'SYNCED'::text::sync_state, v.key, v.value \
+                 FROM UNNEST($4::uuid[], $5::uuid[], $6::int4[], $7::bool[], $8::int8[], $9::text[], $10::text[]) \
+                      AS v(id, device_uuid, version, is_deleted, client_last_modified, key, value)",
+                user_id,
+                client_id,
+                server_ms,
+                &self.ins_id,
+                &self.ins_device_uuid,
+                &self.ins_version,
+                &self.ins_is_deleted,
+                &self.ins_client_last_modified,
+                &self.ins_key,
+                &self.ins_value
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            self.ins_id.clear();
+            self.ins_device_uuid.clear();
+            self.ins_version.clear();
+            self.ins_is_deleted.clear();
+            self.ins_client_last_modified.clear();
+            self.ins_key.clear();
+            self.ins_value.clear();
+        }
+
+        if !self.upd_id.is_empty() {
+            // No `SET id` here, unlike the per-item statement this replaces: only writes
+            // that keep the row's id are batched, and a write that renames one is issued
+            // on its own. See `write_config`.
+            sqlx::query!(
+                "UPDATE configs SET device_uuid = v.device_uuid, client_uuid = $1, version = v.version, \
+                     is_deleted = v.is_deleted, last_modified = $2, client_last_modified = v.client_last_modified, \
+                     sync_state = 'SYNCED'::text::sync_state, key = v.key, value = v.value \
+                 FROM UNNEST($3::uuid[], $4::uuid[], $5::int4[], $6::bool[], $7::int8[], $8::text[], $9::text[]) \
+                      AS v(id, device_uuid, version, is_deleted, client_last_modified, key, value) \
+                 WHERE configs.id = v.id AND configs.user_id = $10",
+                client_id,
+                server_ms,
+                &self.upd_id,
+                &self.upd_device_uuid,
+                &self.upd_version,
+                &self.upd_is_deleted,
+                &self.upd_client_last_modified,
+                &self.upd_key,
+                &self.upd_value,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await?;
+
+            self.upd_id.clear();
+            self.upd_device_uuid.clear();
+            self.upd_version.clear();
+            self.upd_is_deleted.clear();
+            self.upd_client_last_modified.clear();
+            self.upd_key.clear();
+            self.upd_value.clear();
+        }
+
+        if !self.bump_id.is_empty() {
+            let written = sqlx::query!(
+                "UPDATE configs SET version = v.version, client_uuid = $1, last_modified = $2, sync_state = 'SYNCED' \
+                 FROM UNNEST($3::uuid[], $4::int4[], $5::uuid[]) AS v(id, version, device_uuid) \
+                 WHERE configs.id = v.id AND configs.user_id = $6 AND configs.device_uuid = v.device_uuid \
+                 RETURNING configs.id, configs.device_uuid, configs.version, configs.is_deleted, configs.last_modified, configs.key, configs.value",
+                client_id,
+                server_ms,
+                &self.bump_id,
+                &self.bump_version,
+                &self.bump_device_uuid,
+                user_id
+            )
+            .fetch_all(&mut **tx)
+            .await?;
+
+            for row in written {
+                broadcasts.push(ConfigBroadcast {
+                    device_uuid: row.device_uuid,
+                    item: ConfigSyncItem {
+                        id: row.id,
+                        device_uuid: Some(row.device_uuid),
+                        key: row.key,
+                        value: row.value,
+                        sync_state: "SYNCED".to_string(),
+                        version: row.version,
+                        is_deleted: row.is_deleted,
+                        last_modified: row.last_modified,
+                    },
+                });
+            }
+
+            self.bump_id.clear();
+            self.bump_version.clear();
+            self.bump_device_uuid.clear();
+        }
+
+        if !self.del_id.is_empty() {
+            let written = sqlx::query!(
+                "UPDATE configs SET is_deleted = TRUE, version = v.version, client_uuid = $1, last_modified = $2, \
+                     sync_state = 'PENDING_DELETE'::text::sync_state \
+                 FROM UNNEST($3::uuid[], $4::int4[], $5::uuid[]) AS v(id, version, device_uuid) \
+                 WHERE configs.id = v.id AND configs.user_id = $6 AND configs.device_uuid = v.device_uuid \
+                 RETURNING configs.id, configs.device_uuid, configs.version, configs.last_modified, configs.key, configs.value",
+                client_id,
+                server_ms,
+                &self.del_id,
+                &self.del_version,
+                &self.del_device_uuid,
+                user_id
+            )
+            .fetch_all(&mut **tx)
+            .await?;
+
+            for row in written {
+                broadcasts.push(ConfigBroadcast {
+                    device_uuid: row.device_uuid,
+                    item: ConfigSyncItem {
+                        id: row.id,
+                        device_uuid: Some(row.device_uuid),
+                        key: row.key,
+                        value: row.value,
+                        sync_state: "PENDING_DELETE".to_string(),
+                        version: row.version,
+                        is_deleted: true,
+                        last_modified: row.last_modified,
+                    },
+                });
+            }
+
+            self.del_id.clear();
+            self.del_version.clear();
+            self.del_device_uuid.clear();
+        }
+
+        Ok(())
+    }
+}
+
 /// Applies a resolved config write: updates the row the target points at, or inserts.
 #[allow(clippy::too_many_arguments)]
 async fn write_config(
@@ -391,6 +616,10 @@ async fn write_config(
     // Invalidated here rather than at the call sites: a write whose effect the cache never
     // hears about is the one bug this whole arrangement has to not have.
     batch: &mut ConfigBatch,
+    // Buffered here rather than issued, for the same reason: both call sites write through
+    // this function, so this is the one place that has to get the run boundaries right.
+    pending: &mut ConfigPending,
+    runs: &mut RunTracker<WriteKind>,
     user_id: &Uuid,
     client_id: &Uuid,
     device_uuid: Uuid,
@@ -407,45 +636,84 @@ async fn write_config(
     value: &str,
     broadcasts: &mut Vec<ConfigBroadcast>,
 ) -> Result<(), AppError> {
-    if let Some(ref existing) = target.existing {
-        sqlx::query!(
-            "UPDATE configs SET id = $1, device_uuid = $2, client_uuid = $3, version = $4, \
-                 is_deleted = $5, last_modified = $6, client_last_modified = $7, \
-                 sync_state = $8::text::sync_state, key = $9, value = $10 \
-             WHERE id = $11 AND user_id = $12",
-            target.new_id,
-            device_uuid,
-            client_id,
-            version,
-            is_deleted,
-            server_ms,
-            client_last_modified,
-            "SYNCED",
-            key,
-            value,
-            existing.id,
-            user_id
-        )
-        .execute(&mut **tx)
-        .await?;
-    } else {
-        sqlx::query!(
-            "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, key, value) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::sync_state, $10, $11)",
-            target.new_id,
-            user_id,
-            device_uuid,
-            client_id,
-            version,
-            is_deleted,
-            server_ms,
-            client_last_modified,
-            "SYNCED",
-            key,
-            value
-        )
-        .execute(&mut **tx)
-        .await?;
+    let tokens = write_tokens(device_uuid, target, key);
+
+    match target.existing {
+        // A write that moves the row onto a different id is issued on its own. Batching it
+        // would mean a `SET id` inside a set-based `UPDATE`, where one row can rename
+        // itself onto an id a sibling row in the same statement is vacating — a
+        // `configs_pkey` violation that the per-item writes, applied one at a time, do not
+        // have. The reconciliation only fires when the client's id and the server's
+        // disagree, so this is the rare path paying the old cost. See `choose_new_id`.
+        Some(ref existing) if existing.id != target.new_id => {
+            pending
+                .flush(tx, user_id, client_id, server_ms, broadcasts)
+                .await?;
+            runs.clear();
+
+            sqlx::query!(
+                "UPDATE configs SET id = $1, device_uuid = $2, client_uuid = $3, version = $4, \
+                     is_deleted = $5, last_modified = $6, client_last_modified = $7, \
+                     sync_state = $8::text::sync_state, key = $9, value = $10 \
+                 WHERE id = $11 AND user_id = $12",
+                target.new_id,
+                device_uuid,
+                client_id,
+                version,
+                is_deleted,
+                server_ms,
+                client_last_modified,
+                "SYNCED",
+                key,
+                value,
+                existing.id,
+                user_id
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
+        Some(ref existing) => {
+            if tokens
+                .iter()
+                .any(|token| runs.needs_flush(&WriteKind::UpdateInPlace, token))
+            {
+                pending
+                    .flush(tx, user_id, client_id, server_ms, broadcasts)
+                    .await?;
+                runs.clear();
+            }
+            pending.upd_id.push(existing.id);
+            pending.upd_device_uuid.push(device_uuid);
+            pending.upd_version.push(version);
+            pending.upd_is_deleted.push(is_deleted);
+            pending.upd_client_last_modified.push(client_last_modified);
+            pending.upd_key.push(key.to_string());
+            pending.upd_value.push(value.to_string());
+            for token in tokens {
+                runs.record(WriteKind::UpdateInPlace, token);
+            }
+        }
+        None => {
+            if tokens
+                .iter()
+                .any(|token| runs.needs_flush(&WriteKind::Insert, token))
+            {
+                pending
+                    .flush(tx, user_id, client_id, server_ms, broadcasts)
+                    .await?;
+                runs.clear();
+            }
+            pending.ins_id.push(target.new_id);
+            pending.ins_device_uuid.push(device_uuid);
+            pending.ins_version.push(version);
+            pending.ins_is_deleted.push(is_deleted);
+            pending.ins_client_last_modified.push(client_last_modified);
+            pending.ins_key.push(key.to_string());
+            pending.ins_value.push(value.to_string());
+            for token in tokens {
+                runs.record(WriteKind::Insert, token);
+            }
+        }
     }
 
     batch.note_write(device_uuid, target, key);
@@ -514,9 +782,24 @@ pub async fn process_config_changes(
     let registered = registered_device_set(tx, user_id, device_rule, &devices).await?;
     let mut batch = ConfigBatch::load(tx, user_id, &ids, &keys).await?;
 
+    let mut pending = ConfigPending::default();
+    let mut runs: RunTracker<WriteKind> = RunTracker::new();
+
     for change in changes {
         let change_id = &change.id;
         let change_uuid = super::remote_mutations::parse_or_hash_uuid(change_id);
+
+        // Before any of the branches below reads this row. `ConfigBatch` marks a written id
+        // stale and sends the next lookup for it back to the database, so a buffered write
+        // has to have landed by then or that lookup returns the row as it was before it.
+        // See `RunTracker::contains`.
+        if runs.contains(&format!("id:{}", change_uuid)) {
+            pending
+                .flush(tx, user_id, client_id, server_ms, broadcasts)
+                .await?;
+            runs.clear();
+        }
+
         match change.operation_type {
             OperationType::Insert | OperationType::Update => {
                 tracing::info!("Processing config {}", change_id);
@@ -567,6 +850,16 @@ pub async fn process_config_changes(
                             )
                             .await?;
 
+                            // The id guard above cannot cover this one: the key is only
+                            // known now, and `resolve_config_target` looks the row up by
+                            // `(device, key)` as well as by id.
+                            if runs.contains(&format!("key:{}/{}", device_uuid, item.key)) {
+                                pending
+                                    .flush(tx, user_id, client_id, server_ms, broadcasts)
+                                    .await?;
+                                runs.clear();
+                            }
+
                             let target = resolve_config_target(
                                 tx,
                                 &batch,
@@ -606,6 +899,8 @@ pub async fn process_config_changes(
                             write_config(
                                 tx,
                                 &mut batch,
+                                &mut pending,
+                                &mut runs,
                                 user_id,
                                 client_id,
                                 device_uuid,
@@ -655,35 +950,23 @@ pub async fn process_config_changes(
                         // `last_modified` moves with the write: it is the cursor the
                         // account's other devices poll against, so a row that changes
                         // without it changing is a change they never see.
-                        let written = sqlx::query!(
-                            "UPDATE configs SET version = $1, client_uuid = $2, last_modified = $3, sync_state = 'SYNCED' \
-                             WHERE id = $4 AND user_id = $5 AND device_uuid = $6 \
-                             RETURNING device_uuid, is_deleted, last_modified, key, value",
-                            next_version,
-                            client_id,
-                            server_ms,
-                            change_uuid,
-                            user_id,
-                            device_uuid
-                        )
-                        .fetch_optional(&mut **tx)
-                        .await?;
-
-                        if let Some(row) = written {
-                            broadcasts.push(ConfigBroadcast {
-                                device_uuid: row.device_uuid,
-                                item: ConfigSyncItem {
-                                    id: change_uuid,
-                                    device_uuid: Some(row.device_uuid),
-                                    key: row.key,
-                                    value: row.value,
-                                    sync_state: "SYNCED".to_string(),
-                                    version: next_version,
-                                    is_deleted: row.is_deleted,
-                                    last_modified: row.last_modified,
-                                },
-                            });
+                        // The broadcast for this row is built from what the statement
+                        // returns, so it is appended when the run flushes rather than here.
+                        let token = format!("id:{}", change_uuid);
+                        let key_token = format!("key:{}/{}", device_uuid, row.key);
+                        if runs.needs_flush(&WriteKind::VersionBump, &token)
+                            || runs.needs_flush(&WriteKind::VersionBump, &key_token)
+                        {
+                            pending
+                                .flush(tx, user_id, client_id, server_ms, broadcasts)
+                                .await?;
+                            runs.clear();
                         }
+                        pending.bump_id.push(change_uuid);
+                        pending.bump_version.push(next_version);
+                        pending.bump_device_uuid.push(device_uuid);
+                        runs.record(WriteKind::VersionBump, token);
+                        runs.record(WriteKind::VersionBump, key_token);
 
                         upload_status.push(SuccessResult {
                             id: change_id.to_string(),
@@ -716,35 +999,23 @@ pub async fn process_config_changes(
                     tracing::info!("Applying config soft-delete for {}. Next version: {}", change_id, next_version);
                     // Stamped for the same reason as the update above: a soft-delete the
                     // cursor cannot see is a deletion the sibling tablet never applies.
-                    let written = sqlx::query!(
-                        "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, sync_state = 'PENDING_DELETE' \
-                         WHERE id = $4 AND user_id = $5 AND device_uuid = $6 \
-                         RETURNING device_uuid, last_modified, key, value",
-                        next_version,
-                        client_id,
-                        server_ms,
-                        change_uuid,
-                        user_id,
-                        device_uuid
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?;
-
-                    if let Some(row) = written {
-                        broadcasts.push(ConfigBroadcast {
-                            device_uuid: row.device_uuid,
-                            item: ConfigSyncItem {
-                                id: change_uuid,
-                                device_uuid: Some(row.device_uuid),
-                                key: row.key,
-                                value: row.value,
-                                sync_state: "PENDING_DELETE".to_string(),
-                                version: next_version,
-                                is_deleted: true,
-                                last_modified: row.last_modified,
-                            },
-                        });
+                    // As with the version bump above, the broadcast is built from the
+                    // statement's own output and so is appended at flush time.
+                    let token = format!("id:{}", change_uuid);
+                    let key_token = format!("key:{}/{}", device_uuid, row.key);
+                    if runs.needs_flush(&WriteKind::Delete, &token)
+                        || runs.needs_flush(&WriteKind::Delete, &key_token)
+                    {
+                        pending
+                            .flush(tx, user_id, client_id, server_ms, broadcasts)
+                            .await?;
+                        runs.clear();
                     }
+                    pending.del_id.push(change_uuid);
+                    pending.del_version.push(next_version);
+                    pending.del_device_uuid.push(device_uuid);
+                    runs.record(WriteKind::Delete, token);
+                    runs.record(WriteKind::Delete, key_token);
 
                     upload_status.push(SuccessResult {
                         id: change_id.to_string(),
@@ -767,6 +1038,14 @@ pub async fn process_config_changes(
             }
         }
     }
+    // The last run has no successor to trigger it.
+    if !pending.is_empty() {
+        pending
+            .flush(tx, user_id, client_id, server_ms, broadcasts)
+            .await?;
+        runs.clear();
+    }
+
     Ok(())
 }
 
@@ -949,8 +1228,21 @@ pub async fn process_config_sync_items(
     let registered = registered_device_set(tx, user_id, device_rule, &devices).await?;
     let mut batch = ConfigBatch::load(tx, user_id, &ids, &keys).await?;
 
+    let mut pending = ConfigPending::default();
+    let mut runs: RunTracker<WriteKind> = RunTracker::new();
+
     for item in items {
         let is_delete = item.is_deleted || item.sync_state == "PENDING_DELETE";
+
+        // Same reason as `process_config_changes`: land any buffered write for this id
+        // before the stale-marked cache goes back to the database for it. The matching key
+        // guard has to wait until the device is resolved, just below.
+        if runs.contains(&format!("id:{}", item.id)) {
+            pending
+                .flush(tx, user_id, client_id, server_ms, broadcasts)
+                .await?;
+            runs.clear();
+        }
 
         // Resolved before the split: a delete is a write too, so it is device-scoped on
         // the same terms as an upsert.
@@ -965,6 +1257,17 @@ pub async fn process_config_sync_items(
         )
         .await?;
 
+        // Now that the row's real device is known: a buffered write on this `(device, key)`
+        // has to be in the database before anything below looks the pair up, or a second
+        // item on the same key resolves to "no such row" and inserts a duplicate that
+        // `unique_user_device_config_key` then rejects.
+        if runs.contains(&format!("key:{}/{}", device_uuid, item.key)) {
+            pending
+                .flush(tx, user_id, client_id, server_ms, broadcasts)
+                .await?;
+            runs.clear();
+        }
+
         if is_delete {
             let existing = batch.row_for(tx, user_id, item.id, Some(device_uuid)).await?;
 
@@ -972,36 +1275,21 @@ pub async fn process_config_sync_items(
                 batch.note_version_bump(device_uuid, item.id, &row.key);
                 let next_version = advance_version("Config", &item.id.to_string(), row.version)?;
                 tracing::info!("Applying config soft-delete for {}. Next version: {}", item.id, next_version);
-                let written = sqlx::query!(
-                    "UPDATE configs SET is_deleted = TRUE, version = $1, client_uuid = $2, last_modified = $3, \
-                         sync_state = 'PENDING_DELETE'::text::sync_state \
-                     WHERE id = $4 AND user_id = $5 AND device_uuid = $6 \
-                     RETURNING device_uuid, last_modified, key, value",
-                    next_version,
-                    client_id,
-                    server_ms,
-                    item.id,
-                    user_id,
-                    device_uuid
-                )
-                .fetch_optional(&mut **tx)
-                .await?;
-
-                if let Some(row) = written {
-                    broadcasts.push(ConfigBroadcast {
-                        device_uuid: row.device_uuid,
-                        item: ConfigSyncItem {
-                            id: item.id,
-                            device_uuid: Some(row.device_uuid),
-                            key: row.key,
-                            value: row.value,
-                            sync_state: "PENDING_DELETE".to_string(),
-                            version: next_version,
-                            is_deleted: true,
-                            last_modified: row.last_modified,
-                        },
-                    });
+                let token = format!("id:{}", item.id);
+                let key_token = format!("key:{}/{}", device_uuid, row.key);
+                if runs.needs_flush(&WriteKind::Delete, &token)
+                    || runs.needs_flush(&WriteKind::Delete, &key_token)
+                {
+                    pending
+                        .flush(tx, user_id, client_id, server_ms, broadcasts)
+                        .await?;
+                    runs.clear();
                 }
+                pending.del_id.push(item.id);
+                pending.del_version.push(next_version);
+                pending.del_device_uuid.push(device_uuid);
+                runs.record(WriteKind::Delete, token);
+                runs.record(WriteKind::Delete, key_token);
 
                 upload_status.push(SuccessResult {
                     id: item.id.to_string(),
@@ -1049,6 +1337,8 @@ pub async fn process_config_sync_items(
             write_config(
                 tx,
                 &mut batch,
+                &mut pending,
+                &mut runs,
                 user_id,
                 client_id,
                 device_uuid,
@@ -1076,6 +1366,14 @@ pub async fn process_config_sync_items(
             }
         }
     }
+    // The last run has no successor to trigger it.
+    if !pending.is_empty() {
+        pending
+            .flush(tx, user_id, client_id, server_ms, broadcasts)
+            .await?;
+        runs.clear();
+    }
+
     Ok(())
 }
 

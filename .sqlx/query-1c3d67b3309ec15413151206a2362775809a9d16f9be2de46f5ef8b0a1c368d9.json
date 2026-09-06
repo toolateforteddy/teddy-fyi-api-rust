@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO drawings (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, created_at, data) SELECT v.id, $1, v.device_uuid, $2, v.version, v.is_deleted, $3, v.client_last_modified, 'SYNCED'::text::sync_state, v.created_at, v.data FROM UNNEST($4::uuid[], $5::uuid[], $6::int4[], $7::bool[], $8::int8[], $9::int8[], $10::jsonb[]) AS v(id, device_uuid, version, is_deleted, client_last_modified, created_at, data) ON CONFLICT (id) DO UPDATE SET device_uuid = EXCLUDED.device_uuid, client_uuid = EXCLUDED.client_uuid, version = EXCLUDED.version, is_deleted = EXCLUDED.is_deleted, last_modified = EXCLUDED.last_modified, client_last_modified = EXCLUDED.client_last_modified, sync_state = EXCLUDED.sync_state, data = EXCLUDED.data WHERE drawings.user_id = EXCLUDED.user_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "UuidArray",
+        "UuidArray",
+        "Int4Array",
+        "BoolArray",
+        "Int8Array",
+        "Int8Array",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c3d67b3309ec15413151206a2362775809a9d16f9be2de46f5ef8b0a1c368d9"
+}

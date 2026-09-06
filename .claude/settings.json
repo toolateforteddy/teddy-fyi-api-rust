@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./target/**)",
+      "Read(./.env)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.p12)",
+      "Read(./**/*.p8)",
+      "Read(./**/*-key.json)",
+      "Read(./**/service-account*.json)",
+      "Read(./.idea/**)",
+      "Read(./Cargo.lock)",
+      "Read(./.sqlx/**)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-base.sh 2>/dev/null || bash \"$(git rev-parse --show-toplevel)/.claude/hooks/check-base.sh\" 2>/dev/null || true",
+            "timeout": 30,
+            "statusMessage": "Checking this branch against origin/main..."
+          },
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.claude/hooks/check-services.sh\" 2>/dev/null || true",
+            "timeout": 15,
+            "statusMessage": "Checking for a Postgres and a Redis..."
+          }
+        ]
+      }
+    ]
+  }
+}

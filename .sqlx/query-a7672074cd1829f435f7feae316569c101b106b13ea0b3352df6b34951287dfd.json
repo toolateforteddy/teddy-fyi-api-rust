@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE grocery_list_members SET\n                    version = v.version,\n                    is_deleted = v.is_deleted,\n                    sync_state = 'SYNCED',\n                    updated_at = $4,\n                    updated_by_client = $5\n                FROM UNNEST($1::text[], $2::int4[], $3::bool[]) AS v(id, version, is_deleted)\n                WHERE grocery_list_members.id = v.id\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int4Array",
+        "BoolArray",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a7672074cd1829f435f7feae316569c101b106b13ea0b3352df6b34951287dfd"
+}

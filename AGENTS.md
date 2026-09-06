@@ -1,7 +1,13 @@
-# AI Context: Sync Backend Engine & API Contract (Phase 2)
+# AI Context: Sync Backend Engine & API Contract
+
+**Start with [`CLAUDE.md`](CLAUDE.md)** — it is the entry point for working in this
+repo: the module map, how to build, test and validate a change here, and the five hard
+constraints. This file carries two things that are not there: the sync engine's design
+expectations, and deployment (`k8s/`) plus the index of planned work that already has a
+written spec. `README.md` carries the endpoint-by-endpoint API contract.
 
 ## Project Overview
-This Rust service (Axum/Actix-web) acts as the centralized Sync Gatekeeper and source of truth for a multi-tenant, local-first Android and iOS ecosystem. It must manage low-concurrency, collaborative data streams (e.g., household shared grocery lists and private user to-do lists).
+This Rust service (Axum on Tokio) acts as the centralized Sync Gatekeeper and source of truth for a multi-tenant, local-first Android and iOS ecosystem. It must manage low-concurrency, collaborative data streams (e.g., household shared grocery lists and private user to-do lists).
 
 ## Database Architecture & Scoping
 The relational backend schema must support data isolation and multi-device filtering via a shared layout:
@@ -29,11 +35,13 @@ The backend exposes a single, atomic endpoint to reconcile state.
 - `remote_changes`: Arrays of updates/deletes that occurred on the server since the client's `last_synced_at`.
 - `server_timestamp`: The current atomic server time to act as the client's next `last_synced_at` anchor.
 
-## Expectations for Gemini/Rust Assistant
+## Expectations for anything written against the sync engine
 1. Prioritize strict type safety, transaction isolation, and explicit error handling for database writes.
 2. Ensure the sync engine avoids the "echo" problem by accurately utilizing the `client_id` filter.
 3. Keep the payload formats perfectly mirrored to the Android client schema requirements.
-4. **Strict Module Layout Guideline:** NEVER use the legacy `mod.rs` pattern for module entry points (this is an anti-pattern/code smell similar to Python's `__init__.py` abuse). Instead, strictly follow the modern Rust file-based module layout (e.g., declare `routes.rs` at the parent level, and place its sibling submodules inside a `routes/` directory). Keep module entry files strictly declarative, containing only `pub mod` and `pub use` statements, with zero handler logic or unit tests residing inside them.
+4. Follow the module layout rule — no `mod.rs`, entry files declarative — which is
+   constraint 2 in [`CLAUDE.md`](CLAUDE.md) and is checked by
+   `scripts/check_constraints.sh`.
 
 ## Deployment and the `k8s/` manifests
 

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO categories (\n                    id, name, position, \"userId\", icon, \"listId\", version, is_deleted, sync_state, updated_at, updated_by_client\n                )\n                SELECT v.id, v.name, v.position, $8, v.icon, v.list_id, v.version,\n                       v.is_deleted, 'SYNCED', $9, $10\n                FROM UNNEST($1::text[], $2::text[], $3::int4[], $4::text[], $5::text[], $6::int4[], $7::bool[])\n                    AS v(id, name, position, icon, list_id, version, is_deleted)\n                ON CONFLICT (id) DO UPDATE SET\n                    name = EXCLUDED.name,\n                    position = EXCLUDED.position,\n                    \"userId\" = EXCLUDED.\"userId\",\n                    icon = EXCLUDED.icon,\n                    \"listId\" = EXCLUDED.\"listId\",\n                    version = EXCLUDED.version,\n                    is_deleted = EXCLUDED.is_deleted,\n                    sync_state = EXCLUDED.sync_state,\n                    updated_at = EXCLUDED.updated_at,\n                    updated_by_client = EXCLUDED.updated_by_client\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Int4Array",
+        "TextArray",
+        "TextArray",
+        "Int4Array",
+        "BoolArray",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88ecb0178652838c95b399e29bb4a5fed4ffd31db7c2c60d3f03c410bb862c7b"
+}

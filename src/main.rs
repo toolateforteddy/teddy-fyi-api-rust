@@ -349,8 +349,20 @@ async fn serve() {
         // so there is nothing for a timeout to bound.
         .route("/hello", get(|| async { "world" }))
         .route("/hellov2", get(|| async { "world2" }))
-        // Superseded by `/healthz/live`. Kept until the cluster's probes have
-        // been repointed, so this deploy cannot strand a rollout; delete after.
+        // Superseded by `/healthz/live`, and now unused by anything in `k8s/`: the two
+        // kubelet probes and the BackendConfig were repointed in the same commit as this
+        // comment.
+        //
+        // Still here for exactly one more deploy, because the two halves of that change
+        // do not land at the same instant. The kubelet reads the new pod template as each
+        // pod is replaced, but the `BackendConfig` health check is applied through the
+        // GCP API and its new path reaches the load balancer's own probers asynchronously
+        // — minutes, not milliseconds. An image that had already dropped this route would
+        // spend that window failing every load-balancer check, which is a 502 for
+        // everyone rather than a tidier router.
+        //
+        // Delete it in a later change, once a deploy carrying this one has been observed
+        // healthy and the load balancer's configured path really is `/healthz/live`.
         .route("/healthcheck", get(|| async { "OK" }))
         // `/healthz/ready` does reach for Redis, so it does get one — a probe that can
         // hang forever is a probe that never reports unready.

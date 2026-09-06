@@ -92,6 +92,21 @@ spec:
         app: api-rust
     spec:
       serviceAccountName: api-rust-ksa
+      # The uid/gid here are the ones the Dockerfile creates and selects with
+      # `USER 10001:10001`; they are stated again at this level so the guarantee lives in
+      # the cluster rather than in the image. If the image ever loses its `USER` line, or
+      # is replaced by one that has not got that user, `runAsNonRoot` fails the pod at
+      # admission instead of quietly starting it as root. Changing either number without
+      # changing the Dockerfile is a crash loop, not a hardening.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # The kubelet's default profile: everything glibc and tokio need, none of the
+        # syscalls a container has no business making. `Unconfined` is what you get
+        # without this line on a cluster whose default is not already RuntimeDefault.
+        seccompProfile:
+          type: RuntimeDefault
       # Spread replicas across nodes, which during a rollout means the surge pod lands
       # somewhere other than the pod it is replacing. Without this both fit on one node,
       # and a deploy that is meant to be zero-downtime still has a single node as its
@@ -166,19 +181,42 @@ spec:
           limits:
             cpu: 500m
             memory: 256Mi
+        # Readiness asks the question readiness is for: can *this replica* serve right
+        # now. `/healthz/ready` checks Redis (with a held connection and a short cached
+        # verdict, so the cost does not scale with probe rate) and the passively-inferred
+        # Postgres state, and answers 503 when either is out. See
+        # `src/observability/health.rs`, 355 lines of which were dead in production for as
+        # long as this probe pointed at `/healthcheck` — a route whose handler is the
+        # string "OK".
+        #
+        # `failureThreshold` is spelled out rather than left to its default of 3 because
+        # the number is load-bearing here: with `replicas: 1`, an unready pod is an outage
+        # at the edge, so three consecutive failures ten seconds apart is the margin that
+        # keeps a momentary Redis blip from pulling the only replica out of rotation. A
+        # dependency that is genuinely down for half a minute *should* take it out — at
+        # that point almost every endpoint is failing anyway, and an honest 503 beats a
+        # pod that claims to be serving.
         readinessProbe:
           httpGet:
-            path: /healthcheck
+            path: /healthz/ready
             port: 8080
           timeoutSeconds: 5
           periodSeconds: 10
+          failureThreshold: 3
+        # Liveness stays a static string, and that is deliberate rather than lazy:
+        # liveness failure means "kill this pod", so a probe that consulted a *shared*
+        # dependency would let one Redis outage restart every replica at once, turning a
+        # recoverable blip into a full outage. `/healthz/live` answers OK if the process
+        # is up and the runtime is still scheduling, which is the only question whose
+        # honest answer is "restart me".
         livenessProbe:
           httpGet:
-            path: /healthcheck
+            path: /healthz/live
             port: 8080
           initialDelaySeconds: 15
           timeoutSeconds: 5
           periodSeconds: 15
+          failureThreshold: 3
         # Keep serving for a few seconds after Kubernetes decides to remove this pod.
         #
         # api-rust-svc is a NodePort behind the GKE ingress, so the load balancer targets
@@ -195,6 +233,19 @@ spec:
           preStop:
             exec:
               command: ["sleep", "10"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          # The service is a single static binary that talks to Postgres, Redis and Google
+          # over the network and writes nothing to disk — no temp files, no cache, no
+          # crate in the dependency tree that reaches for `env::temp_dir()`. The only
+          # mount it has is the secrets CSI volume, which is `readOnly: true` in its own
+          # right. So there is nothing for a writable root filesystem to be for, and
+          # anything that did start writing to it would be a bug worth failing loudly.
+          # If a future feature genuinely needs scratch space, add an `emptyDir` at the
+          # path it needs rather than turning this off.
+          readOnlyRootFilesystem: true
       volumes:
       - name: gcp-secrets
         csi:
@@ -213,7 +264,20 @@ spec:
     checkIntervalSec: 30
     timeoutSec: 25
     type: HTTP
-    requestPath: /healthcheck
+    # `/healthz/live`, not `/healthz/ready`, and the difference is not an oversight.
+    #
+    # This is the *Google load balancer's* check, and it is a far coarser instrument than
+    # the kubelet's: a 30-second interval with a 25-second timeout, and GKE is slow to
+    # return a backend it has marked unhealthy. Pointing it at a dependency check would
+    # let a few seconds of Redis trouble remove the backend from the load balancer for
+    # minutes after Redis came back.
+    #
+    # It loses nothing, because readiness still governs rotation transitively:
+    # `api-rust-svc` is a NodePort, so kube-proxy only forwards to *ready* pods. When the
+    # readiness probe above takes the pod out, there is nothing behind the node port for
+    # this check to reach and it fails on its own — just without a second, slower timer
+    # racing the first one to decide the same thing.
+    requestPath: /healthz/live
 ---
 apiVersion: networking.gke.io/v1
 kind: ManagedCertificate

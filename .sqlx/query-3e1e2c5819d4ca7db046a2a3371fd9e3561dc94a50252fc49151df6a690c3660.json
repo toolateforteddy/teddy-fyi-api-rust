@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE todo_lists SET\n                    version = v.version,\n                    updated_at = $3,\n                    updated_by_client = $4,\n                    sync_state = 'SYNCED'\n                FROM UNNEST($1::text[], $2::int4[]) AS v(id, version)\n                WHERE todo_lists.id = v.id\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int4Array",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3e1e2c5819d4ca7db046a2a3371fd9e3561dc94a50252fc49151df6a690c3660"
+}

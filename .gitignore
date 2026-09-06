@@ -25,3 +25,7 @@ target
 # Worktrees for parallel agent sessions, one per task. Local scratch state:
 # the branches themselves are pushed, the checkouts are not.
 .claude/worktrees/
+
+# A hand-started redis snapshots into its working directory; validate.sh points it
+# at /tmp, but one started by hand in the repo root leaves this behind.
+dump.rdb

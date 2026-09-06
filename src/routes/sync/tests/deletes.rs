@@ -351,7 +351,8 @@ fn no_soft_delete_uses_fetch_one() {
     assert!(
         offenders.is_empty(),
         "soft-delete run through `fetch_one`, which 500s the whole sync batch when the row \
-         does not exist -- use `soft_delete_version!` (see `crate::routes::sync::deletes`): {:?}",
+         does not exist -- match the rows with `fetch_optional`/`fetch_all` and \
+         acknowledge the ones that were not there (see `crate::routes::sync::deletes`): {:?}",
         offenders
     );
 }

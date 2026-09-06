@@ -80,13 +80,13 @@ Rules that keep concurrent work from colliding:
 | 9 | ~~Audience set is flat; no client-id → product mapping~~ **landed, with one gap** | 8 | Now |
 | 10 | ~~Refresh tokens are Argon2-hashed~~ **landed** | 8 | Now |
 | 11 | A Gemini HTTP call runs inside an open Postgres transaction | 8 | Anytime |
-| 12 | Probes point at the deprecated `/healthcheck` | 8 | Now |
+| 12 | ~~Probes point at the deprecated `/healthcheck`~~ **landed** | 8 | Now |
 | 13 | Guardrail limits and the pod memory limit disagree by ~100× | 8 | Anytime |
 | 14 | The retention reaper has never deleted anything | 8 | Now |
 | 15 | No index on any tenancy column on the grocery/todo side | 8 | Now |
 | 16 | ~~`SyncScope` is not bound to anything the caller proved~~ **landed** | 8 | Now |
 | 17 | Tenancy columns are nullable | 7 | At the freeze |
-| 18 | `grocery_list_members.id` embeds the raw Google subject | 7 | Now |
+| 18 | ~~`grocery_list_members.id` embeds the raw Google subject~~ **landed; `userId` still does** | 7 | Now |
 | 19 | Sessions have no absolute lifetime | 7 | Anytime |
 | 20 | One bad item fails the whole batch | 7 | Now |
 | 21 | No caps on grocery/todo field sizes — ~~batch length~~ **landed** | 7 | Now |
@@ -449,7 +449,44 @@ The rest of this codebase is careful about exactly this — the AI budget module
 timeout sized below the request deadline, the shared `reqwest` client. This one call site sits
 inside a transaction anyway.
 
-## 12. The probes point at the deprecated endpoint — **8**, Now
+## 12. The probes point at the deprecated endpoint — **8**, Now — **LANDED**
+
+**Landed** in [#73](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/73).
+Readiness now probes `/healthz/ready`, so `src/observability/health.rs` is load-bearing in
+production for the first time. Liveness probes `/healthz/live` and stays a static string
+deliberately: liveness failure means "kill this pod", and a liveness check on a *shared*
+dependency lets one Redis outage restart every replica at once.
+
+The `BackendConfig` went to `/healthz/live` rather than `/healthz/ready`, which is the one
+judgement call in the change. That is the Google load balancer's own check — a 30-second
+interval with a 25-second timeout, and GKE is slow to return a backend it has marked
+unhealthy — so pointing it at a dependency check would let seconds of Redis trouble remove
+the backend for minutes after Redis recovered. It loses nothing: `api-rust-svc` is a
+NodePort and kube-proxy only forwards to *ready* pods, so when readiness takes the pod out
+there is nothing behind the node port for the load balancer to reach either.
+
+`readinessProbe.failureThreshold` is now spelled out rather than left to its default of 3,
+because with `replicas: 1` (item 34) the number is load-bearing: three failures ten seconds
+apart is what keeps a momentary blip from pulling the only replica out of rotation.
+
+**`/healthcheck` is still in `main.rs`, for one more deploy.** The kubelet picks up the new
+pod template as pods are replaced, but the `BackendConfig` path reaches the load balancer's
+probers through the GCP API asynchronously — minutes, not milliseconds. An image that had
+already dropped the route would spend that window failing every load-balancer check, which
+is a 502 for everyone. Deleting it is a follow-up once a deploy carrying this change has
+been observed healthy.
+
+Also landed: a test (`observability::tests::manifest_probe_paths`) that reads the three
+probe paths out of `k8s/api-rust.yaml` and drives each through the real router, failing on
+a 404. It is what would have caught this item without anyone reading the manifest, and it
+fails if the manifest is pointed back at `/healthcheck`.
+
+`/api/ready` is left where it is. Item 12 notes it sits behind `require_auth` and is
+therefore unreachable by a probe; that is deliberate and documented — it is the deep
+Postgres check, kept for on-demand human use, and Neon bills per wake-up, so a probe on a
+timer would keep the database awake around the clock to answer monitoring.
+
+The description below is what was there before.
 
 Readiness, liveness *and* the GKE `BackendConfig` health check all target `/healthcheck`, which
 `src/main.rs:328` describes as:
@@ -546,7 +583,37 @@ of problem the log-hashing in `observability::http` exists to avoid. Count them,
 are, and make the columns NOT NULL. The freeze is the window; the re-key rewrites these columns
 anyway.
 
-## 18. Membership row ids embed the raw Google subject — **7**, Now
+## 18. Membership row ids embed the raw Google subject — **7**, Now — **LANDED, and incomplete**
+
+**Landed** in [#78](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/78).
+Both writers — `/api/lists/join` and the creator's ADMIN row in the list sync processor —
+now mint `gen_random_uuid()`.
+
+**The derivation was load-bearing, which the item did not say.** Both writers upsert
+`ON CONFLICT (id)`: that is how re-joining a list you left revives your row instead of
+adding a second one, and it only worked because the id was derivable from the pair. Taking
+the derivation away without replacing the conflict target would have produced two
+membership rows per person per list. Migration `20260909120000` moves the constraint to
+where it belonged — a unique index on `("listId", "userId")` — and both upserts now conflict
+on the pair. It also drops the plain `("listId", "userId")` index from `20260908120000`,
+which the unique one supersedes, and de-duplicates first: rows predating PR #56 could have
+been created by sync with any client-chosen id, so a pair may have more than one row in a
+database that has been running since June.
+
+Existing rows **keep their old ids**. Rewriting a client-visible primary key underneath
+devices that hold it, with no tombstone for the old value, is a ghost row on every phone in
+the household; the pair-matched upsert finds and revives the old row instead.
+
+**The disclosure is not actually closed, and this is worth knowing before ticking the item
+off.** `GroceryListMemberData.user_id` carries the raw subject to every co-member on every
+sync (`remote_mutations.rs:70-100`), independently of the id. The id was one of two
+channels and this closes the one the item named. Closing the other is a **wire-contract
+change** — clients read `userId` to identify who a membership row is for — so it needs the
+two client families in the loop, which is precisely the coordination this window exists to
+avoid. Worth its own item; it is cheaper now than after the fork, for exactly the reason
+given below.
+
+The description below is what was there before.
 
 `join_handler` builds `format!("{}-member-{}", list_id, user_id)`
 (`src/routes/lists/handlers.rs:276`), and that id syncs verbatim to every member of the list. So

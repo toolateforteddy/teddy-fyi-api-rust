@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO configs (id, user_id, device_uuid, client_uuid, version, is_deleted, last_modified, client_last_modified, sync_state, key, value) SELECT v.id, $1, v.device_uuid, $2, v.version, v.is_deleted, $3, v.client_last_modified, 'SYNCED'::text::sync_state, v.key, v.value FROM UNNEST($4::uuid[], $5::uuid[], $6::int4[], $7::bool[], $8::int8[], $9::text[], $10::text[]) AS v(id, device_uuid, version, is_deleted, client_last_modified, key, value)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "UuidArray",
+        "UuidArray",
+        "Int4Array",
+        "BoolArray",
+        "Int8Array",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9a5b1e381f92f55c6ec636f2bdc85b788b03063036ddd65a62e9a79fcdeec68c"
+}

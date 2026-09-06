@@ -68,7 +68,7 @@ pub fn setup_state(pool: PgPool) -> AppState {
         google_client: Arc::new(google_oauth::AsyncClient::new("test-client")),
         db_pool: pool,
         jwt_secret: "test-secret".to_string(),
-        gemini_api_key: "test-key".to_string(),
+        gemini_api_key: Some("test-key".to_string()),
         http_client: crate::routes::ai::gemini::build_http_client(),
         sync_fanout: crate::routes::sync::fanout::SyncFanout::spawn(redis_client.clone()),
         redis_publisher: Arc::new(crate::routes::sync::publish_conn::RedisPublisher::new(

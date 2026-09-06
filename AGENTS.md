@@ -46,10 +46,28 @@ The backend exposes a single, atomic endpoint to reconcile state.
 ## Deployment and the `k8s/` manifests
 
 The GKE manifests for this service live in `k8s/` and are applied by
-`.github/workflows/deploy.yml` on every merge to `main`, immediately before the rollout
-restart. They used to live in the `teddyfyi` repo (the nginx/hosting repo) and be applied
-by hand from a laptop; they moved here so that a manifest change and the code that needs
-it ship in one commit.
+`.github/workflows/deploy.yml` on every merge to `main`. They used to live in the
+`teddyfyi` repo (the nginx/hosting repo) and be applied by hand from a laptop; they moved
+here so that a manifest change and the code that needs it ship in one commit.
+
+**The image is pinned to the commit SHA, and the manifests do not name a tag that moves.**
+Both `api-rust.yaml` and `user-reaper.yaml` say
+`teddy-fyi-api-rust:IMAGE_TAG_PLACEHOLDER`; the deploy workflow rewrites that on the
+`image:` lines to `github.sha` before it applies the directory. Three things follow:
+
+* **Rollback is `kubectl set image` to an older SHA**, or a revert, rather than a rebuild.
+  `kubectl describe deploy api-rust-dep` now says which commit is running.
+* **`kubectl apply -f k8s/` by hand does not work** — the pod fails to pull the
+  placeholder. That is deliberate; the alternative failure is a hand-apply silently
+  resolving `:latest` to whoever pushed last, which after the fork is not necessarily us.
+  Substitute a SHA yourself if you really mean to apply from a laptop.
+* **A deploy no longer restarts the pods when the spec is unchanged.** `apply` starts the
+  rollout because the image changed, so the old unconditional `rollout restart` is gone —
+  which means re-running the workflow on the same commit is a no-op. To pick up a secret
+  rotated in Secret Manager with no code change, run
+  `kubectl rollout restart deployment/api-rust-dep` deliberately.
+
+`scripts/check_constraints.sh` fails if a manifest goes back to a moving tag.
 
 | File | What it is |
 |---|---|

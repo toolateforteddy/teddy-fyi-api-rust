@@ -126,7 +126,22 @@ spec:
             app: api-rust
       containers:
       - name: api-rust
-        image: gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:latest
+        # NOT a moving tag. `IMAGE_TAG_PLACEHOLDER` is substituted with the commit SHA by
+        # `.github/workflows/deploy.yml` before it applies this directory, so the cluster
+        # only ever runs an image some specific commit built.
+        #
+        # This used to say `:latest`, which cost three things. There was no rollback --
+        # reverting meant rebuilding, because nothing in the cluster recorded which commit
+        # was running -- and no provenance: `kubectl describe deploy` said `:latest` and
+        # nothing more. The third is the split plan's §1.3 hazard, and it is the one that is
+        # silent: once `scribbleroute/backend` is forked from this repo, its merges to `main`
+        # push to the same `:latest`, and the next restart *anywhere* pulls the fork's binary
+        # into `api-rust-dep`. A pinned SHA makes that impossible rather than unlikely.
+        #
+        # Applying this file by hand leaves the placeholder in place and the pod fails to
+        # pull, loudly. That is deliberate: the alternative failure -- a hand-apply quietly
+        # resolving a moving tag to whoever pushed last -- is the thing being removed.
+        image: gcr.io/melodic-sunbeam-164916/teddy-fyi-api-rust:IMAGE_TAG_PLACEHOLDER
         env:
         - name: PORT
           value: "8080"

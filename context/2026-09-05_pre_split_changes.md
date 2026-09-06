@@ -74,7 +74,7 @@ Rules that keep concurrent work from colliding:
 | 3 | ~~Delete of an unknown id 500s the whole sync request~~ **landed** | 9 | Now |
 | 4 | No foreign keys to `users`; deletion is 16 ordered DELETEs | 9 | At the freeze |
 | 5 | `deploy.yml` uses a long-lived GCP service-account key | 9 | Now |
-| 6 | Deployment pins `:latest`; rollout is `rollout restart` | 9 | Now |
+| 6 | ~~Deployment pins `:latest`~~ **landed; the CronJob too, and the restart is gone** | 9 | Now |
 | 7 | ~~Any list member can grant membership to any account~~ **landed** | 8 | Now |
 | 8 | ~~`role` is client-supplied and gates list deletion~~ **landed** | 8 | Now |
 | 9 | ~~Audience set is flat; no client-id → product mapping~~ **landed, with one gap** | 8 | Now |
@@ -83,7 +83,7 @@ Rules that keep concurrent work from colliding:
 | 12 | ~~Probes point at the deprecated `/healthcheck`~~ **landed** | 8 | Now |
 | 13 | Guardrail limits and the pod memory limit disagree by ~100× | 8 | Anytime |
 | 14 | The retention reaper has never deleted anything | 8 | Now |
-| 15 | No index on any tenancy column on the grocery/todo side | 8 | Now |
+| 15 | ~~No index on any tenancy column on the grocery/todo side~~ **already closed by two later migrations** | 8 | Now |
 | 16 | ~~`SyncScope` is not bound to anything the caller proved~~ **landed** | 8 | Now |
 | 17 | Tenancy columns are nullable | 7 | At the freeze |
 | 18 | ~~`grocery_list_members.id` embeds the raw Google subject~~ **landed; `userId` still does** | 7 | Now |
@@ -92,7 +92,7 @@ Rules that keep concurrent work from colliding:
 | 21 | No caps on grocery/todo field sizes — ~~batch length~~ **landed** | 7 | Now |
 | 22 | ~~Deployment has no `securityContext`~~ **landed** | 7 | Now |
 | 23 | ~~Valkey has no `maxmemory` or eviction policy~~ **landed** | 7 | Now |
-| 24 | `GEMINI_API_KEY` is `expect`ed at boot for a teddy.fyi-only feature | 7 | Now |
+| 24 | ~~`GEMINI_API_KEY` is `expect`ed at boot~~ **landed; optional, endpoints 503** | 7 | Now |
 | 25 | The log-hashing privacy invariant holds in exactly one place | 7 | Anytime |
 | 26 | Row ids are client-chosen and globally unique across accounts | 6 | At the freeze |
 | 27 | Three sync futures, three independent transactions | 6 | Now |
@@ -290,7 +290,30 @@ new repo is the one the plan describes as "a repo whose contents you would not m
 contributor reading". Switch to WIF **before** the fork exists, so the fork is provisioned with
 its own federated identity rather than a copy of this one.
 
-## 6. The Deployment pins `:latest` — **9**, Now
+## 6. The Deployment pins `:latest` — **9**, Now — **LANDED**
+
+Both manifests now name `teddy-fyi-api-rust:IMAGE_TAG_PLACEHOLDER`, and `deploy.yml` rewrites
+that on the `image:` lines to `github.sha` before it applies `k8s/`. The substitution and its
+verification are restricted to `image:` lines so the comments that *explain* the placeholder are
+not themselves rewritten into nonsense, and the workflow fails before `apply` if any `image:`
+line still carries it.
+
+**`user-reaper.yaml` was pinned too, and it was the worse of the two.** This item only named the
+Deployment; the CronJob pulled `:latest` on every fire, so a tag a fork had overwritten would
+have put somebody else's binary in charge of deleting accounts without any deploy of ours
+happening at all.
+
+The unconditional `kubectl rollout restart` is gone: with the image pinned, the spec change *is*
+the new image, so `apply` starts the rollout and a restart would only add a redundant second
+one. What that gives up is deliberate and is written down in `AGENTS.md` — re-running the
+workflow on an unchanged commit is now a no-op, so a secret rotated in Secret Manager needs an
+explicit `kubectl rollout restart` rather than an empty commit.
+
+`scripts/check_constraints.sh` gained a ninth check that fails on a moving tag in `k8s/`. It is
+not one of CLAUDE.md's five constraints, but it is the same shape: nothing else lints it and the
+consequence is silent.
+
+### What the item said
 
 `deploy.yml` pushes both `:latest` and `:${{ github.sha }}`. `k8s/api-rust.yaml` names `:latest`.
 The deploy step then runs `kubectl rollout restart deployment/api-rust-dep`, which re-pulls.
@@ -531,7 +554,40 @@ on the assumption that it works. Nobody has watched it commit. Arm it — or at 
 dry-run log and confirm the eligible set is the one you expect — before it becomes somebody
 else's repository's problem.
 
-## 15. No index on any tenancy column, grocery/todo side — **8**, Now
+## 15. No index on any tenancy column, grocery/todo side — **8**, Now — **LANDED, by two other migrations**
+
+**Nothing was left to do here, and that is the finding.** Checked column by column against a
+freshly migrated database on 2026-09-06 rather than against this item's text, because the item
+predates the two migrations that closed it:
+
+| Column | Index | Added by |
+|---|---|---|
+| `todo_items."userId"` | `("userId", updated_at)` | `20260908120000_sync_hot_path_indexes` |
+| `todo_lists."userId"` | `("userId", updated_at)` | same |
+| `stores."userId"` | `("userId", updated_at)` | same |
+| `categories."userId"` | `("userId", updated_at)` | same |
+| `grocery_lists."ownerId"` | `("ownerId")` | same |
+| `grocery_list_members."userId"` | `("userId")` | same |
+| `grocery_items."userId"` | `("userId")` | `20260910120000_account_deletion_indexes` |
+
+The three that are plain rather than `("userId", updated_at)` composites are plain **on
+purpose**, and adding the composite this item asks for would be a regression rather than the
+"straight latency win" it promises. In all three the `updated_at` range sits inside an `OR`
+that spans a join — `(gl.updated_at > $2 OR (glm.id IS NOT NULL AND glm.updated_at > $2))` for
+`grocery_lists`, `(glm.updated_at > $2 OR my_glm.updated_at > $2)` for the members query, and
+for `grocery_items` the private-items branch of an `OR` across a `LEFT JOIN`. No index on the
+filtered table can satisfy that range, so the second column would be paid for on every write
+and never read. `20260910120000` says so explicitly for `grocery_items` and declines it there;
+the same argument covers the other two.
+
+If those queries are ever restructured into index-friendly branches, the composites belong with
+that change, not before it.
+
+**Also wrong in the original text, for the record:** "after the fork it is two migrations in two
+repos". Every table named here — grocery and todo — stays in this repo. There was never a
+duplication cost, only a latency one.
+
+### What the item said
 
 Every index in `migrations/` covers `listId`, `client_uuid`, `device_uuid`, `expires_at`, or a
 failure counter. There is nothing on:
@@ -758,7 +814,33 @@ The split plan names eviction pressure as one of the three real shared-Redis ris
 Now rather than later, because Phase 2 stands up a second Valkey cold and empty — the worst
 moment to discover the memory behaviour — and Phase 4 duplicates this file into the fork.
 
-## 24. `GEMINI_API_KEY` is `expect`ed at boot — **7**, Now
+## 24. `GEMINI_API_KEY` is `expect`ed at boot — **7**, Now — **LANDED**
+
+`AppState::gemini_api_key` is an `Option<String>` sourced from
+`std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.trim().is_empty())` — an empty value counts
+as absent, because a manifest wired to a secret nobody has filled in is the same situation as
+one that never named the variable, and an empty key would otherwise reach Gemini as a 401 per
+call instead of a 503 that says what is wrong. `main` warns at boot when it is unset, so an
+operator learns before a user does.
+
+Three paths spend the AI budget and they answer differently, which is the part worth keeping:
+
+* `POST /api/categorize` and `POST /api/assign-icon` refuse through
+  `routes::ai::require_gemini_api_key`, the single place the `Option` is unwrapped. The refusal
+  is a new `AppError::NotConfigured` — 503 like `Overloaded`, but with a body that does not
+  promise that waiting helps, because nothing here is temporary. It is raised *after* the title
+  check (a malformed request still gets its 400) and *before* the budget charge (a call this
+  deployment cannot make must not spend the caller's allowance).
+* `resolve_todo_icons`, in the sync path, checks the key itself and returns an empty map. It
+  must not refuse: an icon is a garnish and a missing key cannot be allowed to fail somebody's
+  sync — the same reasoning that already swallowed a budget refusal there. It is checked before
+  the budget charge for the same reason as above.
+
+The risk-register entry this item names — "pod will not boot after removing Gemini; remove code,
+`AppState` field and manifest env together" — is now a no-op: drop the variable and the
+endpoints 503, which is what a deployment without them should say anyway.
+
+### What the item said
 
 `std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set")` (`src/main.rs:87`), for a
 feature only teddy.fyi uses. The split plan's risk register carries an entry for this:

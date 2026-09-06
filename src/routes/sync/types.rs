@@ -329,6 +329,14 @@ pub enum AppError {
     /// This replica is at capacity for a resource shared by every account. The
     /// request is fine and another replica — or this one, shortly — can serve it.
     Overloaded(String),
+    /// The endpoint needs a piece of deployment configuration this deployment does not
+    /// have. Distinct from [`AppError::Overloaded`], which also answers 503: nothing here
+    /// is temporary and no amount of retrying helps, so the message says so rather than
+    /// inviting a client to back off and try again. See
+    /// [`crate::routes::ai::require_gemini_api_key`], the only thing that raises it —
+    /// a ScribbleRoute deployment that never sets `GEMINI_API_KEY` reaches this instead of
+    /// failing to boot.
+    NotConfigured(String),
     Internal(String),
 }
 
@@ -395,6 +403,13 @@ impl IntoResponse for AppError {
             }
             AppError::Overloaded(err) => {
                 tracing::warn!("Rejected, replica at capacity: {}", err);
+                (StatusCode::SERVICE_UNAVAILABLE, err)
+            }
+            AppError::NotConfigured(err) => {
+                // `warn`, not `error`: on a deployment that deliberately omits the
+                // configuration this is the designed answer, not an incident. The boot
+                // line in `main` is where an operator finds out it will happen.
+                tracing::warn!("Refused, not configured on this deployment: {}", err);
                 (StatusCode::SERVICE_UNAVAILABLE, err)
             }
             AppError::Internal(err) => {

@@ -544,3 +544,172 @@ async fn redact_strips_the_url_a_reqwest_error_would_otherwise_print() {
     // Still says what went wrong; only the URL is gone.
     assert!(!redacted.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// A deployment with no GEMINI_API_KEY
+// ---------------------------------------------------------------------------
+//
+// The point of these is the split plan's risk-register entry: `init_app_state` used to
+// `expect` this variable, so a ScribbleRoute deployment that dropped it crash-looped, and
+// removing the feature meant editing code, `AppState` and the manifest in one go. The key
+// is optional now, and these pin down what "absent" does at each of the three places that
+// spend the AI budget.
+
+/// The two endpoints refuse, with a 503 that does not pretend to be temporary.
+#[sqlx::test]
+async fn the_ai_endpoints_refuse_when_no_key_is_configured(pool: sqlx::PgPool) {
+    use crate::routes::ai::handlers::{assign_todo_icon_handler, categorize_item_handler};
+    use crate::routes::ai::types::{AssignTodoIconRequest, CategorizeItemRequest};
+    use crate::routes::sync::tests::helpers::setup_state;
+    use axum::extract::State;
+    use axum::{Extension, Json};
+
+    let mut state = setup_state(pool);
+    state.gemini_api_key = None;
+
+    let claims = crate::auth::tokens::Claims {
+        sub: "user-1".to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10_000_000_000,
+        product: None,
+    };
+
+    let categorize = categorize_item_handler(
+        State(state.clone()),
+        Extension(claims.clone()),
+        Json(CategorizeItemRequest {
+            item_title: "milk".to_string(),
+        }),
+    )
+    .await;
+    match categorize {
+        Err(AppError::NotConfigured(message)) => {
+            assert!(message.contains("not configured"), "{message}");
+        }
+        other => panic!("expected NotConfigured from /categorize, got {other:?}"),
+    }
+
+    let icon = assign_todo_icon_handler(
+        State(state),
+        Extension(claims),
+        Json(AssignTodoIconRequest {
+            todo_title: "take out the bins".to_string(),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(icon, Err(AppError::NotConfigured(_))),
+        "expected NotConfigured from /assign-icon, got {icon:?}"
+    );
+}
+
+/// A malformed request still gets its 400. The refusal above is a fact about the
+/// deployment, but it must not mask the one thing the client can actually fix.
+#[sqlx::test]
+async fn an_unconfigured_deployment_still_reports_a_bad_title(pool: sqlx::PgPool) {
+    use crate::routes::ai::handlers::categorize_item_handler;
+    use crate::routes::ai::types::CategorizeItemRequest;
+    use crate::routes::sync::tests::helpers::setup_state;
+    use axum::extract::State;
+    use axum::{Extension, Json};
+
+    let mut state = setup_state(pool);
+    state.gemini_api_key = None;
+
+    let result = categorize_item_handler(
+        State(state),
+        Extension(crate::auth::tokens::Claims {
+            sub: "user-1".to_string(),
+            client_uuid: "client-1".to_string(),
+            exp: 10_000_000_000,
+            product: None,
+        }),
+        Json(CategorizeItemRequest {
+            item_title: "   ".to_string(),
+        }),
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(AppError::BadRequest(_))),
+        "an empty title is a 400 whether or not the key is configured, got {result:?}"
+    );
+}
+
+/// The third spender is the one that must *not* refuse: `resolve_todo_icons` runs inside
+/// `POST /api/sync`, so an absent key has to mean "no icon", not a failed sync. Any other
+/// behaviour here turns a piece of missing configuration into data loss.
+#[sqlx::test]
+async fn syncing_a_todo_without_a_key_stores_it_without_an_icon(pool: sqlx::PgPool) {
+    use crate::routes::sync::tests::helpers::{request, seed_device, setup_state};
+    use crate::routes::sync::{
+        parse_or_hash_uuid, sync_handler, AppJson, OperationType, SyncRequest, SyncScope,
+        TodoChangeDelta,
+    };
+    use axum::extract::State;
+    use axum::Extension;
+
+    let mut state = setup_state(pool.clone());
+    state.gemini_api_key = None;
+    seed_device(&pool, parse_or_hash_uuid("user-1"), "Phone").await;
+
+    // Built from the struct rather than hand-written JSON so the payload cannot drift out
+    // of the shape the handler parses. `icon: None` is the whole point: this is exactly the
+    // todo `resolve_todo_icons` would have asked Gemini about.
+    let todo_data = crate::routes::sync::types::TodoItemData {
+        id: "todo-no-key".to_string(),
+        title: "Buy milk".to_string(),
+        is_completed: false,
+        created_at: 0,
+        position: 0,
+        scheduled_date: None,
+        recurrence_rule: None,
+        scheduled_at: 0,
+        user_id: Some("user-1".to_string()),
+        parent_id: None,
+        is_daily: false,
+        due_date: None,
+        description: None,
+        list_id: None,
+        priority: 0,
+        icon: None,
+        sync_state: "SYNCED".to_string(),
+        version: 1,
+        is_deleted: false,
+    };
+
+    let body = SyncRequest {
+        scope: Some(SyncScope::Todo),
+        todo_changes: vec![TodoChangeDelta {
+            id: "todo-no-key".to_string(),
+            operation_type: OperationType::Insert,
+            version: 1,
+            data: Some(serde_json::to_value(&todo_data).unwrap()),
+        }],
+        ..request("client-1")
+    };
+
+    let claims = crate::auth::tokens::Claims {
+        sub: "user-1".to_string(),
+        client_uuid: "client-1".to_string(),
+        exp: 10_000_000_000,
+        product: None,
+    };
+
+    let _response = sync_handler(State(state), Extension(claims), AppJson(body))
+        .await
+        .expect("a sync must succeed on a deployment with no Gemini key");
+
+    let icon = sqlx::query_scalar!(
+        "SELECT icon FROM todo_items WHERE id = $1",
+        "todo-no-key"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the todo must have been written");
+
+    assert!(
+        icon.is_none() || icon.as_deref() == Some(""),
+        "an unconfigured deployment must store the todo with no server-assigned icon, got {icon:?}"
+    );
+}

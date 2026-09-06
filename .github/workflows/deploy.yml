@@ -106,21 +106,49 @@ jobs:
           location: us-central1-a
           project_id: melodic-sunbeam-164916
 
+      # The manifests name `:IMAGE_TAG_PLACEHOLDER` rather than a tag that moves, so the
+      # revision being deployed is written into them here, in the workspace, before anything
+      # is applied. See `k8s/api-rust.yaml` for the argument; the short version is that
+      # `:latest` gave up rollback and provenance, and would let a fork's merge to `main`
+      # replace the running binary with no deploy of ours.
+      #
+      # The check afterwards is the part that matters: a manifest that reaches the cluster
+      # with the placeholder still in it fails to pull, and it should fail here instead —
+      # loudly, before `apply`, with the file named.
+      #
+      # Both the substitution and the check are restricted to `image:` lines, because the
+      # manifests also *mention* the placeholder in the comments that explain it, and
+      # rewriting an explanation to contain a commit SHA makes the rendered file nonsense.
+      - name: Pin manifests to this revision
+        run: |
+          sed -i "/^[[:space:]]*image:/s|IMAGE_TAG_PLACEHOLDER|${{ github.sha }}|g" k8s/*.yaml
+          if grep -rnE '^[[:space:]]*image:.*IMAGE_TAG_PLACEHOLDER' k8s/; then
+            echo "::error::an image: line still carries IMAGE_TAG_PLACEHOLDER after substitution"
+            exit 1
+          fi
+          grep -rnE '^[[:space:]]*image:' k8s/
+
       # The manifests live in this repo (k8s/), so a change to the Deployment ships in the
       # same commit as the code that needs it — a new env var and the `env::var` that reads
       # it can no longer reach prod on different days.
       #
-      # Applied before the restart rather than instead of it: `apply` reconciles spec changes
-      # but will not re-pull `:latest`, and `rollout restart` re-pulls but knows nothing about
-      # the spec. Together they cover both. When apply *does* change the spec it starts its
-      # own rollout and the restart below folds into it, so doing both costs nothing.
+      # This is now the whole deploy. It used to be `apply` followed by an unconditional
+      # `rollout restart`, because `apply` reconciles spec changes but will not re-pull a tag
+      # that has moved underneath it. With the image pinned to the SHA, the spec change *is*
+      # the new image, so `apply` starts the rollout by itself and a restart would only add a
+      # second, redundant one.
+      #
+      # What that drops, deliberately: a deploy no longer restarts the pods when nothing in
+      # the spec changed. Re-running this workflow on an unchanged commit is now a no-op
+      # rather than a rolling restart — which is right — but it also means a secret rotated
+      # in Secret Manager is not picked up by pushing an empty commit. Run
+      # `kubectl rollout restart deployment/api-rust-dep` for that, deliberately.
       - name: Apply Kubernetes Manifests
         run: kubectl apply -f k8s/
 
-      - name: Deploy to GKE (Rollout Restart)
+      - name: Wait for the rollout
         run: |
-          kubectl rollout restart deployment/api-rust-dep
-          # Without this the job is green the moment the restart is *requested*, so a
+          # Without this the job is green the moment the change is *accepted*, so a
           # crashlooping image reports a successful deploy. `rollout status` blocks
           # until the new ReplicaSet is actually available and exits non-zero if it
           # never gets there.

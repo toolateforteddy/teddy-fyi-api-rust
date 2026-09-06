@@ -72,7 +72,7 @@ cp .env.example .env
 Ensure you have the following environment variables configured:
 * `DATABASE_URL`: Connection string to your database.
 * `JWT_SECRET`: Secret key used for signing JWTs.
-* `GEMINI_API_KEY`: API key for accessing Gemini services.
+* `GEMINI_API_KEY` (optional): API key for accessing Gemini services. **Unset is a supported configuration**, and it is what a deployment that does not run teddy.fyi's AI features wants: `POST /api/categorize` and `POST /api/assign-icon` answer `503` with `{"error":"AI features are not configured on this deployment"}`, and syncing an icon-less todo simply stores it without an icon rather than failing. An empty value counts as unset. This used to be `expect`ed at boot, so dropping the variable crash-looped the pod.
 * `GOOGLE_IOS_CLIENT_IDS`: Comma-separated client IDs of the iOS apps. Google's iOS sign-in flow issues ID tokens whose `aud` is the app's own client ID, so each of these is also accepted as an audience.
 * `GOOGLE_CLIENT_IDS`: Comma-separated client IDs for everything that is not an iOS app.
 

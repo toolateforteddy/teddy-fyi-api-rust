@@ -59,6 +59,16 @@ pub async fn resolve_todo_icons(
         return HashMap::new();
     }
 
+    // A deployment with no `GEMINI_API_KEY` has no icons to offer. The two AI endpoints
+    // answer 503 in this case (`crate::routes::ai::require_gemini_api_key`); this path
+    // must not, because it runs inside somebody's sync and an icon is a garnish -- the
+    // same reasoning that swallows a budget refusal below. Checked here rather than in
+    // the closure so an unconfigured deployment does not charge the budget for calls it
+    // was never going to make.
+    let Some(gemini_api_key) = state.gemini_api_key.as_deref() else {
+        return HashMap::new();
+    };
+
     let candidates: Vec<(&str, String)> = changes
         .iter()
         .filter(|change| {
@@ -96,7 +106,7 @@ pub async fn resolve_todo_icons(
         charge_gemini_call(&state.redis_client, BudgetLimits::cached(), user_id)
             .await
             .ok()?;
-        let icon = assign_todo_icon(&state.http_client, &state.gemini_api_key, &title)
+        let icon = assign_todo_icon(&state.http_client, gemini_api_key, &title)
             .await
             .ok()?;
         Some((id.to_string(), icon))

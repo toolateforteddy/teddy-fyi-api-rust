@@ -339,7 +339,11 @@ pub async fn process_store_changes(
                                 err,
                                 data
                             );
-                            return Err(AppError::Serialization(err));
+                            return Err(crate::routes::sync::rejections::item_payload_rejected(
+                                "store",
+                                &change.id.to_string(),
+                                &err,
+                            ));
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {

@@ -368,7 +368,11 @@ pub async fn process_drawing_changes(
                         }
                         Err(err) => {
                             tracing::error!("Failed to deserialize DrawingData for drawing {}: {:?}. Data: {:?}", change_id, err, data);
-                            return Err(AppError::Serialization(err));
+                            return Err(crate::routes::sync::rejections::item_payload_rejected(
+                                "drawing",
+                                &change_id.to_string(),
+                                &err,
+                            ));
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {

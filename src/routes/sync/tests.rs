@@ -14,6 +14,7 @@ mod identity;
 mod log_hygiene;
 mod misc;
 mod product_scope;
+mod rejections;
 mod remote_mutations;
 mod scribble;
 mod stream;

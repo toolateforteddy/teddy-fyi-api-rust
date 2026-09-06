@@ -380,7 +380,11 @@ pub async fn process_grocery_item_store_info_changes(
                                 err,
                                 data
                             );
-                            return Err(AppError::Serialization(err));
+                            return Err(crate::routes::sync::rejections::item_payload_rejected(
+                                "grocery item store info",
+                                &change.id.to_string(),
+                                &err,
+                            ));
                         }
                     }
                 } else if matches!(change.operation_type, OperationType::Update) {

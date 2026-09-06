@@ -6,6 +6,8 @@ pub use versioning::*;
 
 pub mod deletes;
 
+pub mod rejections;
+
 pub mod batching;
 
 pub mod limits;

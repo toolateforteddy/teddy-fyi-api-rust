@@ -52,6 +52,7 @@ fn batch_with_one_unparseable_todo(id: &str) -> SyncRequest {
         drawing_changes: vec![],
         configs: vec![],
         drawings: vec![],
+        supports_paging: false,
     }
 }
 

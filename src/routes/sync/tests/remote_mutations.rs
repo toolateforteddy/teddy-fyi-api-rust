@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     SyncRequest, SyncScope, AppJson, fetch_remote_todo_mutations, fetch_remote_grocery_mutations,
     parse_or_hash_uuid
@@ -32,25 +32,10 @@ async fn test_sync_handler_remote_mutations(pool: PgPool) {
     let state = setup_state(pool.clone());
     let last_synced = Utc::now() - chrono::Duration::minutes(30);
 
+    // A different client id from the writer, so it gets the changes back.
     let req = SyncRequest {
         last_synced_at: Some(last_synced),
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None, // different client id, so it gets the changes
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -463,23 +448,8 @@ async fn test_sync_handler_epoch_initial_sync_bypasses_echo(pool: PgPool) {
     // 2. Prepare request with last_synced_at = Epoch
     let req = SyncRequest {
         last_synced_at: Some(chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap()),
-        client_id: client_id.to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request(&client_id)
     };
 
     let res = sync_handler(State(state), AppJson(req))

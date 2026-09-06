@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use axum::extract::State;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, setup_state, sync_handler};
 use crate::routes::sync::{
     SyncRequest, SyncScope, TodoListData, TodoItemData, TodoListChangeDelta, TodoChangeDelta, OperationType
 };
@@ -20,29 +20,13 @@ async fn test_sync_handler_insert_todo_list(pool: PgPool) {
         is_deleted: false,
     };
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
         todo_list_changes: vec![TodoListChangeDelta {
             id: "list-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&list_data).unwrap()),
         }],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -77,29 +61,13 @@ async fn test_sync_handler_insert_todo(pool: PgPool) {
         is_deleted: false,
     };
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&todo_data).unwrap()),
         }],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -122,29 +90,13 @@ async fn test_sync_handler_update_todo(pool: PgPool) {
 
     let state = setup_state(pool.clone());
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-2".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: None,
         }],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -188,29 +140,13 @@ async fn test_sync_handler_delete_todo(pool: PgPool) {
 
     let state = setup_state(pool.clone());
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-3".to_string(),
             operation_type: OperationType::Delete,
             version: 2,
             data: None,
         }],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -273,23 +209,8 @@ async fn test_sync_handler_scope_todo(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Todo),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), crate::routes::sync::AppJson(req))
@@ -420,29 +341,14 @@ async fn test_sync_succeeds_without_icon_when_budget_is_exhausted(pool: PgPool) 
         is_deleted: false,
     };
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Todo),
-        todo_list_changes: vec![],
         todo_changes: vec![TodoChangeDelta {
             id: "todo-nobudget-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&todo_data).unwrap()),
         }],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let claims = crate::auth::tokens::Claims {

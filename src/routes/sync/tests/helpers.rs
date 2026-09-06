@@ -6,6 +6,45 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// The one place a `SyncRequest` is written out in full.
+///
+/// Every field of the request is `#[serde(default)]` except `client_id` and
+/// `last_synced_at`, so a client sending nothing but a client id is a real request and
+/// this is what the server actually receives from it. Tests build on that with struct
+/// update syntax, naming only the part they are about:
+///
+/// ```ignore
+/// let req = SyncRequest { scope: Some(SyncScope::Todo), ..request("client-1") };
+/// ```
+///
+/// The point is that a new field on `SyncRequest` lands here and nowhere else. Two
+/// separate branches have now merged cleanly as text and left `main` unable to compile,
+/// because one added a field while the other added a literal of the struct in a file the
+/// first never touched; with the literals routed through here there is one site to update
+/// and nothing for a second branch to collide with.
+pub fn request(client_id: &str) -> SyncRequest {
+    SyncRequest {
+        last_synced_at: None,
+        client_id: client_id.to_string(),
+        device_uuid: None,
+        device_name: None,
+        scope: None,
+        todo_list_changes: vec![],
+        todo_changes: vec![],
+        grocery_list_changes: vec![],
+        grocery_list_member_changes: vec![],
+        store_changes: vec![],
+        category_changes: vec![],
+        grocery_changes: vec![],
+        grocery_item_store_info_changes: vec![],
+        config_changes: vec![],
+        drawing_changes: vec![],
+        configs: vec![],
+        drawings: vec![],
+        supports_paging: false,
+    }
+}
+
 pub fn setup_state(pool: PgPool) -> AppState {
     let redis_client = redis::Client::open(
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),

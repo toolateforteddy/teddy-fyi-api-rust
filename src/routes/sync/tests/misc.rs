@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use axum::extract::State;
 use axum::Extension;
 use chrono::Utc;
-use crate::routes::sync::tests::helpers::setup_state;
+use crate::routes::sync::tests::helpers::{request, setup_state};
 use crate::routes::sync::{
     SyncRequest, SyncScope, GroceryListChangeDelta, StoreChangeDelta,
     GroceryChangeDelta, OperationType, AppJson
@@ -200,23 +200,8 @@ async fn test_sync_collaborative_scoping(pool: PgPool) {
     };
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res_not_member = crate::routes::sync::sync_handler(
@@ -318,39 +303,26 @@ async fn test_sync_handler_need_update_state_recovery(pool: PgPool) {
 
     // Client requests state recovery for all 3 using UPDATE with data: null/None
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-2".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
         grocery_list_changes: vec![GroceryListChangeDelta {
             id: "need-list-1".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: None,
         }],
-        grocery_list_member_changes: vec![],
         store_changes: vec![StoreChangeDelta {
             id: "need-store-1".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: None,
         }],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "need-item-1".to_string(),
             operation_type: OperationType::Update,
             version: 2,
             data: None,
         }],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-2")
     };
 
     let res = crate::routes::sync::sync_handler(

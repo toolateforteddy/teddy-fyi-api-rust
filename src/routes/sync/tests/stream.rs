@@ -1,7 +1,7 @@
 use crate::routes::sync::publisher::{get_channel_name, get_device_channel_name, SyncSseEvent};
 use crate::routes::sync::stream::{build_sse_headers, event_targets_device, resolve_stream_device};
 use crate::routes::sync::config::fetch_config_snapshot;
-use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{AppJson, ConfigSyncItem, SyncRequest, SyncScope, parse_or_hash_uuid};
 use axum::extract::State;
 use axum::http::header;
@@ -201,20 +201,8 @@ async fn test_config_write_publishes_to_device_channel(pool: PgPool) {
     let config_id = uuid::Uuid::new_v4();
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
         device_uuid: Some(device_uuid),
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeepCloud),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
         configs: vec![ConfigSyncItem {
             id: config_id,
             device_uuid: Some(device_uuid),
@@ -225,8 +213,7 @@ async fn test_config_write_publishes_to_device_channel(pool: PgPool) {
             is_deleted: false,
             last_modified: Utc::now().timestamp_millis(),
         }],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let _ = sync_handler(State(state), AppJson(req))

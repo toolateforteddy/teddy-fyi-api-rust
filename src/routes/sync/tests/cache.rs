@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::Extension;
 use chrono::Utc;
 use redis::AsyncCommands;
-use crate::routes::sync::tests::helpers::setup_state;
+use crate::routes::sync::tests::helpers::{request, setup_state};
 use crate::routes::sync::{
     SyncRequest, SyncScope, TodoListData, TodoListChangeDelta, GroceryItemData, GroceryChangeDelta,
     OperationType, AppJson, SyncStatusQuery, sync_status_handler
@@ -143,29 +143,13 @@ async fn test_sync_handler_updates_redis_cache(pool: PgPool) {
     };
     
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
         todo_list_changes: vec![TodoListChangeDelta {
             id: "list-status-cache-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&list_data).unwrap()),
         }],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let claims = Claims {
@@ -266,29 +250,14 @@ async fn test_sync_handler_updates_redis_cache_collaborative(pool: PgPool) {
     };
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-a".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Grocery),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
         grocery_changes: vec![GroceryChangeDelta {
             id: "grocery-item-collab-1".to_string(),
             operation_type: OperationType::Insert,
             version: 1,
             data: Some(serde_json::to_value(&item_data).unwrap()),
         }],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-a")
     };
 
     let claims = Claims {

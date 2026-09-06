@@ -10,7 +10,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::routes::sync::tests::helpers::{seed_device, setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     AppJson, SyncRequest, SyncScope, fetch_drawing_download, parse_or_hash_uuid,
 };
@@ -204,23 +204,9 @@ async fn a_cloud_sync_carries_each_drawing_once_per_channel(pool: PgPool) {
 
     let req = SyncRequest {
         last_synced_at: Some(Utc::now() - chrono::Duration::minutes(5)),
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeepCloud),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
         supports_paging: true,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -287,24 +273,8 @@ async fn a_sync_that_does_not_declare_paging_is_not_truncated(pool: PgPool) {
     seed_drawings(&pool, user_uuid, device_uuid, other_client, 1_000, count).await;
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeepCloud),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))
@@ -329,24 +299,9 @@ async fn a_sync_that_declares_paging_is_bounded_and_says_so(pool: PgPool) {
     seed_drawings(&pool, user_uuid, device_uuid, other_client, 1_000, page_size + 5).await;
 
     let req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeepCloud),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
         supports_paging: true,
+        ..request("client-1")
     };
 
     let res = sync_handler(State(state), AppJson(req))

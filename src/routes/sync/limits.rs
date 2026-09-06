@@ -397,6 +397,7 @@ fn json_depth(value: &serde_json::Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routes::sync::tests::helpers::request;
     use serde_json::json;
 
     fn tiny() -> SyncLimits {
@@ -461,26 +462,7 @@ mod tests {
 
     /// An otherwise empty body, so a count test shows only the vector it is about.
     fn blank() -> SyncRequest {
-        SyncRequest {
-            last_synced_at: None,
-            client_id: "client-1".to_string(),
-            device_uuid: None,
-            device_name: None,
-            scope: None,
-            todo_list_changes: vec![],
-            todo_changes: vec![],
-            grocery_list_changes: vec![],
-            grocery_list_member_changes: vec![],
-            store_changes: vec![],
-            category_changes: vec![],
-            grocery_changes: vec![],
-            grocery_item_store_info_changes: vec![],
-            config_changes: vec![],
-            drawing_changes: vec![],
-            configs: vec![],
-            drawings: vec![],
-            supports_paging: false,
-        }
+        request("client-1")
     }
 
     fn grocery_delta(n: usize) -> Vec<crate::routes::sync::types::GroceryChangeDelta> {

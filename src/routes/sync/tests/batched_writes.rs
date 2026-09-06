@@ -8,7 +8,7 @@
 //! as it did when every change was its own statement: the later write wins, and two
 //! deletes of one row still move it two versions.
 
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler};
+use crate::routes::sync::tests::helpers::{request, setup_state, sync_handler};
 use crate::routes::sync::{
     AppJson, GroceryChangeDelta, GroceryItemData, OperationType, SyncRequest, TodoChangeDelta,
     TodoItemData,
@@ -17,26 +17,7 @@ use axum::extract::State;
 use sqlx::PgPool;
 
 fn blank_request(client_id: &str) -> SyncRequest {
-    SyncRequest {
-        last_synced_at: None,
-        client_id: client_id.to_string(),
-        device_uuid: None,
-        device_name: None,
-        scope: None,
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
-    }
+    request(&client_id)
 }
 
 fn grocery_item(id: &str, name: &str, version: i32) -> GroceryItemData {

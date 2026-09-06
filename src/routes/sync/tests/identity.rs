@@ -12,7 +12,7 @@ use axum::extract::State;
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::routes::sync::tests::helpers::{setup_state, sync_handler, seed_device};
+use crate::routes::sync::tests::helpers::{request, seed_device, setup_state, sync_handler};
 use crate::routes::sync::{
     AppJson, ConfigSyncItem, OperationType, SyncRequest, SyncScope, TodoListChangeDelta,
     TodoListData, parse_or_hash_uuid,
@@ -98,10 +98,6 @@ async fn todo_rows_key_off_the_raw_subject_and_configs_off_the_derived_uuid(pool
     };
 
     let todo_req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
-        device_uuid: None,
-        device_name: None,
         scope: Some(SyncScope::Todo),
         todo_list_changes: vec![TodoListChangeDelta {
             id: "identity-list".to_string(),
@@ -109,18 +105,7 @@ async fn todo_rows_key_off_the_raw_subject_and_configs_off_the_derived_uuid(pool
             version: 1,
             data: Some(serde_json::to_value(&list_data).unwrap()),
         }],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
-        configs: vec![],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let _ = sync_handler(State(state.clone()), AppJson(todo_req))
@@ -129,21 +114,8 @@ async fn todo_rows_key_off_the_raw_subject_and_configs_off_the_derived_uuid(pool
 
     let config_id = Uuid::new_v4();
     let config_req = SyncRequest {
-        last_synced_at: None,
-        client_id: "client-1".to_string(),
         device_uuid: Some(device_uuid),
-        device_name: None,
         scope: Some(SyncScope::ScribbleKeep),
-        todo_list_changes: vec![],
-        todo_changes: vec![],
-        grocery_list_changes: vec![],
-        grocery_list_member_changes: vec![],
-        store_changes: vec![],
-        category_changes: vec![],
-        grocery_changes: vec![],
-        grocery_item_store_info_changes: vec![],
-        config_changes: vec![],
-        drawing_changes: vec![],
         configs: vec![ConfigSyncItem {
             id: config_id,
             device_uuid: Some(device_uuid),
@@ -154,8 +126,7 @@ async fn todo_rows_key_off_the_raw_subject_and_configs_off_the_derived_uuid(pool
             is_deleted: false,
             last_modified: Utc::now().timestamp_millis(),
         }],
-        drawings: vec![],
-        supports_paging: false,
+        ..request("client-1")
     };
 
     let _ = sync_handler(State(state), AppJson(config_req))

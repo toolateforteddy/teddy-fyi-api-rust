@@ -1,0 +1,43 @@
+# Scrape configuration for the Prometheus exporter in `src/observability/metrics.rs`.
+#
+# The exporter has been running in production since it was added, on its own listener
+# (METRICS_PORT, default 9090) — but nothing was collecting from it, so every counter in
+# the service was write-only. This is the missing half.
+#
+# ---------------------------------------------------------------------------------------
+# REQUIRES GOOGLE MANAGED PROMETHEUS ON THE CLUSTER.
+#
+# `PodMonitoring` is a CRD installed by GKE's managed collection, not a built-in kind, and
+# `deploy.yml` runs `kubectl apply -f k8s/` over this whole directory — so if the CRD is
+# absent this file does not merely fail to work, it fails the apply and takes the entire
+# deploy down with it, including the application image. Confirm before merging:
+#
+#     kubectl get crd podmonitorings.monitoring.googleapis.com
+#
+# If that returns NotFound, enable managed collection on the cluster first
+# (`gcloud container clusters update <cluster> --enable-managed-prometheus --region <r>`),
+# or delete this file and ship the instrumentation without collection.
+# ---------------------------------------------------------------------------------------
+#
+# Deliberately NOT wired into `api-rust-svc`. Managed collection scrapes the pod IP
+# directly, so /metrics never becomes reachable through `site-ingress` and never needs an
+# exemption carving out of `require_auth`. The endpoint is unauthenticated — it has to be,
+# for the collector — and that is only safe while it stays off the public front door. Do
+# not add port 9090 to the Service.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: api-rust-metrics
+spec:
+  selector:
+    matchLabels:
+      app: api-rust
+  endpoints:
+    # By name, not number: the port lives in `api-rust.yaml` and the code defaults to 9090
+    # via METRICS_PORT. Naming means changing the port is one edit there rather than two
+    # that can disagree.
+    - port: metrics
+      # The service is one replica with a handful of counters; 30s is plenty of resolution
+      # for "is anybody failing to sign in" and keeps the sample count (and the bill) low.
+      interval: 30s
+      path: /metrics

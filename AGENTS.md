@@ -74,6 +74,7 @@ Both `api-rust.yaml` and `user-reaper.yaml` say
 | `k8s/api-rust.yaml` | `api-rust-svc` (NodePort), `api-rust-ksa`, the `SecretProviderClass`, `api-rust-dep`, the `BackendConfig`, and the `api-rust-cert` / `api-scribbleroute-cert` ManagedCertificates. |
 | `k8s/cache.yaml` | The Valkey `cache-dep` / `cache-svc` this service uses for Redis, plus a NetworkPolicy admitting only `app: api-rust`. |
 | `k8s/user-reaper.yaml` | The daily retention CronJob. Reuses this image with the `reap-stale-users` subcommand and the same KSA and secret mount. |
+| `k8s/monitoring.yaml` | The `PodMonitoring` that makes Google Managed Prometheus scrape the exporter on port `metrics`. **Requires the managed-collection CRD to exist on the cluster** — `kubectl apply -f k8s/` is all-or-nothing, so a missing CRD fails the whole deploy. The file says how to check. |
 | `k8s/maintenance.yaml` | The maintenance responder for `api.scribbleroute.com`: an nginx answering 503 with an explanation, for the Phase 4 write freeze. **Applying it starts it; it takes no traffic until `site-ingress` points the hostname at it.** See `context/2026-09-05_planned_maintenance.md`. |
 
 **What is *not* here:** `site-ingress` stays in `teddyfyi`, because it is the shared front

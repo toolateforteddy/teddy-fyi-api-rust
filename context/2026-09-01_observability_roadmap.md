@@ -269,14 +269,60 @@ very next sync 200 and readiness back to 200 in the same breath.
 
 ## 3. Phase 2 — GCP-native collection
 
-**In `teddyfyi`:** a `PodMonitoring` custom resource pointing Managed Prometheus
-at port 9090 / `/metrics`. Managed Prometheus is enabled by default on recent
-GKE Autopilot and is a cluster-level toggle on Standard — verify which `prod`
-(us-central1-a) is before assuming.
+**Landed, in `k8s/monitoring.yaml` — here, not in `teddyfyi` as this originally
+said.** The `PodMonitoring` points Managed Prometheus at port `metrics` (9090)
+and `/metrics`. The repo changed on purpose: `site-ingress` lives in `teddyfyi`
+because it is the shared front door for the nginx site *and* this API, and that
+reasoning does not extend to a resource whose selector is `app: api-rust` and
+which is useless to anything else. It ships with the Deployment whose port it
+names, so the two cannot drift.
+
+The caveat this section already carried is now load-bearing rather than
+advisory: **`PodMonitoring` is a CRD from managed collection, and
+`deploy.yml` runs `kubectl apply -f k8s/` over the whole directory, so on a
+cluster without it the file fails the apply and takes the application deploy
+down with it.** Managed Prometheus is on by default for recent GKE Autopilot and
+is a cluster-level toggle on Standard — verify which `prod` (us-central1-a) is
+with `kubectl get crd podmonitorings.monitoring.googleapis.com` before merging,
+not after.
 
 **In Cloud Monitoring:** one dashboard. Request rate, 5xx rate, p50/p95/p99
 latency, pod restarts, `redis_degraded_total`, sqlx pool saturation, SSE
 connections, Gemini calls/errors.
+
+**The authentication counters** (`src/auth/metrics.rs`) landed with the
+`PodMonitoring` and are the first metrics here written to answer a question
+rather than to describe the process. Every one of them exists because the HTTP
+status code is deliberately lossy at that point:
+
+* `auth_logins_total{result,product}` — separates a *valid* Google token with an
+  unconfigured audience (`unknown_audience`: one whole app cannot sign in, and
+  it is somebody's configuration mistake) from an ordinary expired token. Both
+  are `401` in `http_requests_total`. The `product` label is also the live
+  readout of the classification gap in `src/auth/client_ids.rs`: watch
+  `product="unclassified"` fall to zero as IDs get classified.
+* `auth_refreshes_total{result}` — the six outcomes `refresh_error` collapses
+  into one `unauthorized` body so an anonymous prober cannot enumerate sessions.
+  `reuse_outside_grace` is the refresh-token-reuse signal and the one to alert
+  on; `rotated_at_null` should be flat at zero and is a data-consistency bug if
+  it is not.
+* `auth_refresh_bruteforce_alerts_total` — one *session* crossing
+  `FAILED_REFRESH_ALERT_THRESHOLD`, which is a different shape from estate-wide
+  guessing volume.
+* `auth_device_starts_total`, `auth_device_polls_total`,
+  `auth_device_claims_total` — pairing, where `404` deliberately covers unknown,
+  expired and already-claimed alike
+  ([2026-09-04_device_pairing_auth.md](2026-09-04_device_pairing_auth.md)). The
+  server is the only place that distinction can exist, so this is where it goes.
+  Note `poll{result="pending"}` is the healthy high-volume steady state, not a
+  failure.
+
+All labels are `&'static str` from bounded arrays, registered at zero in
+`register_baseline_metrics` so "nothing has failed" renders as `0` rather than
+as absent. **No client ID is ever a label** — the accepted-audience set grows by
+editing a secret, so labelling by it would let a configuration change multiply
+the series. The raw `aud`/`azp` pair goes to a log line at sign-in and at device
+claim instead, which is also the inventory of which app requested each token.
 
 **Log-based metrics** defined off `jsonPayload.event="http_request"` — this is
 also the analytics substrate:
@@ -355,7 +401,7 @@ which any in-cluster signal can see.
 | :-- | :-- | :-- | :-- |
 | **0** | ✅ Health endpoints, passive DB health, `rollout status` done; **probes still to apply in `teddyfyi`** | — | here + `teddyfyi` |
 | **1** | ✅ Request logging, `EnvFilter`, `/metrics` on :9090 | — | here |
-| **2** | `PodMonitoring`, dashboard, log-based metrics | 1 day | `teddyfyi` + GCP console |
+| **2** | ✅ `PodMonitoring` (here, `k8s/monitoring.yaml`); dashboard and log-based metrics still to do | 1 day | here + GCP console |
 | **3** | Uptime check, alert policies, Cloud app channel | 1 day | GCP console |
 | **4** | Pub/Sub → Cloud Function → FCM → Android app | a weekend | new |
 

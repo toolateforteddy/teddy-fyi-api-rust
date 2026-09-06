@@ -6,6 +6,7 @@
 //! scrapes the pod IP directly, so `/metrics` never has to be reachable through
 //! the ingress and never needs an exemption carved out of `require_auth`.
 
+use crate::auth;
 use axum::{routing::get, Router};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 
@@ -93,6 +94,30 @@ fn register_baseline_metrics() {
         "http_handler_panics_total",
         "Handler panics caught by the panic guard and answered with 500"
     );
+    metrics::describe_counter!(
+        "auth_logins_total",
+        "POST /auth/login attempts, by outcome and the product the audience belongs to"
+    );
+    metrics::describe_counter!(
+        "auth_refreshes_total",
+        "POST /auth/refresh attempts, by outcome -- the distinctions the 401 body hides"
+    );
+    metrics::describe_counter!(
+        "auth_refresh_bruteforce_alerts_total",
+        "Sessions crossing the consecutive-failed-refresh threshold"
+    );
+    metrics::describe_counter!(
+        "auth_device_starts_total",
+        "POST /auth/device/start attempts, by outcome"
+    );
+    metrics::describe_counter!(
+        "auth_device_polls_total",
+        "POST /auth/device/poll attempts, by outcome"
+    );
+    metrics::describe_counter!(
+        "auth_device_claims_total",
+        "POST /auth/device/claim attempts, by outcome"
+    );
 
     metrics::gauge!("sse_connections_active").set(0.0);
     // Both of these are supposed to stay at zero forever, which is precisely why they
@@ -115,6 +140,53 @@ fn register_baseline_metrics() {
     }
     for site in REDIS_FALLBACK_SITES {
         metrics::counter!("redis_degraded_total", "site" => *site).increment(0);
+    }
+
+    // The authentication surface, zeroed for a sharper reason than the rest: these series
+    // are read to answer "is anybody failing to sign in", and the answers that matter most
+    // -- `unknown_audience`, `reuse_outside_grace` -- are supposed to be zero. An absent
+    // series and a zero one look identical on a graph and mean opposite things, so a
+    // refusal nobody has hit yet still has to render as `0`.
+    //
+    // Not the full cross product of results and products, because half of it cannot occur
+    // and a permanently-zero series nobody queries is just noise on a dashboard. The split
+    // is where the audience gets resolved: `invalid_token` and `unknown_audience` are
+    // decided *before* any product is known, so they only ever carry `none`, while
+    // `success` and `error` happen after and carry whichever product signed in -- `none`
+    // included, since the `dev-auth` bypass names no audience at all.
+    for result in [auth::metrics::LOGIN_SUCCESS, auth::metrics::LOGIN_ERROR] {
+        for product in auth::metrics::PRODUCT_LABELS {
+            metrics::counter!(
+                "auth_logins_total",
+                "result" => result,
+                "product" => *product,
+            )
+            .increment(0);
+        }
+    }
+    for result in [
+        auth::metrics::LOGIN_INVALID_TOKEN,
+        auth::metrics::LOGIN_UNKNOWN_AUDIENCE,
+    ] {
+        metrics::counter!(
+            "auth_logins_total",
+            "result" => result,
+            "product" => auth::metrics::PRODUCT_NONE,
+        )
+        .increment(0);
+    }
+    for result in auth::metrics::REFRESH_RESULTS {
+        metrics::counter!("auth_refreshes_total", "result" => *result).increment(0);
+    }
+    metrics::counter!("auth_refresh_bruteforce_alerts_total").increment(0);
+    for result in auth::metrics::DEVICE_START_RESULTS {
+        metrics::counter!("auth_device_starts_total", "result" => *result).increment(0);
+    }
+    for result in auth::metrics::DEVICE_POLL_RESULTS {
+        metrics::counter!("auth_device_polls_total", "result" => *result).increment(0);
+    }
+    for result in auth::metrics::DEVICE_CLAIM_RESULTS {
+        metrics::counter!("auth_device_claims_total", "result" => *result).increment(0);
     }
 }
 

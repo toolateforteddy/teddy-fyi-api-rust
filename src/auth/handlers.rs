@@ -93,18 +93,59 @@ pub struct LoginRequest {
 pub struct AuthResponse {
     pub access_token: String,
     pub refresh_token: String,
+    /// The account's surrogate id — `users.surrogate_id`, an opaque UUID derived from
+    /// nothing.
+    ///
+    /// This is the field a client should treat as its identity, and it exists because
+    /// today they cannot. Every client currently learns "who am I" by base64-decoding a
+    /// JWT and reading `sub`: the grocery Android app decodes *Google's* ID token on the
+    /// sign-in path and *ours* on the pairing path. A subject read out of Google's token
+    /// is a value this service never sent and cannot change, so as long as identity is
+    /// derived that way, no server-side change can move it.
+    ///
+    /// Deliberately **not** named `user_id`. That name is already taken, twice over, and
+    /// both meanings are the raw Google subject: `BrowserAuthResponse.user_id` returns it
+    /// to the web client, and `RefreshRequest.user_id` is the subject a client sends back.
+    /// A third `user_id` meaning something else, on a response from the same endpoint, is
+    /// how a client ends up comparing two different kinds of identifier and finding them
+    /// unequal for the wrong reason.
+    ///
+    /// # What a client is expected to do with it
+    ///
+    /// Store it, and compare it against whatever it currently believes its user id to be.
+    /// **A mismatch is the migration signal**: the rows in the local database are keyed by
+    /// the old identifier and need rewriting to this one. That check is why the field ships
+    /// before the six sync payload fields change — a client that has learnt to notice the
+    /// mismatch is a client that can be switched over safely.
+    ///
+    /// `Option`, and omitted when absent, for the same reason the product claim is: the
+    /// column is nullable, and a response that simply lacks the field is one an older
+    /// client parses exactly as it does today.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_uuid: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct BrowserAuthResponse {
+    /// The raw Google subject, unchanged. Kept because the web client reads it today;
+    /// `user_uuid` below is what should replace it.
     pub user_id: String,
     pub email: Option<String>,
     pub refresh_token: String,
+    /// The surrogate id, same value and same purpose as [`AuthResponse::user_uuid`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_uuid: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct BrowserRefreshResponse {
     pub refresh_token: String,
+    /// Same value and purpose as [`AuthResponse::user_uuid`]. Present on the refresh
+    /// answer as well as the login one so a client that was already signed in when this
+    /// shipped learns its surrogate id on its next rotation — within fifteen minutes of
+    /// activity — rather than only after a fresh sign-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_uuid: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -147,14 +188,22 @@ pub async fn issue_session(
         .collect();
 
     // 2. Upsert user info in users table
-    sqlx::query!(
+    //
+    // `RETURNING surrogate_id` rather than a second SELECT: the upsert already touches
+    // exactly the row the answer needs, and `DO UPDATE` returns one whether the account
+    // is new or not. A new row gets its value from the column DEFAULT, an existing one
+    // from the backfill in 20260911120000, so in practice this is never NULL -- but the
+    // column is nullable and the type says so rather than an `expect` that would 500 a
+    // sign-in over a field nothing is entitled to yet.
+    let surrogate_id = sqlx::query_scalar!(
         r#"INSERT INTO users (id, email)
            VALUES ($1, $2)
-           ON CONFLICT (id) DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email), updated_at = NOW()"#,
+           ON CONFLICT (id) DO UPDATE SET email = COALESCE(EXCLUDED.email, users.email), updated_at = NOW()
+           RETURNING surrogate_id"#,
         user_id,
         email
     )
-    .execute(&state.db_pool)
+    .fetch_one(&state.db_pool)
     .await
     .map_err(|e| {
         tracing::error!("Failed to upsert user: {:?}", e);
@@ -189,7 +238,11 @@ pub async fn issue_session(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(AuthResponse { access_token, refresh_token })
+    Ok(AuthResponse {
+        access_token,
+        refresh_token,
+        user_uuid: surrogate_id.map(|id| id.to_string()),
+    })
 }
 
 pub async fn login_handler(
@@ -244,7 +297,7 @@ pub async fn login_handler(
         duration_secs
     };
 
-    let AuthResponse { access_token, refresh_token } = issue_session(
+    let AuthResponse { access_token, refresh_token, user_uuid } = issue_session(
         &state,
         &user_id,
         email.as_deref(),
@@ -261,6 +314,7 @@ pub async fn login_handler(
             user_id,
             email,
             refresh_token,
+            user_uuid,
         };
 
         let mut response = Json(browser_response).into_response();
@@ -271,7 +325,7 @@ pub async fn login_handler(
         );
         Ok(response)
     } else {
-        Ok(Json(AuthResponse { access_token, refresh_token }).into_response())
+        Ok(Json(AuthResponse { access_token, refresh_token, user_uuid }).into_response())
     }
 }
 
@@ -590,6 +644,28 @@ pub async fn refresh_handler(
         refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
     })?;
 
+    // Read inside the same transaction that just rotated, so a refresh answers with the
+    // surrogate the rotation is for and not one an account deletion removed in between.
+    // A `users` row must exist -- `issue_session` upserts it before any session exists --
+    // but `fetch_optional` keeps a missing one a `None` field rather than a 500 on the
+    // endpoint every device depends on to stay signed in.
+    let surrogate_id = sqlx::query_scalar!(
+        "SELECT surrogate_id FROM users WHERE id = $1",
+        payload.user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            user_id = %payload.user_id,
+            db_error = ?e,
+            "Failed to read the surrogate id during refresh"
+        );
+        refresh_error(StatusCode::INTERNAL_SERVER_ERROR, "database_error")
+    })?
+    .flatten();
+    let user_uuid = surrogate_id.map(|id| id.to_string());
+
     tx.commit().await.map_err(|e| {
         tracing::error!(
             user_id = %payload.user_id,
@@ -605,6 +681,7 @@ pub async fn refresh_handler(
 
         let browser_response = BrowserRefreshResponse {
             refresh_token: new_refresh_token,
+            user_uuid,
         };
 
         let mut response = Json(browser_response).into_response();
@@ -623,7 +700,7 @@ pub async fn refresh_handler(
         );
         Ok(response)
     } else {
-        Ok(Json(AuthResponse { access_token, refresh_token: new_refresh_token }).into_response())
+        Ok(Json(AuthResponse { access_token, refresh_token: new_refresh_token, user_uuid }).into_response())
     }
 }
 

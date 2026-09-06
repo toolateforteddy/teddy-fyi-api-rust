@@ -763,3 +763,50 @@ async fn over_long_app_is_rejected(pool: PgPool) {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+/// A paired tablet has no second sign-in to fall back on, so it has to learn its surrogate
+/// id here. `poll_handler` answers with `AuthResponse`, which carries `user_uuid` — this is
+/// the guard on that staying true, since the README promises it and a tablet that never
+/// sees the field can never notice the mismatch that tells it to migrate.
+#[sqlx::test]
+async fn a_claimed_poll_carries_the_surrogate_id(pool: PgPool) {
+    let state = setup_state(pool.clone());
+    let client_uuid = "fire-tablet-surrogate";
+    let (device_code, user_code) = start(&state, client_uuid).await;
+
+    claim_for_user(&state, "google-sub-surrogate", None, &user_code, None)
+        .await
+        .unwrap();
+    forget_last_poll(&pool, client_uuid).await;
+
+    let response = poll_handler(
+        State(state.clone()),
+        Json(PollRequest {
+            device_code,
+            client_uuid: client_uuid.to_string(),
+        }),
+    )
+    .await
+    .expect("a claimed code should mint a session");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_json(response).await;
+    let surrogate = body["user_uuid"]
+        .as_str()
+        .expect("the poll answer must carry user_uuid");
+
+    let stored = sqlx::query_scalar!(
+        "SELECT surrogate_id FROM users WHERE id = $1",
+        "google-sub-surrogate"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .expect("the upsert gives every account a surrogate");
+
+    assert_eq!(
+        surrogate,
+        stored.to_string(),
+        "the tablet must be told the same surrogate the row holds"
+    );
+}

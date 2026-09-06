@@ -1071,17 +1071,33 @@ pairing-first, is the cheaper side:
 | Device pairing | our token; toybox already looks for a server field | **Server-only**, backward compatible |
 | Google sign-in | Google's ID token, directly | **Client release** — not fixable server-side |
 
-So it stages, and the first stage needs nobody's permission:
+So it stages. An earlier draft of this section had the first stage be "add `user_id` to the
+auth responses", before any surrogate existed — which buys nothing on its own (the field would
+carry the same subject the client already decodes) and costs something real: its *value* would
+change at stage 3, so every client would need a second migration. **The surrogate has to exist
+before the field that carries it.** Corrected order:
 
-1. **Add `user_id` to the auth responses** (`AuthResponse`, and the device poll's). Additive,
-   backward compatible, no client release — and a client already reading the field starts
-   getting the right answer for free.
-2. **Client releases** teaching both repos to take identity from that field rather than from a
-   decoded token, on both sign-in paths.
-3. **Surrogate column and backfill**, then send it in the six fields above. Row *ids* do not
-   change, so nothing is orphaned — but every client's stored `userId` is stale until re-sync,
-   and the backfill bumps `updated_at`, so the whole grocery corpus re-downloads once. At one
-   household that is cheap; it is the moment to do it while it is.
+1. **Surrogate column and backfill.** *Landed* — `20260911120000_users_surrogate_id.sql`:
+   `users.surrogate_id UUID UNIQUE DEFAULT gen_random_uuid()`, nullable, backfilled by the
+   `ALTER`. Nothing reads it yet, so it is inert.
+2. **Return it as `user_uuid`** from `/auth/login`, `/auth/refresh` and — free, since that
+   handler answers with `AuthResponse` — `/auth/device/poll`. *Landed.* Additive and omitted
+   when NULL, so no client release is needed to keep working.
+
+   Named `user_uuid`, not `user_id`, deliberately: `BrowserAuthResponse.user_id` and
+   `RefreshRequest.user_id` both already mean the raw subject, and a third `user_id` meaning
+   something else on the same endpoint is how a client compares two unlike identifiers. It
+   also means a toybox client that already "prefers a `user_id` from the poll response" is
+   *not* silently switched onto the surrogate before it has any migration logic — which is
+   the one way this stage could break the thing it exists to protect.
+3. **Client releases** teaching both repos to store `user_uuid` and, crucially, to **compare it
+   against the id they currently hold and treat a mismatch as the signal to migrate the local
+   database.** This is the stage the whole sequence is built around: stage 2 exists to give
+   clients something to notice, and stage 4 is only safe once they notice it.
+4. **Send the surrogate in the six fields above.** Row *ids* do not change, so nothing is
+   orphaned — but every client's stored `userId` is stale until re-sync, and the re-key bumps
+   `updated_at`, so the whole grocery corpus re-downloads once. At one household that is cheap;
+   it is the moment to do it while it is.
 
 ### Open before this is schedulable
 

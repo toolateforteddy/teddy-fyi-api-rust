@@ -1746,4 +1746,155 @@ mod tests {
         .unwrap();
         assert_eq!(with["user_uuid"], "11111111-2222-3333-4444-555555555555");
     }
+
+    /// Guards on what `refresh_handler` is allowed to write into the logs.
+    ///
+    /// `POST /auth/refresh` takes the raw Google subject in its body and logs on almost
+    /// every path it can take -- so it was the one place outside the sync path putting an
+    /// identifier into Cloud Logging verbatim, where neither `DELETE /api/user/data` nor
+    /// `jobs::reap_stale_users` can ever reach it. Like `sync::tests::log_hygiene`, these
+    /// assert on the *emitted* events rather than the call sites: a future edit that
+    /// reintroduces `user_id = %payload.user_id` fails here rather than in production.
+    mod refresh_log_hygiene {
+        use super::*;
+        use crate::observability::http::{hash_user_id, log_hash_salt};
+        use crate::state::AppState;
+        use std::io;
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        /// Collects everything a `tracing` subscriber writes, so a test can read back the
+        /// exact bytes that would have gone to Cloud Logging.
+        #[derive(Clone, Default)]
+        struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+        impl CapturedLog {
+            fn contents(&self) -> String {
+                String::from_utf8_lossy(&self.0.lock().expect("log mutex")).to_string()
+            }
+        }
+
+        impl io::Write for CapturedLog {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().expect("log mutex").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for CapturedLog {
+            type Writer = CapturedLog;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        /// Runs one refresh with every tracing event captured, and hands back what was
+        /// logged. Scoped with `set_default` rather than globally: the handler is async, so
+        /// the capture has to span the await, and the suite shares one process.
+        async fn refresh_capturing_logs(state: AppState, payload: RefreshRequest) -> String {
+            let sink = CapturedLog::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(sink.clone())
+                .with_ansi(false)
+                // Everything, so a test can never pass merely because the line was filtered.
+                .with_max_level(tracing::Level::TRACE)
+                .finish();
+            let guard = tracing::subscriber::set_default(subscriber);
+            let _ = refresh_handler(State(state), Json(payload)).await;
+            drop(guard);
+            sink.contents()
+        }
+
+        /// A subject shaped like the Google one but unmistakable in a log dump: finding it
+        /// in the output can only mean the raw identifier was written.
+        const CANARY_SUBJECT: &str = "101122334455667788990-canary-subject";
+
+        #[sqlx::test]
+        async fn no_session_path_logs_the_hash_and_not_the_subject(pool: PgPool) {
+            let state = setup_state(pool);
+            let expected_hash = hash_user_id(CANARY_SUBJECT, &log_hash_salt(&state.jwt_secret));
+
+            // No session row, so this takes the "No active session found" branch -- the one
+            // any caller can reach with a guessed subject and no credential at all.
+            let logs = refresh_capturing_logs(
+                state,
+                RefreshRequest {
+                    user_id: CANARY_SUBJECT.to_string(),
+                    client_uuid: "client-log-hygiene".to_string(),
+                    refresh_token: "no-such-token".to_string(),
+                    use_cookie: None,
+                    expires_in_secs: None,
+                },
+            )
+            .await;
+
+            assert!(
+                logs.contains("No active session found"),
+                "the branch under test did not log at all: {logs}"
+            );
+            assert!(
+                !logs.contains(CANARY_SUBJECT),
+                "the raw Google subject reached the log: {logs}"
+            );
+            assert!(
+                logs.contains(&expected_hash),
+                "the salted hash that replaces it is missing: {logs}"
+            );
+        }
+
+        #[sqlx::test]
+        async fn unrecognised_token_path_logs_the_hash_and_not_the_subject(pool: PgPool) {
+            let state = setup_state(pool.clone());
+            let client_uuid = "client-log-hygiene-2";
+            let expected_hash = hash_user_id(CANARY_SUBJECT, &log_hash_salt(&state.jwt_secret));
+
+            // Byte-for-byte the literal the other session-inserting tests use, so this
+            // reuses their committed `.sqlx/` descriptor instead of adding a near-duplicate
+            // one -- which is why the continuation line is indented to their column, not
+            // this block's.
+            sqlx::query!(
+                "INSERT INTO sessions (user_id, client_uuid, refresh_token_hash, expires_at, old_refresh_token_hash, rotated_at)
+             VALUES ($1, $2, $3, $4, NULL, NULL)",
+                CANARY_SUBJECT,
+                client_uuid,
+                hash_refresh_token("the-real-token"),
+                chrono::Utc::now() + chrono::Duration::days(1)
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // A session exists but the token matches neither hash: the brute-force counter
+            // branch, which is the noisiest line this endpoint has.
+            let logs = refresh_capturing_logs(
+                state,
+                RefreshRequest {
+                    user_id: CANARY_SUBJECT.to_string(),
+                    client_uuid: client_uuid.to_string(),
+                    refresh_token: "not-the-real-token".to_string(),
+                    use_cookie: None,
+                    expires_in_secs: None,
+                },
+            )
+            .await;
+
+            assert!(
+                logs.contains("matches neither the current nor the old hash"),
+                "the branch under test did not log at all: {logs}"
+            );
+            assert!(
+                !logs.contains(CANARY_SUBJECT),
+                "the raw Google subject reached the log: {logs}"
+            );
+            assert!(
+                logs.contains(&expected_hash),
+                "the salted hash that replaces it is missing: {logs}"
+            );
+        }
+    }
 }

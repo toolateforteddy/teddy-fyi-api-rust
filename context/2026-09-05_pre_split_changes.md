@@ -585,7 +585,7 @@ anyway.
 
 ## 18. Membership row ids embed the raw Google subject — **7**, Now — **LANDED, and incomplete**
 
-**Landed** in [#PRNUM](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/PRNUM).
+**Landed** in [#78](https://github.com/toolateforteddy/teddy-fyi-api-rust/pull/78).
 Both writers — `/api/lists/join` and the creator's ADMIN row in the list sync processor —
 now mint `gen_random_uuid()`.
 
